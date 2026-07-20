@@ -245,6 +245,19 @@ streamlit run dashboard/app.py -- --artifacts artifacts/demo
 
 대시보드는 로컬 산출물을 읽어 승격 결정, 우승 지표, AIDM 순위, 실험 실행, 보고서 텍스트, 선택 피처 명세, 발견된 산출물 경로를 표시합니다.
 
+## 코딩 에이전트에서 하니스와 스킬 사용
+
+이 저장소의 하니스는 CLI 명령으로 직접 실행할 수도 있고, 코딩 에이전트에게 저장소 로컬 스킬을 명시해 안전 절차를 맡길 수도 있습니다. 슬래시 명령을 지원하는 환경에서는 `/legacy-intake`, `/aidm-experiment`, `/aidd-promotion`, `/release-gate`처럼 요청할 수 있습니다. VS Code Copilot처럼 슬래시 스킬 호출이 고정되어 있지 않은 환경에서는 자연어로 스킬명을 명시하는 방식이 가장 명확합니다.
+
+예시 요청:
+
+```text
+legacy-intake 스킬로 fixture 레거시 어댑터부터 검증해줘
+aidm-experiment 스킬로 fixture AIDM 실험을 실행하고 promotion_manifest를 설명해줘
+aidd-promotion 스킬로 promoted manifest를 검증하고 생성 모듈 컴파일 증적을 확인해줘
+release-gate 스킬로 baseline, AIDM, AIDD, compile, human approval 증거를 판정해줘
+```
+
 ## 포함하지 않은 운영 마이그레이션 및 확장 지점
 
 이 저장소는 로컬 하니스이며 운영 플랫폼이 아닙니다. 다음은 확장 지점이며 포함하지 않습니다.
