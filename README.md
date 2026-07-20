@@ -29,7 +29,9 @@ python3 -m power_forecasting.cli all --output artifacts/demo --days 60 --plants 
 
 ## CLI examples
 
-All commands write artifacts under `--output`.
+Commands that persist files place them under `--output`. `generate-data`, `aidm`,
+`aidd`, and `all` write artifacts; `legacy` reads a dataset and prints metrics
+to stdout without persisting a legacy metrics artifact.
 
 Generate a deterministic synthetic dataset:
 
@@ -246,6 +248,32 @@ python3 -m power_forecasting.cli all --output <tmp> --days 45 --plants 2 --seed 
 ```
 
 It asserts a promoted decision, default `0.01`/`0.03` gates, non-empty selected specs, `generated/promoted_features.py`, and a non-trivial report.
+
+After a successful run, validate the promotion evidence. The snippet checks
+`artifacts/demo` by default; set `OUTPUT_DIR` to inspect another output
+directory:
+
+<!-- readme-evidence-check: start -->
+```bash
+OUTPUT_DIR="${OUTPUT_DIR:-artifacts/demo}" python3 - <<'PY'
+import json
+import math
+import os
+from pathlib import Path
+
+root = Path(os.environ["OUTPUT_DIR"])
+manifest = json.loads((root / "promotion_manifest.json").read_text(encoding="utf-8"))
+assert manifest["decision"] == "promote"
+assert manifest["selected_specs"]
+assert (root / "performance_report.md").stat().st_size > 500
+winner_nmae = manifest["winner"]["metrics"]["nmae"]
+assert math.isfinite(winner_nmae)
+print(winner_nmae)
+PY
+```
+<!-- readme-evidence-check: end -->
+
+Expected: prints the promoted winner NMAE and exits zero.
 
 ## Troubleshooting and reject behavior
 
