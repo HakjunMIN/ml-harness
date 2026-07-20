@@ -37,3 +37,6 @@ artifacts/demo/generated/*
 outputs/
 runs/
 run_outputs/
+
+# Local Superpowers design and implementation-planning artifacts
+docs/superpowers/
