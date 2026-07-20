@@ -1,3 +1,4 @@
+import json
 import math
 
 import numpy as np
@@ -116,6 +117,112 @@ def test_numeric_timestamp_input_rejected():
 
     with pytest.raises(ValueError, match="invalid datetime input"):
         apply_feature_specs(frame, [FeatureSpec("hour_sin", "cyclic_hour", ("timestamp",))])
+
+
+@pytest.mark.parametrize(
+    "cloud_cover",
+    [
+        [0.2, np.nan],
+        [0.2, np.inf],
+        [0.2, "opaque"],
+    ],
+)
+def test_invalid_numeric_source_inputs_rejected_with_feature_context(cloud_cover):
+    frame = pd.DataFrame({"cloud_cover": cloud_cover})
+
+    with pytest.raises(
+        ValueError,
+        match="feature cloud_factor: non-finite numeric input cloud_cover",
+    ):
+        apply_feature_specs(
+            frame, [FeatureSpec("cloud_factor", "cloud_attenuation", ("cloud_cover",))]
+        )
+
+
+@pytest.mark.parametrize(
+    ("feature_name", "transform", "inputs", "parameters", "message"),
+    [
+        (
+            "bad_ratio",
+            "ratio",
+            ("numerator", "denominator"),
+            {"epsilon": "wide"},
+            "feature bad_ratio: parameter epsilon must be numeric",
+        ),
+        (
+            "bad_ratio",
+            "ratio",
+            ("numerator", "denominator"),
+            {"epsilon": math.inf},
+            "feature bad_ratio: parameter epsilon must be finite",
+        ),
+        (
+            "bad_derated",
+            "temperature_derating",
+            ("irradiance", "temperature"),
+            {"coefficient": np.nan},
+            "feature bad_derated: parameter coefficient must be finite",
+        ),
+    ],
+)
+def test_non_numeric_and_non_finite_parameters_rejected(
+    feature_name, transform, inputs, parameters, message
+):
+    frame = pd.DataFrame(
+        {
+            "numerator": [1.0],
+            "denominator": [2.0],
+            "irradiance": [1000.0],
+            "temperature": [25.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match=message):
+        apply_feature_specs(
+            frame, [FeatureSpec(feature_name, transform, inputs, parameters)]
+        )
+
+
+def test_negative_temperature_derating_coefficient_rejected():
+    frame = pd.DataFrame({"irradiance": [1000.0], "temperature": [30.0]})
+
+    with pytest.raises(
+        ValueError, match="feature derated: coefficient must be non-negative"
+    ):
+        apply_feature_specs(
+            frame,
+            [
+                FeatureSpec(
+                    "derated",
+                    "temperature_derating",
+                    ("irradiance", "temperature"),
+                    {"coefficient": -0.001},
+                )
+            ],
+        )
+
+
+def test_feature_spec_json_roundtrip_and_sorted_serialization_text():
+    spec = FeatureSpec(
+        "derated",
+        "temperature_derating",
+        ("irradiance", "temperature"),
+        {"reference": 20.0, "coefficient": np.float64(0.005)},
+        version="2",
+        rationale="panel heat lowers output",
+    )
+
+    serialized = json.dumps(spec.to_dict(), sort_keys=True)
+    restored = FeatureSpec.from_dict(json.loads(serialized))
+
+    assert serialized == (
+        '{"inputs": ["irradiance", "temperature"], "name": "derated", '
+        '"parameters": {"coefficient": 0.005, "reference": 20.0}, '
+        '"rationale": "panel heat lowers output", '
+        '"transform": "temperature_derating", "version": "2"}'
+    )
+    assert restored == spec
+    assert json.dumps(restored.to_dict(), sort_keys=True) == serialized
 
 
 def test_feature_spec_serialization_roundtrips_and_protects_parameters():
