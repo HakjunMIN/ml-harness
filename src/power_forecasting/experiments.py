@@ -2,6 +2,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Mapping
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,18 +13,18 @@ class ExperimentStore:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as connection:
+        with _open_connection(self.path) as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
-                    id TEXT PRIMARY KEY,
+                    id TEXT PRIMARY KEY NOT NULL,
                     name TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
                     params_json TEXT,
                     metrics_json TEXT,
                     artifacts_json TEXT,
                     error TEXT,
-                    started_at TEXT,
+                    started_at TEXT NOT NULL,
                     completed_at TEXT
                 )
                 """
@@ -36,7 +37,7 @@ class ExperimentStore:
         run_id = str(uuid.uuid4())
         started_at = _utc_now_iso()
         params_json = _json_dumps(params, "params")
-        with sqlite3.connect(self.path) as connection:
+        with _open_connection(self.path) as connection:
             connection.execute(
                 """
                 INSERT INTO runs (
@@ -53,7 +54,7 @@ class ExperimentStore:
         completed_at = _utc_now_iso()
         metrics_json = _json_dumps(metrics, "metrics")
         artifacts_json = _json_dumps(artifacts, "artifacts")
-        with sqlite3.connect(self.path) as connection:
+        with _open_connection(self.path) as connection:
             cursor = connection.execute(
                 """
                 UPDATE runs
@@ -78,7 +79,7 @@ class ExperimentStore:
             raise ValueError("error must be nonblank")
 
         completed_at = _utc_now_iso()
-        with sqlite3.connect(self.path) as connection:
+        with _open_connection(self.path) as connection:
             cursor = connection.execute(
                 """
                 UPDATE runs
@@ -93,7 +94,7 @@ class ExperimentStore:
                 _raise_transition_error(connection, run_id)
 
     def get_run(self, run_id) -> dict:
-        with sqlite3.connect(self.path) as connection:
+        with _open_connection(self.path) as connection:
             connection.row_factory = sqlite3.Row
             row = connection.execute(
                 """
@@ -112,7 +113,7 @@ class ExperimentStore:
         if status is not None and status not in self._STATUSES:
             raise ValueError("status must be one of running, completed, failed")
 
-        with sqlite3.connect(self.path) as connection:
+        with _open_connection(self.path) as connection:
             connection.row_factory = sqlite3.Row
             if status is None:
                 rows = connection.execute(
@@ -135,6 +136,13 @@ class ExperimentStore:
                     (status,),
                 ).fetchall()
         return [_decode_run(row) for row in rows]
+
+
+@contextmanager
+def _open_connection(path: Path):
+    with closing(sqlite3.connect(path)) as connection:
+        with connection:
+            yield connection
 
 
 def _utc_now_iso() -> str:
