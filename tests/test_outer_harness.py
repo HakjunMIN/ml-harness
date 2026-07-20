@@ -16,6 +16,13 @@ FIXTURES = ROOT / ".agents" / "fixtures"
 SCRIPTS = ROOT / ".agents" / "scripts"
 
 
+@pytest.mark.parametrize("script_name", ["run-legacy.sh", "run-aidm.sh", "verify-promotion.sh"])
+def test_outer_harness_scripts_run_python_through_uv(script_name: str) -> None:
+    content = (SCRIPTS / script_name).read_text(encoding="utf-8")
+
+    assert "uv run python" in content
+
+
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 

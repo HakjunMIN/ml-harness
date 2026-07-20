@@ -25,7 +25,7 @@ done
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd "$script_dir/../.." && pwd -P)
 export PYTHONPATH="$repo_root/.agents${PYTHONPATH:+:$PYTHONPATH}"
-args=(python3 -m harness.contract --adapter "$adapter" --run-dir "$run_dir")
+args=(uv run python -m harness.contract --adapter "$adapter" --run-dir "$run_dir")
 if [[ -n "$run_id" ]]; then
   args+=(--run-id "$run_id")
 fi
