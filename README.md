@@ -277,7 +277,7 @@ uv run python -m power_forecasting.cli all --output <tmp> --days 45 --plants 2 -
 
 <!-- readme-evidence-check: start -->
 ```bash
-OUTPUT_DIR="${OUTPUT_DIR:-artifacts/demo}" python3 - <<'PY'
+OUTPUT_DIR="${OUTPUT_DIR:-artifacts/demo}" uv run python - <<'PY'
 import json
 import math
 import os

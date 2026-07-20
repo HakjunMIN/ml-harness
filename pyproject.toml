@@ -21,6 +21,11 @@ dashboard = [
     "streamlit>=1.36,<2",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+]
+
 [project.scripts]
 power-forecast = "power_forecasting.cli:main"
 
@@ -29,3 +34,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src", ".agents"]
