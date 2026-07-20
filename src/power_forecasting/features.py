@@ -9,6 +9,8 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import pandas as pd
 
+from power_forecasting.data import parse_timestamps
+
 
 @dataclass(frozen=True)
 class FeatureSpec:
@@ -96,13 +98,11 @@ def _validate_feature_name(name: str) -> None:
 
 
 def _datetime_input(frame: pd.DataFrame, spec: FeatureSpec, index: int) -> pd.Series:
-    series = frame[spec.inputs[index]]
-    if pd.api.types.is_numeric_dtype(series):
-        raise ValueError(f"feature {spec.name}: invalid datetime input {spec.inputs[index]}")
-    timestamps = pd.to_datetime(series, errors="coerce")
-    if timestamps.isna().any():
-        raise ValueError(f"feature {spec.name}: invalid datetime input")
-    return timestamps
+    input_name = spec.inputs[index]
+    return parse_timestamps(
+        frame[input_name],
+        error_message=f"feature {spec.name}: invalid datetime input {input_name}",
+    )
 
 
 def _cyclic_hour(frame: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:

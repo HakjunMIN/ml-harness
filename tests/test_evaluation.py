@@ -192,6 +192,29 @@ def test_mean_model_evaluation_accepts_mixed_timestamp_formats():
     assert np.isfinite(result.predictions["prediction"]).all()
 
 
+def test_evaluate_model_accepts_cyclic_hour_with_mixed_timestamp_formats():
+    frame = generate_synthetic_data(days=4, plants=2, seed=31)
+    formatters = (
+        lambda timestamp: timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        lambda timestamp: timestamp.strftime("%m/%d/%Y %H:%M"),
+        lambda timestamp: timestamp.isoformat(),
+    )
+    frame["timestamp"] = [
+        formatters[index % len(formatters)](timestamp)
+        for index, timestamp in enumerate(frame["timestamp"])
+    ]
+
+    result = evaluate_model(
+        frame,
+        model_definition("Mean"),
+        feature_specs=[FeatureSpec("hour_sin", "cyclic_hour", ("timestamp",))],
+        folds=3,
+    )
+
+    assert len(result.predictions) > 0
+    assert np.isfinite(result.predictions["prediction"]).all()
+
+
 def test_plant_hour_mean_regressor_uses_plant_hour_and_fallback_means():
     estimator = PlantHourMeanRegressor()
     X = pd.DataFrame(

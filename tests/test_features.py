@@ -44,6 +44,26 @@ def test_cyclic_hour_cos_computes_expected_values():
     np.testing.assert_allclose(features["hour_cos"].to_numpy(), [1.0, 0.0], atol=1e-12)
 
 
+def test_cyclic_hour_accepts_mixed_parseable_timestamp_formats():
+    frame = pd.DataFrame(
+        {
+            "timestamp": [
+                "2024-01-01 00:00:00",
+                "01/01/2024 06:00",
+                "2024-01-01T18:00:00",
+            ]
+        }
+    )
+
+    features = apply_feature_specs(
+        frame, [FeatureSpec("hour_sin", "cyclic_hour", ("timestamp",))]
+    )
+
+    np.testing.assert_allclose(
+        features["hour_sin"].to_numpy(), [0.0, 1.0, -1.0], atol=1e-12
+    )
+
+
 def test_cyclic_day_of_year_sin_cos_compute_expected_values():
     frame = pd.DataFrame({"timestamp": pd.to_datetime(["2024-01-01", "2024-07-02"])})
 
@@ -112,10 +132,12 @@ def test_unknown_transform_rejected():
         apply_feature_specs(frame, [FeatureSpec("feature", "does_not_exist", ("source",))])
 
 
-def test_numeric_timestamp_input_rejected():
-    frame = pd.DataFrame({"timestamp": [0, 1, 2]})
+def test_invalid_timestamp_input_rejected_with_feature_context():
+    frame = pd.DataFrame({"timestamp": ["2024-01-01 00:00:00", "not-a-timestamp"]})
 
-    with pytest.raises(ValueError, match="invalid datetime input"):
+    with pytest.raises(
+        ValueError, match="feature hour_sin: invalid datetime input timestamp"
+    ):
         apply_feature_specs(frame, [FeatureSpec("hour_sin", "cyclic_hour", ("timestamp",))])
 
 
