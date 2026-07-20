@@ -571,7 +571,7 @@ manifest = json.loads((root / "promotion_manifest.json").read_text())
 assert manifest["decision"] == "promote"
 assert manifest["selected_specs"]
 assert (root / "performance_report.md").stat().st_size > 500
-print(manifest["winner_metrics"]["nmae"])
+print(manifest["winner"]["metrics"]["nmae"])
 PY
 ```
 

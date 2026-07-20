@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "power-forecasting"
+version = "0.1.0"
+description = "AI-driven power forecasting harness."
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24,<3",
+    "pandas>=2.0,<3",
+    "scikit-learn>=1.3,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+]
+dashboard = [
+    "streamlit>=1.36,<2",
+]
+
+[project.scripts]
+power-forecast = "power_forecasting.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
