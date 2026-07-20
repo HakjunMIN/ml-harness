@@ -132,6 +132,15 @@ def test_validate_dataset_rejects_duplicate_plant_timestamp_keys(valid_frame):
         validate_dataset(frame)
 
 
+@pytest.mark.parametrize("plant_id", [None, np.nan, "", "   ", 123])
+def test_validate_dataset_rejects_invalid_plant_ids(valid_frame, plant_id):
+    frame = valid_frame.copy()
+    frame.loc[0, "plant_id"] = plant_id
+
+    with pytest.raises(DataContractError, match="plant_id"):
+        validate_dataset(frame)
+
+
 def test_validate_dataset_rejects_invalid_timestamps(valid_frame):
     frame = valid_frame.copy()
     frame["timestamp"] = frame["timestamp"].astype(object)

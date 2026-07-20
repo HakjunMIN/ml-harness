@@ -194,6 +194,14 @@ def validate_dataset(frame: pd.DataFrame) -> None:
     if missing_columns:
         raise DataContractError(f"missing required columns: {missing_columns}")
 
+    valid_plant_ids = frame["plant_id"].map(
+        lambda value: isinstance(value, str) and value.strip() != ""
+    )
+    if not valid_plant_ids.all():
+        raise DataContractError(
+            "invalid plant_id: must be non-empty, non-whitespace strings"
+        )
+
     timestamp_format = None
     if not pd.api.types.is_datetime64_any_dtype(frame["timestamp"]):
         timestamp_format = "mixed"
