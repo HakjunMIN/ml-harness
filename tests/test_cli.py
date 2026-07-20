@@ -39,7 +39,7 @@ def test_run_all_real_e2e_produces_promoted_artifacts_and_valid_report(tmp_path)
         "dataset": tmp_path / "dataset.csv",
         "database": tmp_path / "experiments.db",
         "manifest": tmp_path / "promotion_manifest.json",
-        "generated_module": tmp_path / "promoted_features.py",
+        "generated_module": tmp_path / "generated" / "promoted_features.py",
         "report": tmp_path / "performance_report.md",
     }
     for path in paths.values():
@@ -178,7 +178,7 @@ def test_api_artifact_path_conventions_and_manifest_round_trip(tmp_path, monkeyp
     assert aidd.validate_promotion_manifest(json.loads(manifest.read_text(encoding="utf-8")))
 
     generated = cli.run_aidd_workflow(tmp_path, manifest=manifest)
-    assert generated == tmp_path / "promoted_features.py"
+    assert generated == tmp_path / "generated" / "promoted_features.py"
     assert generated.exists()
 
 
@@ -193,7 +193,7 @@ def test_missing_or_invalid_provided_dataset_is_rejected(tmp_path):
         cli.run_legacy(tmp_path, dataset=invalid)
 
 
-def test_run_all_rejected_decision_writes_manifest_but_does_not_generate_code(
+def test_run_all_rejected_decision_writes_report_but_does_not_generate_code(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(cli, "run_legacy", lambda output, dataset=None, folds=3: _legacy_results())
@@ -214,8 +214,10 @@ def test_run_all_rejected_decision_writes_manifest_but_does_not_generate_code(
     assert json.loads((tmp_path / "promotion_manifest.json").read_text(encoding="utf-8"))[
         "decision"
     ] == "reject"
-    assert not (tmp_path / "promoted_features.py").exists()
-    assert not (tmp_path / "performance_report.md").exists()
+    assert not (tmp_path / "generated" / "promoted_features.py").exists()
+    report = (tmp_path / "performance_report.md").read_text(encoding="utf-8")
+    assert "Promotion decision: reject" in report
+    assert "insufficient_improvement:improvement_ratio=0.000000" in report
 
 
 def test_cli_all_module_invocation_succeeds_and_errors_report_to_stderr(tmp_path):
@@ -246,6 +248,38 @@ def test_cli_all_module_invocation_succeeds_and_errors_report_to_stderr(tmp_path
 
     assert failure.returncode == 2
     assert failure.stderr.startswith("ERROR:")
+
+
+def test_cli_aidm_rejected_decision_exits_two_after_manifest_and_report(tmp_path):
+    output = tmp_path / "aidm-reject"
+    dataset = cli.run_generate_data(output, days=4, plants=1, seed=17)
+
+    rejected = _run_module(
+        "aidm",
+        "--output",
+        str(output),
+        "--dataset",
+        str(dataset),
+        "--folds",
+        "1",
+        "--minimum-improvement",
+        "1.0",
+        "--max-plant-regression",
+        "0.2",
+        "--top-single-candidates",
+        "1",
+        "--seed",
+        "17",
+    )
+
+    assert rejected.returncode == 2
+    assert "ERROR: AIDM rejected promotion" in rejected.stderr
+    assert f"manifest: {output / 'promotion_manifest.json'}" in rejected.stdout
+    assert f"report: {output / 'performance_report.md'}" in rejected.stdout
+    assert "decision: reject" in rejected.stdout
+    manifest = json.loads((output / "promotion_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["decision"] == "reject"
+    assert (output / "performance_report.md").exists()
 
 
 def _run_module(*args):

@@ -30,6 +30,7 @@ from power_forecasting.reporting import write_performance_report
 DATASET_NAME = "dataset.csv"
 DATABASE_NAME = "experiments.db"
 MANIFEST_NAME = "promotion_manifest.json"
+GENERATED_DIR_NAME = "generated"
 GENERATED_MODULE_NAME = "promoted_features.py"
 REPORT_NAME = "performance_report.md"
 
@@ -74,7 +75,7 @@ def run_aidd_workflow(output: Path, manifest: Path) -> Path:
         raise FileNotFoundError(f"manifest not found: {manifest_path}")
     with manifest_path.open("r", encoding="utf-8", newline="") as handle:
         payload = json.load(handle)
-    return render_promoted_module(payload, output_root / GENERATED_MODULE_NAME)
+    return render_promoted_module(payload, _generated_module_path(output_root))
 
 
 def run_all(
@@ -100,30 +101,19 @@ def run_all(
     )
     manifest_path = output_root / MANIFEST_NAME
     _write_json_atomic(manifest_path, aidm_result.manifest)
-    if aidm_result.manifest.get("decision") != "promote":
-        failed_gates = aidm_result.manifest.get("failed_gates") or ["none reported"]
-        raise RuntimeError(
-            "AIDM rejected promotion; failed gates: "
-            + ", ".join(str(gate) for gate in failed_gates)
-        )
-
-    generated_module = run_aidd_workflow(output_root, manifest=manifest_path)
-    report_path = output_root / REPORT_NAME
-    artifact_paths = {
-        "dataset": dataset_path,
-        "database": output_root / DATABASE_NAME,
-        "manifest": manifest_path,
-        "generated_module": generated_module,
-        "report": report_path,
-    }
-    frame = _load_dataset(dataset_path)
-    write_performance_report(
-        _dataset_summary(frame),
+    artifact_paths = _workflow_artifact_paths(output_root, dataset_path)
+    _write_workflow_report(
+        output_root,
+        dataset_path,
         legacy_results,
         aidm_result,
         artifact_paths,
-        target=report_path,
     )
+    if aidm_result.manifest.get("decision") != "promote":
+        raise RuntimeError(_promotion_rejection_message(aidm_result))
+
+    generated_module = run_aidd_workflow(output_root, manifest=manifest_path)
+    artifact_paths["generated_module"] = generated_module
     return artifact_paths
 
 
@@ -143,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"NMAE={_metric(result.metrics, 'NMAE'):.6f}"
                 )
         elif args.command == "aidm":
+            output_root = _ensure_output_root(args.output)
+            dataset_path = _dataset_path(output_root, args.dataset)
             config = AIDMConfig(
                 folds=args.folds,
                 minimum_improvement=args.minimum_improvement,
@@ -150,11 +142,23 @@ def main(argv: list[str] | None = None) -> int:
                 top_single_candidates=args.top_single_candidates,
                 seed=args.seed,
             )
-            result = run_aidm_workflow(args.output, dataset=args.dataset, config=config)
-            output_root = Path(args.output)
+            legacy_results = run_legacy(output_root, dataset=dataset_path, folds=args.folds)
+            result = run_aidm_workflow(output_root, dataset=dataset_path, config=config)
+            artifact_paths = _workflow_artifact_paths(output_root, dataset_path)
+            _write_workflow_report(
+                output_root,
+                dataset_path,
+                legacy_results,
+                result,
+                artifact_paths,
+            )
             print(f"database: {output_root / DATABASE_NAME}")
             print(f"manifest: {output_root / MANIFEST_NAME}")
+            print(f"report: {output_root / REPORT_NAME}")
             print(f"decision: {result.manifest['decision']}")
+            if result.manifest.get("decision") != "promote":
+                print(f"ERROR: {_promotion_rejection_message(result)}", file=sys.stderr)
+                return 2
         elif args.command == "aidd":
             path = run_aidd_workflow(args.output, manifest=args.manifest)
             print(f"generated_module: {path}")
@@ -234,6 +238,46 @@ def _ensure_output_root(output: Path) -> Path:
 
 def _dataset_path(output: Path, dataset: Path | None) -> Path:
     return Path(dataset) if dataset is not None else Path(output) / DATASET_NAME
+
+
+def _generated_module_path(output_root: Path) -> Path:
+    return Path(output_root) / GENERATED_DIR_NAME / GENERATED_MODULE_NAME
+
+
+def _workflow_artifact_paths(output_root: Path, dataset_path: Path) -> dict[str, Path]:
+    output_root = Path(output_root)
+    return {
+        "dataset": Path(dataset_path),
+        "database": output_root / DATABASE_NAME,
+        "manifest": output_root / MANIFEST_NAME,
+        "generated_module": _generated_module_path(output_root),
+        "report": output_root / REPORT_NAME,
+    }
+
+
+def _write_workflow_report(
+    output_root: Path,
+    dataset_path: Path,
+    legacy_results: Mapping[str, EvaluationResult],
+    aidm_result: AIDMResult,
+    artifact_paths: Mapping[str, Path],
+) -> Path:
+    frame = _load_dataset(dataset_path)
+    return write_performance_report(
+        _dataset_summary(frame),
+        legacy_results,
+        aidm_result,
+        artifact_paths,
+        target=Path(output_root) / REPORT_NAME,
+    )
+
+
+def _promotion_rejection_message(aidm_result: AIDMResult) -> str:
+    failed_gates = aidm_result.manifest.get("failed_gates") or ["none reported"]
+    return (
+        "AIDM rejected promotion; failed gates: "
+        + ", ".join(str(gate) for gate in failed_gates)
+    )
 
 
 def _load_dataset(path: Path) -> pd.DataFrame:
