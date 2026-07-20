@@ -303,7 +303,7 @@ PY
 - `ERROR: missing required columns` 또는 `invalid timestamps`: 고객 어댑터 출력이 데이터 계약을 충족하도록 수정합니다.
 - `ERROR: AIDM rejected promotion`: `promotion_manifest.json`, `failed_gates`, `experiments.db`, `performance_report.md`를 확인합니다. 후보가 개선율, 발전소별 저하율, 피처 가용성 게이트를 만족하지 않을 때 거부는 정상입니다.
 - `generated/promoted_features.py` 누락: 매니페스트가 거부되었거나 AIDD 검증에 실패한 것입니다. 워크플로는 안전한 승격이 확인되기 전까지 코드를 생성하지 않습니다.
-- Streamlit import 오류: `uv run python -m pip install -e '.[dashboard]'`로 dashboard extra를 설치합니다.
+- Streamlit import 오류: `uv sync --extra dashboard`로 dashboard extra를 설치합니다.
 
 ## 레거시 외부 하니스(`.agents/`) 안전 사용
 
