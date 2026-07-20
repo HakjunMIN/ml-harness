@@ -284,11 +284,9 @@ def _model_recipe_patch_payload(manifest: Any) -> dict[str, Any]:
         raise PromotionManifestError("promotion manifest must be a mapping")
     selected_recipe = _require_mapping(manifest, "selected_model_recipe")
     recipe = _canonical_model_recipe(selected_recipe)
-    proposal = _require_mapping(manifest, "proposal")
+    proposal = _validated_embedded_proposal(_require_mapping(manifest, "proposal"))
     proposal_id = _require_nonblank_string(proposal, "proposal_id", "proposal.proposal_id")
     _reject_unsafe_string("proposal.proposal_id", proposal_id)
-    if _contains_sensitive_key(proposal):
-        raise PromotionManifestError("proposal contains unsupported path-like evidence")
     baseline = _require_mapping(manifest, "baseline")
     winner = _require_mapping(manifest, "winner")
     _validate_agentic_model_recipe_binding(proposal, winner, recipe, specs)
@@ -312,22 +310,29 @@ def _model_recipe_patch_payload(manifest: Any) -> dict[str, Any]:
     }
 
 
+def _validated_embedded_proposal(proposal: Mapping[str, Any]) -> dict[str, Any]:
+    if _contains_sensitive_key(proposal):
+        raise PromotionManifestError("proposal contains unsupported path-like evidence")
+    from power_forecasting.proposals import (
+        ProposalValidationError,
+        load_proposal,
+        proposal_to_dict,
+    )
+
+    try:
+        return proposal_to_dict(load_proposal(proposal))
+    except ProposalValidationError as exc:
+        raise PromotionManifestError(str(exc)) from exc
+
+
 def _validate_agentic_model_recipe_binding(
     proposal: Mapping[str, Any],
     winner: Mapping[str, Any],
     selected_recipe: Mapping[str, Any],
     selected_specs: tuple[FeatureSpec, ...],
 ) -> None:
-    feature_sets = [
-        _canonical_feature_set_entry(raw, index)
-        for index, raw in enumerate(_require_list(proposal, "feature_sets", "proposal.feature_sets"))
-    ]
-    model_recipes = [
-        _canonical_model_recipe_entry(raw, index)
-        for index, raw in enumerate(_require_list(proposal, "model_recipes", "proposal.model_recipes"))
-    ]
-    _require_unique_names(feature_sets, "proposal.feature_sets")
-    _require_unique_names(model_recipes, "proposal.model_recipes")
+    feature_sets = _require_list(proposal, "feature_sets", "proposal.feature_sets")
+    model_recipes = _require_list(proposal, "model_recipes", "proposal.model_recipes")
 
     if selected_recipe not in model_recipes:
         raise PromotionManifestError("selected_model_recipe does not match proposal.model_recipes")
@@ -354,40 +359,8 @@ def _validate_agentic_model_recipe_binding(
         raise PromotionManifestError("selected_specs do not match proposal feature set")
 
 
-def _require_unique_names(entries: list[Mapping[str, Any]], label: str) -> None:
-    seen: set[str] = set()
-    for index, entry in enumerate(entries):
-        name = _require_nonblank_string(entry, "name", f"{label}[{index}].name")
-        if name in seen:
-            raise PromotionManifestError(f"{label} contains duplicate name {name}")
-        seen.add(name)
-
-
 def _spec_payloads_by_name(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(specs, key=lambda spec: spec["name"])
-
-
-def _canonical_model_recipe_entry(raw: Any, index: int) -> dict[str, Any]:
-    if not isinstance(raw, Mapping):
-        raise PromotionManifestError(f"proposal.model_recipes[{index}] must be a mapping")
-    return _canonical_model_recipe(raw)
-
-
-def _canonical_feature_set_entry(raw: Any, index: int) -> dict[str, Any]:
-    if not isinstance(raw, Mapping):
-        raise PromotionManifestError(f"proposal.feature_sets[{index}] must be a mapping")
-    _require_exact_keys(raw, {"name", "rationale", "specs"}, f"proposal.feature_sets[{index}]")
-    name = _require_nonblank_string(raw, "name", f"proposal.feature_sets[{index}].name")
-    rationale = _require_nonblank_string(raw, "rationale", f"proposal.feature_sets[{index}].rationale")
-    _reject_unsafe_string(f"proposal.feature_sets[{index}].name", name)
-    _reject_unsafe_string(f"proposal.feature_sets[{index}].rationale", rationale)
-    specs = _require_list(raw, "specs", f"proposal.feature_sets[{index}].specs")
-    parsed_specs = _parse_specs(specs)
-    return {
-        "name": name,
-        "rationale": rationale,
-        "specs": [spec.to_dict() for spec in parsed_specs],
-    }
 
 
 def _canonical_model_recipe(recipe: Mapping[str, Any]) -> dict[str, Any]:

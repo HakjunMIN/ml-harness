@@ -122,6 +122,22 @@ def test_render_model_recipe_patch_rejects_tampered_agentic_provenance(aidd_patc
     assert not target.exists()
 
 
+def test_render_model_recipe_patch_rejects_embedded_proposal_over_budget(aidd_patch_dir):
+    manifest = _agentic_manifest()
+    manifest = {
+        **manifest,
+        "proposal": {
+            **manifest["proposal"],
+            "budget": {"max_evaluations": 3, "top_feature_groups": 2},
+        },
+    }
+    target = aidd_patch_dir / "model-recipe-patch.json"
+
+    with pytest.raises(aidd.PromotionManifestError):
+        aidd.render_model_recipe_patch(manifest, target)
+    assert not target.exists()
+
+
 def test_render_model_recipe_patch_accepts_aidm_sorted_feature_specs(aidd_patch_dir):
     manifest = _agentic_manifest()
     selected_specs = [_alternative_feature_spec(), _safe_feature_spec()]

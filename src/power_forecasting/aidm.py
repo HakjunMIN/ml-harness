@@ -215,13 +215,6 @@ def run_aidm(
     validate_dataset(frame)
 
     loaded_proposal = _load_optional_proposal(proposal)
-    if loaded_proposal is not None:
-        combination_count = len(loaded_proposal.feature_sets) * len(loaded_proposal.model_recipes)
-        if combination_count > int(loaded_proposal.budget["max_evaluations"]):
-            raise ValueError(
-                "proposal combinations exceed max_evaluations:"
-                f" {combination_count}>{loaded_proposal.budget['max_evaluations']}"
-            )
 
     store = ExperimentStore(database_path)
     definition = model_definition("SPOT")

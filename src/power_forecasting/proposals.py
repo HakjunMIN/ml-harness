@@ -101,6 +101,7 @@ class ResearchProposal:
         _unique_names(feature_sets, "feature set")
         _unique_names(model_recipes, "model recipe")
         budget = _validate_budget(self.budget)
+        _validate_evaluation_budget(feature_sets, model_recipes, budget)
         object.__setattr__(self, "baseline", MappingProxyType(baseline))
         object.__setattr__(self, "feature_sets", feature_sets)
         object.__setattr__(self, "model_recipes", model_recipes)
@@ -216,6 +217,20 @@ def _validate_budget(raw: Any) -> dict[str, int]:
     if not 1 <= top_feature_groups <= 10:
         raise ProposalValidationError("budget.top_feature_groups must be 1..10")
     return {"max_evaluations": max_evaluations, "top_feature_groups": top_feature_groups}
+
+
+def _validate_evaluation_budget(
+    feature_sets: tuple[FeatureSet, ...],
+    model_recipes: tuple[ModelRecipe, ...],
+    budget: Mapping[str, int],
+) -> None:
+    combination_count = len(feature_sets) * len(model_recipes)
+    max_evaluations = int(budget["max_evaluations"])
+    if combination_count > max_evaluations:
+        raise ProposalValidationError(
+            "proposal combinations exceed max_evaluations:"
+            f" {combination_count}>{max_evaluations}"
+        )
 
 
 def _validate_baseline(raw: Any) -> dict[str, str]:
