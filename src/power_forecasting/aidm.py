@@ -4,16 +4,20 @@ import itertools
 import json
 import math
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+import numpy as np
 import pandas as pd
 
+from power_forecasting.data import parse_timestamps
 from power_forecasting.data import DataContractError, validate_dataset
-from power_forecasting.evaluation import evaluate_model
+from power_forecasting.evaluation import compute_metrics, evaluate_model
 from power_forecasting.experiments import ExperimentStore
 from power_forecasting.features import FeatureSpec
-from power_forecasting.models import ModelDefinition, model_definition
+from power_forecasting.models import ModelDefinition, model_definition, model_definition_from_recipe
+from power_forecasting.proposals import ResearchProposal, load_proposal, proposal_to_dict
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,8 @@ class CandidateResult:
     metrics: Mapping[str, float]
     per_plant: Mapping[str, Mapping[str, float]]
     run_id: str
+    model_recipe: Mapping[str, Any] | None = None
+    evaluation_rows: pd.DataFrame | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -78,15 +84,20 @@ class CandidateResult:
         object.__setattr__(self, "specs", specs)
         object.__setattr__(self, "metrics", _normalize_metrics(self.metrics))
         object.__setattr__(self, "per_plant", _normalize_per_plant(self.per_plant))
+        if self.model_recipe is not None:
+            object.__setattr__(self, "model_recipe", _json_safe_value(dict(self.model_recipe)))
 
     def summary(self) -> dict[str, Any]:
-        return {
+        payload = {
             "name": self.name,
             "specs": [spec.to_dict() for spec in self.specs],
             "metrics": _copy_metrics(self.metrics),
             "per_plant": _copy_per_plant(self.per_plant),
             "run_id": self.run_id,
         }
+        if self.model_recipe is not None:
+            payload["model_recipe"] = _json_safe_value(dict(self.model_recipe))
+        return payload
 
 
 @dataclass(frozen=True)
@@ -148,6 +159,8 @@ def evaluate_promotion_gates(
     baseline: CandidateResult,
     winner: CandidateResult,
     config: AIDMConfig = AIDMConfig(),
+    *,
+    legacy_baseline: CandidateResult | None = None,
 ) -> dict[str, Any]:
     _validate_config(config)
     baseline_nmae = _nmae(baseline)
@@ -173,6 +186,12 @@ def evaluate_promotion_gates(
 
     for source in _unavailable_inputs(winner.specs):
         failed_gates.append(f"unavailable_input:{source}")
+    if legacy_baseline is not None and winner_nmae > _nmae(legacy_baseline):
+        failed_gates.append(
+            "legacy_regression:"
+            f"winner_nmae={_format_float(winner_nmae)}"
+            f">legacy_nmae={_format_float(_nmae(legacy_baseline))}"
+        )
 
     return {
         "decision": "reject" if failed_gates else "promote",
@@ -186,11 +205,16 @@ def run_aidm(
     frame: pd.DataFrame,
     database_path,
     config: AIDMConfig = AIDMConfig(),
+    *,
+    proposal: ResearchProposal | Mapping[str, Any] | Path | None = None,
+    legacy_predictions: pd.DataFrame | Path | None = None,
 ) -> AIDMResult:
     _validate_config(config)
     if not isinstance(frame, pd.DataFrame):
         raise DataContractError("frame must be a pandas DataFrame")
     validate_dataset(frame)
+
+    loaded_proposal = _load_optional_proposal(proposal)
 
     store = ExperimentStore(database_path)
     definition = model_definition("SPOT")
@@ -204,6 +228,16 @@ def run_aidm(
         run_name="aidm-baseline-spot",
         config=config,
     )
+
+    if loaded_proposal is not None:
+        return _run_proposal_aidm(
+            frame=frame,
+            store=store,
+            baseline=baseline,
+            proposal=loaded_proposal,
+            config=config,
+            legacy_predictions=legacy_predictions,
+        )
 
     single_results = []
     for group in _candidate_groups():
@@ -247,8 +281,9 @@ def run_aidm(
     ranking = tuple(candidate.name for candidate in ranked)
     winner = ranked[0] if ranked else None
 
+    legacy_baseline = _legacy_baseline_candidate(legacy_predictions, baseline) if legacy_predictions is not None else None
     gates = (
-        evaluate_promotion_gates(baseline, winner, config)
+        evaluate_promotion_gates(baseline, winner, config, legacy_baseline=legacy_baseline)
         if winner is not None
         else {
             "decision": "reject",
@@ -257,11 +292,72 @@ def run_aidm(
             "improvement_ratio": 0.0,
         }
     )
-    manifest = _manifest(config, baseline, winner, gates)
+    manifest = _manifest(config, baseline, winner, gates, legacy_baseline=legacy_baseline)
 
     return AIDMResult(
         baseline=baseline,
         candidates=candidates,
+        ranking=ranking,
+        winner=winner,
+        manifest=manifest,
+    )
+
+
+def _run_proposal_aidm(
+    *,
+    frame: pd.DataFrame,
+    store: ExperimentStore,
+    baseline: CandidateResult,
+    proposal: ResearchProposal,
+    config: AIDMConfig,
+    legacy_predictions: pd.DataFrame | Path | None,
+) -> AIDMResult:
+    proposal_payload = proposal_to_dict(proposal)
+    candidates: list[CandidateResult] = []
+    for feature_set in proposal.feature_sets:
+        for model_recipe in proposal.model_recipes:
+            definition = model_definition_from_recipe(model_recipe)
+            candidate_name = f"{model_recipe.name}:{feature_set.name}"
+            candidates.append(
+                _evaluate_and_record(
+                    store=store,
+                    frame=frame,
+                    definition=definition,
+                    specs=feature_set.specs,
+                    candidate_name=candidate_name,
+                    run_name=f"aidm-proposal-{candidate_name}",
+                    config=config,
+                    model_recipe=model_recipe.to_dict(),
+                    proposal_id=proposal.proposal_id,
+                    proposal=proposal_payload,
+                )
+            )
+
+    ranked = tuple(sorted(candidates, key=_proposal_sort_key))
+    ranking = tuple(candidate.name for candidate in ranked)
+    winner = ranked[0] if ranked else None
+    legacy_baseline = _legacy_baseline_candidate(legacy_predictions, baseline) if legacy_predictions is not None else None
+    gates = (
+        evaluate_promotion_gates(baseline, winner, config, legacy_baseline=legacy_baseline)
+        if winner is not None
+        else {
+            "decision": "reject",
+            "failed_gates": ["no_candidate"],
+            "per_plant_deltas": {},
+            "improvement_ratio": 0.0,
+        }
+    )
+    manifest = _manifest(
+        config,
+        baseline,
+        winner,
+        gates,
+        legacy_baseline=legacy_baseline,
+        proposal=proposal_payload,
+    )
+    return AIDMResult(
+        baseline=baseline,
+        candidates=tuple(candidates),
         ranking=ranking,
         winner=winner,
         manifest=manifest,
@@ -306,6 +402,82 @@ def _dedupe_specs(specs: Iterable[FeatureSpec]) -> tuple[FeatureSpec, ...]:
     return tuple(by_name[name] for name in sorted(by_name))
 
 
+def _load_optional_proposal(
+    proposal: ResearchProposal | Mapping[str, Any] | Path | None,
+) -> ResearchProposal | None:
+    if proposal is None:
+        return None
+    if isinstance(proposal, ResearchProposal):
+        return proposal
+    return load_proposal(proposal)
+
+
+def _proposal_sort_key(candidate: CandidateResult) -> tuple[float, str, str]:
+    recipe_name = ""
+    if candidate.model_recipe is not None:
+        recipe_name = str(candidate.model_recipe.get("name", ""))
+    feature_set_name = candidate.name.split(":", 1)[1] if ":" in candidate.name else candidate.name
+    return (_nmae(candidate), recipe_name, feature_set_name)
+
+
+def _legacy_baseline_candidate(
+    legacy_predictions: pd.DataFrame | Path,
+    baseline: CandidateResult,
+) -> CandidateResult:
+    if baseline.evaluation_rows is None:
+        raise ValueError("baseline evaluation rows are required for legacy comparison")
+    evaluation_rows = baseline.evaluation_rows.copy()
+    predictions = _load_legacy_predictions(legacy_predictions)
+    key_columns = ["plant_id", "timestamp"]
+    evaluation_rows["timestamp"] = parse_timestamps(evaluation_rows["timestamp"])
+    predictions["timestamp"] = parse_timestamps(predictions["timestamp"])
+    if predictions.duplicated(key_columns).any():
+        raise ValueError("legacy prediction coverage contains duplicate keys")
+    expected_keys = set(map(tuple, evaluation_rows[key_columns].astype({"plant_id": str}).to_numpy()))
+    actual_keys = set(map(tuple, predictions[key_columns].astype({"plant_id": str}).to_numpy()))
+    if expected_keys != actual_keys:
+        raise ValueError("legacy prediction coverage must exactly match evaluation rows")
+    merged = evaluation_rows.merge(
+        predictions,
+        on=key_columns,
+        how="left",
+        validate="one_to_one",
+    )
+    raw_predictions = pd.to_numeric(merged["prediction_mw"], errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(raw_predictions).all():
+        raise ValueError("legacy predictions must be finite")
+    capacity = merged["capacity_mw"].to_numpy(dtype=float)
+    clipped = np.clip(raw_predictions, 0.0, capacity)
+    metrics = compute_metrics(merged["actual"], clipped, capacity)
+    per_plant = {
+        str(plant_id): compute_metrics(group["actual"], group["legacy_prediction"], group["capacity_mw"])
+        for plant_id, group in pd.DataFrame(
+            {
+                "plant_id": merged["plant_id"].to_numpy(),
+                "actual": merged["actual"].to_numpy(dtype=float),
+                "legacy_prediction": clipped,
+                "capacity_mw": capacity,
+            }
+        ).groupby("plant_id", sort=True)
+    }
+    return CandidateResult(
+        name="legacy_predictions",
+        specs=(),
+        metrics=metrics,
+        per_plant=per_plant,
+        run_id="legacy-predictions",
+    )
+
+
+def _load_legacy_predictions(value: pd.DataFrame | Path) -> pd.DataFrame:
+    frame = pd.read_csv(value) if isinstance(value, (str, Path)) else value.copy()
+    required = ["plant_id", "timestamp", "prediction_mw"]
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        raise ValueError(f"legacy predictions missing columns: {missing}")
+    return frame.loc[:, required].copy()
+
+
 def _evaluate_and_record(
     *,
     store: ExperimentStore,
@@ -315,6 +487,9 @@ def _evaluate_and_record(
     candidate_name: str,
     run_name: str,
     config: AIDMConfig,
+    model_recipe: Mapping[str, Any] | None = None,
+    proposal_id: str | None = None,
+    proposal: Mapping[str, Any] | None = None,
 ) -> CandidateResult:
     specs = tuple(sorted(tuple(specs), key=lambda spec: spec.name))
     params = {
@@ -325,6 +500,12 @@ def _evaluate_and_record(
         "seed": config.seed,
         "specs": [spec.to_dict() for spec in specs],
     }
+    if model_recipe is not None:
+        params["model_recipe"] = _json_safe_value(dict(model_recipe))
+    if proposal_id is not None:
+        params["proposal_id"] = proposal_id
+    if proposal is not None:
+        params["proposal"] = _json_safe_value(dict(proposal))
     run_id = store.start_run(run_name, params)
 
     try:
@@ -335,6 +516,8 @@ def _evaluate_and_record(
             metrics=_normalize_metrics(evaluation.metrics),
             per_plant=_normalize_per_plant(evaluation.per_plant),
             run_id=run_id,
+            model_recipe=model_recipe,
+            evaluation_rows=evaluation.predictions.copy(),
         )
         artifacts = {
             "summary": candidate.summary(),
@@ -343,6 +526,8 @@ def _evaluate_and_record(
             ],
             "prediction_rows": int(len(evaluation.predictions)),
         }
+        if proposal is not None:
+            artifacts["proposal"] = _json_safe_value(dict(proposal))
         store.complete_run(run_id, candidate.metrics, artifacts)
         return candidate
     except Exception as exc:
@@ -355,8 +540,11 @@ def _manifest(
     baseline: CandidateResult,
     winner: CandidateResult | None,
     gates: Mapping[str, Any],
+    *,
+    legacy_baseline: CandidateResult | None = None,
+    proposal: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": "1",
         "seed": config.seed,
         "baseline": {
@@ -383,6 +571,19 @@ def _manifest(
         "decision": gates["decision"],
         "failed_gates": list(gates["failed_gates"]),
     }
+    if legacy_baseline is not None:
+        payload["legacy_baseline"] = {
+            "metrics": _copy_metrics(legacy_baseline.metrics),
+            "per_plant": _copy_per_plant(legacy_baseline.per_plant),
+            "run_id": _manifest_run_id("legacy", config, legacy_baseline),
+        }
+    elif proposal is not None:
+        payload["legacy_baseline"] = None
+    if proposal is not None:
+        payload["proposal"] = _json_safe_value(dict(proposal))
+        if winner is not None and winner.model_recipe is not None:
+            payload["selected_model_recipe"] = _json_safe_value(dict(winner.model_recipe))
+    return payload
 
 
 def _manifest_run_id(role: str, config: AIDMConfig, candidate: CandidateResult) -> str:

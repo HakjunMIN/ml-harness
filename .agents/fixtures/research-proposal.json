@@ -1,0 +1,51 @@
+{
+  "baseline": {
+    "model": "SPOT"
+  },
+  "budget": {
+    "max_evaluations": 4,
+    "top_feature_groups": 2
+  },
+  "feature_sets": [
+    {
+      "name": "safe_solar",
+      "rationale": "Use only forecast-time irradiance and cloud cover.",
+      "specs": [
+        {
+          "inputs": [
+            "forecast_irradiance",
+            "forecast_cloud_cover"
+          ],
+          "name": "effective_irradiance",
+          "parameters": {},
+          "rationale": "Forecast-time cloud-adjusted irradiance.",
+          "transform": "effective_irradiance",
+          "version": "1"
+        }
+      ]
+    }
+  ],
+  "model_recipes": [
+    {
+      "name": "ridge_low",
+      "parameters": {
+        "alpha": 1.0
+      },
+      "rationale": "Regularized linear recipe for review.",
+      "recipe": "ridge"
+    },
+    {
+      "name": "hgb_small",
+      "parameters": {
+        "learning_rate": 0.1,
+        "max_iter": 50,
+        "max_leaf_nodes": 31
+      },
+      "rationale": "Small deterministic boosted-tree recipe for review.",
+      "recipe": "hist_gradient_boosting"
+    }
+  ],
+  "proposal_id": "fixture-agentic-proposal",
+  "rationale": "Synthetic bounded proposal for agentic AIDM testing.",
+  "schema_version": "1"
+}

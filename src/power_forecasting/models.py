@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -14,6 +14,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.utils.validation import check_is_fitted
 
 from power_forecasting.data import parse_timestamps
+
+if TYPE_CHECKING:
+    from power_forecasting.proposals import ModelRecipe
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,21 @@ def _spot_pipeline() -> Any:
     )
 
 
+def _recipe_ridge_pipeline(alpha: float) -> Any:
+    return make_pipeline(
+        SimpleImputer(strategy="median"),
+        StandardScaler(),
+        Ridge(alpha=alpha),
+    )
+
+
+def _recipe_hgb_pipeline(parameters: dict[str, Any]) -> Any:
+    return make_pipeline(
+        SimpleImputer(strategy="median"),
+        HistGradientBoostingRegressor(random_state=0, **parameters),
+    )
+
+
 WEATHER_ORACLE_LEGACY_FEATURES = (
     "actual_irradiance",
     "actual_temperature",
@@ -186,6 +204,28 @@ def model_definition(name: str) -> ModelDefinition:
         raise ValueError(f"unknown model: {name}") from exc
 
 
+def model_definition_from_recipe(model_recipe: "ModelRecipe") -> ModelDefinition:
+    name = getattr(model_recipe, "name")
+    recipe = getattr(model_recipe, "recipe")
+    parameters = dict(getattr(model_recipe, "parameters"))
+    if recipe == "ridge":
+        alpha = float(parameters["alpha"])
+        return ModelDefinition(
+            f"Recipe:ridge:{name}",
+            SPOT_FEATURES,
+            lambda: _recipe_ridge_pipeline(alpha),
+            data_availability="forecast",
+        )
+    if recipe == "hist_gradient_boosting":
+        return ModelDefinition(
+            f"Recipe:hist_gradient_boosting:{name}",
+            SPOT_FEATURES,
+            lambda: _recipe_hgb_pipeline(dict(parameters)),
+            data_availability="forecast",
+        )
+    raise ValueError(f"unsupported recipe: {recipe}")
+
+
 __all__ = [
     "FORECAST_WEATHER_FEATURES",
     "LDAPS_FEATURES",
@@ -195,4 +235,5 @@ __all__ = [
     "SUPPORTED_MODEL_NAMES",
     "WEATHER_ORACLE_LEGACY_FEATURES",
     "model_definition",
+    "model_definition_from_recipe",
 ]

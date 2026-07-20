@@ -1,0 +1,5 @@
+plant_id,timestamp,prediction_mw
+plant-a,2024-01-01T04:00:00,6
+plant-a,2024-01-01T05:00:00,8
+plant-a,2024-01-01T06:00:00,11
+plant-a,2024-01-01T07:00:00,15

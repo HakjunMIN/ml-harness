@@ -157,10 +157,15 @@ def test_api_artifact_path_conventions_and_manifest_round_trip(tmp_path, monkeyp
     assert list(legacy) == list(LEGACY_NAMES)
     assert captured["legacy"] == [(name, 2, True) for name in LEGACY_NAMES]
 
-    def fake_run_aidm(frame, database_path, config):
+    proposal = ROOT / ".agents" / "fixtures" / "research-proposal.json"
+    legacy_predictions = ROOT / ".agents" / "fixtures" / "legacy-predictions.csv"
+
+    def fake_run_aidm(frame, database_path, config, proposal=None, legacy_predictions=None):
         captured["database_path"] = Path(database_path)
         captured["aidm_timestamp"] = pd.api.types.is_datetime64_any_dtype(frame["timestamp"])
         captured["aidm_config"] = config
+        captured["proposal"] = proposal
+        captured["legacy_predictions"] = legacy_predictions
         return _aidm_result(valid_for_aidd=True)
 
     monkeypatch.setattr(cli, "run_aidm", fake_run_aidm)
@@ -171,6 +176,16 @@ def test_api_artifact_path_conventions_and_manifest_round_trip(tmp_path, monkeyp
     assert captured["database_path"] == tmp_path / "experiments.db"
     assert captured["aidm_timestamp"] is True
     assert captured["aidm_config"].folds == 2
+
+    cli.run_aidm_workflow(
+        tmp_path,
+        dataset=dataset,
+        config=aidm.AIDMConfig(folds=1),
+        proposal=proposal,
+        legacy_predictions=legacy_predictions,
+    )
+    assert captured["proposal"] == proposal
+    assert captured["legacy_predictions"] == legacy_predictions
 
     manifest = tmp_path / "promotion_manifest.json"
     assert manifest.exists()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -56,17 +57,11 @@ def render_promoted_module(manifest, target: Path) -> Path:
     return target
 
 
-def _parse_specs(selected_specs: list[Any]) -> tuple[FeatureSpec, ...]:
-    parsed: list[FeatureSpec] = []
-    seen_names: set[str] = set()
-    for index, raw_spec in enumerate(selected_specs):
-        if not isinstance(raw_spec, Mapping):
-            raise PromotionManifestError(f"selected_specs[{index}] must be a mapping")
-        spec = FeatureSpec.from_dict(raw_spec)
+def validate_prediction_time_feature_spec(
+    spec: FeatureSpec, *, error_type: type[Exception] = PromotionManifestError
+) -> None:
+    try:
         _validate_spec_primitives(spec)
-        if spec.name in seen_names:
-            raise PromotionManifestError(f"duplicate feature name: {spec.name}")
-        seen_names.add(spec.name)
         if spec.transform not in TRANSFORMS:
             raise PromotionManifestError(
                 f"feature {spec.name}: unknown transform {spec.transform}"
@@ -75,6 +70,32 @@ def _parse_specs(selected_specs: list[Any]) -> tuple[FeatureSpec, ...]:
         _validate_prediction_time_inputs(spec)
         _validate_spec_without_source_existence(spec)
         _canonical_spec_dict(spec)
+    except PromotionManifestError as exc:
+        if error_type is PromotionManifestError:
+            raise
+        raise error_type(str(exc)) from exc
+
+
+def render_model_recipe_patch(manifest, target: Path) -> Path:
+    payload = _model_recipe_patch_payload(manifest)
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+    _atomic_write_text(target, content)
+    return target
+
+
+def _parse_specs(selected_specs: list[Any]) -> tuple[FeatureSpec, ...]:
+    parsed: list[FeatureSpec] = []
+    seen_names: set[str] = set()
+    for index, raw_spec in enumerate(selected_specs):
+        if not isinstance(raw_spec, Mapping):
+            raise PromotionManifestError(f"selected_specs[{index}] must be a mapping")
+        spec = FeatureSpec.from_dict(raw_spec)
+        if spec.name in seen_names:
+            raise PromotionManifestError(f"duplicate feature name: {spec.name}")
+        seen_names.add(spec.name)
+        validate_prediction_time_feature_spec(spec)
         parsed.append(spec)
     return tuple(parsed)
 
@@ -196,7 +217,12 @@ def _validate_provenance(
     _require_nonempty_string(baseline, "run_id", "baseline.run_id")
     _require_nonempty_string(winner, "name", "winner.name")
     _require_nonempty_string(winner, "run_id", "winner.run_id")
-    expected_winner_name = _winner_name_for_specs(specs)
+    selected_recipe = manifest.get("selected_model_recipe")
+    expected_winner_name = (
+        _require_nonblank_string(winner, "name", "winner.name")
+        if isinstance(selected_recipe, Mapping)
+        else _winner_name_for_specs(specs)
+    )
     if winner["name"] != expected_winner_name:
         raise PromotionManifestError("winner.name does not match selected_specs")
 
@@ -250,6 +276,206 @@ def _metrics(metrics: Mapping[str, Any], label: str) -> dict[str, float]:
     if "nmae" not in normalized:
         raise PromotionManifestError(f"{label} must include nmae")
     return normalized
+
+
+def _model_recipe_patch_payload(manifest: Any) -> dict[str, Any]:
+    specs = validate_promotion_manifest(manifest)
+    if not isinstance(manifest, Mapping):
+        raise PromotionManifestError("promotion manifest must be a mapping")
+    selected_recipe = _require_mapping(manifest, "selected_model_recipe")
+    recipe = _canonical_model_recipe(selected_recipe)
+    proposal = _validated_embedded_proposal(_require_mapping(manifest, "proposal"))
+    proposal_id = _require_nonblank_string(proposal, "proposal_id", "proposal.proposal_id")
+    _reject_unsafe_string("proposal.proposal_id", proposal_id)
+    baseline = _require_mapping(manifest, "baseline")
+    winner = _require_mapping(manifest, "winner")
+    _validate_agentic_model_recipe_binding(proposal, winner, recipe, specs)
+    winner_metrics = _metrics(_require_mapping(winner, "metrics"), "winner.metrics")
+    failed_gates = _require_key(manifest, "failed_gates")
+    if failed_gates != []:
+        raise PromotionManifestError("promoted recipe manifest must not contain failed gates")
+    return {
+        "evidence": {
+            "baseline_model": _require_nonblank_string(baseline, "model", "baseline.model"),
+            "failed_gates": [],
+            "proposal_id": proposal_id,
+            "winner_name": _safe_nonblank_string(winner, "name", "winner.name"),
+        },
+        "manifest_sha256": _sha_json(manifest),
+        "schema_version": "1",
+        "selected_feature_specs_sha256": _sha_json([spec.to_dict() for spec in specs]),
+        "selected_model_recipe": recipe,
+        "status": "requires_human_review",
+        "winner_metrics": winner_metrics,
+    }
+
+
+def _validated_embedded_proposal(proposal: Mapping[str, Any]) -> dict[str, Any]:
+    if _contains_sensitive_key(proposal):
+        raise PromotionManifestError("proposal contains unsupported path-like evidence")
+    from power_forecasting.proposals import (
+        ProposalValidationError,
+        load_proposal,
+        proposal_to_dict,
+    )
+
+    try:
+        return proposal_to_dict(load_proposal(proposal))
+    except ProposalValidationError as exc:
+        raise PromotionManifestError(str(exc)) from exc
+
+
+def _validate_agentic_model_recipe_binding(
+    proposal: Mapping[str, Any],
+    winner: Mapping[str, Any],
+    selected_recipe: Mapping[str, Any],
+    selected_specs: tuple[FeatureSpec, ...],
+) -> None:
+    feature_sets = _require_list(proposal, "feature_sets", "proposal.feature_sets")
+    model_recipes = _require_list(proposal, "model_recipes", "proposal.model_recipes")
+
+    if selected_recipe not in model_recipes:
+        raise PromotionManifestError("selected_model_recipe does not match proposal.model_recipes")
+
+    winner_name = _safe_nonblank_string(winner, "name", "winner.name")
+    recipe_prefix = f"{selected_recipe['name']}:"
+    if not winner_name.startswith(recipe_prefix):
+        raise PromotionManifestError("winner.name does not match selected_model_recipe")
+    feature_set_name = winner_name[len(recipe_prefix) :]
+    if not feature_set_name:
+        raise PromotionManifestError("winner.name missing feature set name")
+
+    expected_winner_name = f"{selected_recipe['name']}:{feature_set_name}"
+    if winner_name != expected_winner_name:
+        raise PromotionManifestError("winner.name does not bind recipe and feature set")
+
+    matching_feature_sets = [feature_set for feature_set in feature_sets if feature_set["name"] == feature_set_name]
+    if len(matching_feature_sets) != 1:
+        raise PromotionManifestError("winner.name feature set not found in proposal.feature_sets")
+
+    selected_specs_payload = _spec_payloads_by_name([spec.to_dict() for spec in selected_specs])
+    feature_set_specs_payload = _spec_payloads_by_name(matching_feature_sets[0]["specs"])
+    if selected_specs_payload != feature_set_specs_payload:
+        raise PromotionManifestError("selected_specs do not match proposal feature set")
+
+
+def _spec_payloads_by_name(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(specs, key=lambda spec: spec["name"])
+
+
+def _canonical_model_recipe(recipe: Mapping[str, Any]) -> dict[str, Any]:
+    allowed_top = {"name", "recipe", "parameters", "rationale"}
+    extra = set(recipe) - allowed_top
+    missing = allowed_top - set(recipe)
+    if extra:
+        raise PromotionManifestError(f"selected_model_recipe unknown keys: {sorted(extra)}")
+    if missing:
+        raise PromotionManifestError(f"selected_model_recipe missing keys: {sorted(missing)}")
+    name = _require_nonblank_string(recipe, "name", "selected_model_recipe.name")
+    recipe_name = _require_nonblank_string(recipe, "recipe", "selected_model_recipe.recipe")
+    rationale = _require_nonblank_string(recipe, "rationale", "selected_model_recipe.rationale")
+    _reject_unsafe_string("selected_model_recipe.name", name)
+    _reject_unsafe_string("selected_model_recipe.recipe", recipe_name)
+    _reject_unsafe_string("selected_model_recipe.rationale", rationale)
+    parameters = _require_mapping(recipe, "parameters")
+    if recipe_name == "ridge":
+        _require_exact_keys(parameters, {"alpha"}, "selected_model_recipe.parameters")
+        alpha = _finite_number("selected_model_recipe.parameters.alpha", parameters["alpha"])
+        if alpha not in {0.1, 1.0, 10.0}:
+            raise PromotionManifestError("selected_model_recipe.parameters.alpha outside allowed set")
+        canonical_params = {"alpha": alpha}
+    elif recipe_name == "hist_gradient_boosting":
+        _require_exact_keys(
+            parameters,
+            {"max_iter", "learning_rate", "max_leaf_nodes"},
+            "selected_model_recipe.parameters",
+        )
+        max_iter = _strict_int("selected_model_recipe.parameters.max_iter", parameters["max_iter"])
+        learning_rate = _finite_number(
+            "selected_model_recipe.parameters.learning_rate", parameters["learning_rate"]
+        )
+        max_leaf_nodes = _strict_int(
+            "selected_model_recipe.parameters.max_leaf_nodes", parameters["max_leaf_nodes"]
+        )
+        if max_iter not in {50, 100, 200}:
+            raise PromotionManifestError("selected_model_recipe.parameters.max_iter outside allowed set")
+        if learning_rate not in {0.03, 0.1}:
+            raise PromotionManifestError("selected_model_recipe.parameters.learning_rate outside allowed set")
+        if max_leaf_nodes not in {15, 31, 63}:
+            raise PromotionManifestError("selected_model_recipe.parameters.max_leaf_nodes outside allowed set")
+        canonical_params = {
+            "learning_rate": learning_rate,
+            "max_iter": max_iter,
+            "max_leaf_nodes": max_leaf_nodes,
+        }
+    else:
+        raise PromotionManifestError("selected_model_recipe.recipe unsupported")
+    return {
+        "name": name,
+        "parameters": canonical_params,
+        "rationale": rationale,
+        "recipe": recipe_name,
+    }
+
+
+def _require_exact_keys(mapping: Mapping[str, Any], keys: set[str], label: str) -> None:
+    actual = set(mapping)
+    if actual != keys:
+        raise PromotionManifestError(
+            f"{label} keys must be exactly {sorted(keys)}, got {sorted(actual)}"
+        )
+
+
+def _require_list(mapping: Mapping[str, Any], key: str, label: str) -> list[Any]:
+    value = _require_key(mapping, key)
+    if not isinstance(value, list) or not value:
+        raise PromotionManifestError(f"{label} must be a non-empty list")
+    return value
+
+
+def _strict_int(label: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PromotionManifestError(f"{label} must be an integer")
+    return int(value)
+
+
+def _contains_sensitive_key(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            lowered = str(key).lower()
+            if "path" in lowered or "customer" in lowered:
+                return True
+            if _contains_sensitive_key(nested):
+                return True
+    elif isinstance(value, (list, tuple)):
+        return any(_contains_sensitive_key(item) for item in value)
+    return False
+
+
+def _safe_nonblank_string(mapping: Mapping[str, Any], key: str, label: str) -> str:
+    value = _require_nonblank_string(mapping, key, label)
+    _reject_unsafe_string(label, value)
+    return value
+
+
+def _reject_unsafe_string(label: str, value: str) -> None:
+    lowered = value.lower()
+    if any(token in lowered for token in ("/users/", "\\users\\", "customer")):
+        raise PromotionManifestError(f"{label} contains customer path-like content")
+    if any(token in lowered for token in ("import ", "exec", "eval(", "subprocess", "os.", "```")):
+        raise PromotionManifestError(f"{label} contains executable code-like content")
+
+
+def _sha_json(value: Any) -> str:
+    import hashlib
+
+    canonical = json.dumps(
+        _canonical_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _winner_name_for_specs(specs: tuple[FeatureSpec, ...]) -> str:
@@ -465,6 +691,8 @@ def _atomic_write_text(target: Path, content: str) -> None:
 
 __all__ = [
     "PromotionManifestError",
+    "render_model_recipe_patch",
     "render_promoted_module",
+    "validate_prediction_time_feature_spec",
     "validate_promotion_manifest",
 ]
