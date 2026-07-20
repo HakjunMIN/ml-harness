@@ -291,6 +291,7 @@ def _model_recipe_patch_payload(manifest: Any) -> dict[str, Any]:
         raise PromotionManifestError("proposal contains unsupported path-like evidence")
     baseline = _require_mapping(manifest, "baseline")
     winner = _require_mapping(manifest, "winner")
+    _validate_agentic_model_recipe_binding(proposal, winner, recipe, specs)
     winner_metrics = _metrics(_require_mapping(winner, "metrics"), "winner.metrics")
     failed_gates = _require_key(manifest, "failed_gates")
     if failed_gates != []:
@@ -308,6 +309,84 @@ def _model_recipe_patch_payload(manifest: Any) -> dict[str, Any]:
         "selected_model_recipe": recipe,
         "status": "requires_human_review",
         "winner_metrics": winner_metrics,
+    }
+
+
+def _validate_agentic_model_recipe_binding(
+    proposal: Mapping[str, Any],
+    winner: Mapping[str, Any],
+    selected_recipe: Mapping[str, Any],
+    selected_specs: tuple[FeatureSpec, ...],
+) -> None:
+    feature_sets = [
+        _canonical_feature_set_entry(raw, index)
+        for index, raw in enumerate(_require_list(proposal, "feature_sets", "proposal.feature_sets"))
+    ]
+    model_recipes = [
+        _canonical_model_recipe_entry(raw, index)
+        for index, raw in enumerate(_require_list(proposal, "model_recipes", "proposal.model_recipes"))
+    ]
+    _require_unique_names(feature_sets, "proposal.feature_sets")
+    _require_unique_names(model_recipes, "proposal.model_recipes")
+
+    if selected_recipe not in model_recipes:
+        raise PromotionManifestError("selected_model_recipe does not match proposal.model_recipes")
+
+    winner_name = _safe_nonblank_string(winner, "name", "winner.name")
+    recipe_prefix = f"{selected_recipe['name']}:"
+    if not winner_name.startswith(recipe_prefix):
+        raise PromotionManifestError("winner.name does not match selected_model_recipe")
+    feature_set_name = winner_name[len(recipe_prefix) :]
+    if not feature_set_name:
+        raise PromotionManifestError("winner.name missing feature set name")
+
+    expected_winner_name = f"{selected_recipe['name']}:{feature_set_name}"
+    if winner_name != expected_winner_name:
+        raise PromotionManifestError("winner.name does not bind recipe and feature set")
+
+    matching_feature_sets = [feature_set for feature_set in feature_sets if feature_set["name"] == feature_set_name]
+    if len(matching_feature_sets) != 1:
+        raise PromotionManifestError("winner.name feature set not found in proposal.feature_sets")
+
+    selected_specs_payload = _spec_payloads_by_name([spec.to_dict() for spec in selected_specs])
+    feature_set_specs_payload = _spec_payloads_by_name(matching_feature_sets[0]["specs"])
+    if selected_specs_payload != feature_set_specs_payload:
+        raise PromotionManifestError("selected_specs do not match proposal feature set")
+
+
+def _require_unique_names(entries: list[Mapping[str, Any]], label: str) -> None:
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
+        name = _require_nonblank_string(entry, "name", f"{label}[{index}].name")
+        if name in seen:
+            raise PromotionManifestError(f"{label} contains duplicate name {name}")
+        seen.add(name)
+
+
+def _spec_payloads_by_name(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(specs, key=lambda spec: spec["name"])
+
+
+def _canonical_model_recipe_entry(raw: Any, index: int) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise PromotionManifestError(f"proposal.model_recipes[{index}] must be a mapping")
+    return _canonical_model_recipe(raw)
+
+
+def _canonical_feature_set_entry(raw: Any, index: int) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise PromotionManifestError(f"proposal.feature_sets[{index}] must be a mapping")
+    _require_exact_keys(raw, {"name", "rationale", "specs"}, f"proposal.feature_sets[{index}]")
+    name = _require_nonblank_string(raw, "name", f"proposal.feature_sets[{index}].name")
+    rationale = _require_nonblank_string(raw, "rationale", f"proposal.feature_sets[{index}].rationale")
+    _reject_unsafe_string(f"proposal.feature_sets[{index}].name", name)
+    _reject_unsafe_string(f"proposal.feature_sets[{index}].rationale", rationale)
+    specs = _require_list(raw, "specs", f"proposal.feature_sets[{index}].specs")
+    parsed_specs = _parse_specs(specs)
+    return {
+        "name": name,
+        "rationale": rationale,
+        "specs": [spec.to_dict() for spec in parsed_specs],
     }
 
 
@@ -372,6 +451,13 @@ def _require_exact_keys(mapping: Mapping[str, Any], keys: set[str], label: str) 
         raise PromotionManifestError(
             f"{label} keys must be exactly {sorted(keys)}, got {sorted(actual)}"
         )
+
+
+def _require_list(mapping: Mapping[str, Any], key: str, label: str) -> list[Any]:
+    value = _require_key(mapping, key)
+    if not isinstance(value, list) or not value:
+        raise PromotionManifestError(f"{label} must be a non-empty list")
+    return value
 
 
 def _strict_int(label: str, value: Any) -> int:
