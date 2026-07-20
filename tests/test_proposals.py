@@ -85,6 +85,9 @@ def test_valid_proposal_round_trips_and_model_recipes_build_expected_estimators(
         (lambda p: {**p, "extra": True}, "unknown keys"),
         (lambda p: {**p, "schema_version": "2"}, "schema_version"),
         (lambda p: {**p, "proposal_id": " "}, "proposal_id"),
+        (lambda p: {**p, "baseline": {"model": "SPOT", "extra": True}}, "baseline unknown keys"),
+        (lambda p: {**p, "baseline": {"model": "naive"}}, "baseline.model"),
+        (lambda p: {**p, "baseline": {}}, "baseline missing keys"),
         (lambda p: {**p, "feature_sets": []}, "feature_sets"),
         (
             lambda p: {
@@ -95,6 +98,41 @@ def test_valid_proposal_round_trips_and_model_recipes_build_expected_estimators(
                 ],
             },
             "duplicate feature set",
+        ),
+        (
+            lambda p: {
+                **p,
+                "feature_sets": [
+                    {
+                        **p["feature_sets"][0],
+                        "specs": [
+                            {
+                                **p["feature_sets"][0]["specs"][0],
+                                "unknown": True,
+                            }
+                        ],
+                    }
+                ],
+            },
+            "feature spec unknown keys",
+        ),
+        (
+            lambda p: {
+                **p,
+                "feature_sets": [
+                    {
+                        **p["feature_sets"][0],
+                        "specs": [
+                            {
+                                key: value
+                                for key, value in p["feature_sets"][0]["specs"][0].items()
+                                if key != "rationale"
+                            }
+                        ],
+                    }
+                ],
+            },
+            "feature spec missing keys",
         ),
         (
             lambda p: {

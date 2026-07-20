@@ -12,6 +12,10 @@ from power_forecasting.aidd import validate_prediction_time_feature_spec
 from power_forecasting.features import FeatureSpec
 
 
+_BASELINE_KEYS = {"model"}
+_FEATURE_SPEC_KEYS = {"name", "transform", "inputs", "parameters", "version", "rationale"}
+
+
 class ProposalValidationError(ValueError):
     """Raised when an agent research proposal violates the bounded schema."""
 
@@ -86,7 +90,7 @@ class ResearchProposal:
             raise ProposalValidationError("schema_version must be exactly '1'")
         _nonblank(self.proposal_id, "proposal_id")
         _nonblank(self.rationale, "rationale")
-        baseline = _json_mapping(self.baseline, "baseline")
+        baseline = _validate_baseline(self.baseline)
         feature_sets = tuple(self.feature_sets)
         model_recipes = tuple(self.model_recipes)
         if not feature_sets:
@@ -158,6 +162,7 @@ def _parse_feature_set(raw: Any) -> FeatureSet:
     for spec_payload in _require_list(raw, "specs"):
         if not isinstance(spec_payload, Mapping):
             raise ProposalValidationError("feature specs must be mappings")
+        _exact_keys(spec_payload, _FEATURE_SPEC_KEYS, "feature spec")
         specs.append(FeatureSpec.from_dict(spec_payload))
     return FeatureSet(raw["name"], raw["rationale"], tuple(specs))
 
@@ -210,6 +215,15 @@ def _validate_budget(raw: Any) -> dict[str, int]:
     if not 1 <= top_feature_groups <= 10:
         raise ProposalValidationError("budget.top_feature_groups must be 1..10")
     return {"max_evaluations": max_evaluations, "top_feature_groups": top_feature_groups}
+
+
+def _validate_baseline(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, Mapping):
+        raise ProposalValidationError("baseline must be a mapping")
+    _exact_keys(raw, _BASELINE_KEYS, "baseline")
+    if raw["model"] != "SPOT":
+        raise ProposalValidationError("baseline.model must be exactly 'SPOT'")
+    return {"model": "SPOT"}
 
 
 def _exact_keys(mapping: Mapping[str, Any], expected: set[str], label: str) -> None:
