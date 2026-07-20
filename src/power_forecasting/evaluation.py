@@ -6,6 +6,7 @@ from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
 
 from power_forecasting.data import validate_dataset
 from power_forecasting.features import FeatureSpec, apply_feature_specs
@@ -92,7 +93,7 @@ def evaluate_model(
         x_validation = _feature_matrix(validation, definition.base_features, specs)
         y_train = train["generation_mw"].to_numpy(dtype=float)
 
-        estimator = definition.estimator_factory()
+        estimator = clone(definition.estimator_factory())
         estimator.fit(x_train, y_train)
 
         raw_predictions = np.asarray(estimator.predict(x_validation), dtype=float)

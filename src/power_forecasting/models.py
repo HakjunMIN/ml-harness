@@ -19,6 +19,7 @@ class ModelDefinition:
     name: str
     base_features: tuple[str, ...]
     estimator_factory: Callable[[], Any]
+    data_availability: str = "forecast"
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -28,6 +29,10 @@ class ModelDefinition:
             raise ValueError(f"model {self.name}: base_features must be non-empty strings")
         if not callable(self.estimator_factory):
             raise TypeError(f"model {self.name}: estimator_factory must be callable")
+        if self.data_availability not in {"actual", "forecast", "historical"}:
+            raise ValueError(
+                f"model {self.name}: data_availability must be actual, forecast, or historical"
+            )
 
 
 class PlantHourMeanRegressor(BaseEstimator, RegressorMixin):
@@ -136,19 +141,47 @@ SPOT_FEATURES = (
 )
 
 
+SUPPORTED_MODEL_NAMES = ("Mean", "Weather", "ForecastWeather", "Ldaps", "SPOT")
+
+
+_MODEL_DEFINITIONS = {
+    "Mean": ModelDefinition(
+        "Mean",
+        ("plant_id", "timestamp"),
+        PlantHourMeanRegressor,
+        data_availability="historical",
+    ),
+    # Diagnostic/oracle legacy only: actual weather is unavailable at forecast time.
+    "Weather": ModelDefinition(
+        "Weather",
+        WEATHER_ORACLE_LEGACY_FEATURES,
+        _ridge_pipeline,
+        data_availability="actual",
+    ),
+    "ForecastWeather": ModelDefinition(
+        "ForecastWeather",
+        FORECAST_WEATHER_FEATURES,
+        _ridge_pipeline,
+        data_availability="forecast",
+    ),
+    "Ldaps": ModelDefinition(
+        "Ldaps",
+        LDAPS_FEATURES,
+        _ridge_pipeline,
+        data_availability="forecast",
+    ),
+    "SPOT": ModelDefinition(
+        "SPOT",
+        SPOT_FEATURES,
+        _spot_pipeline,
+        data_availability="forecast",
+    ),
+}
+
+
 def model_definition(name: str) -> ModelDefinition:
-    definitions = {
-        "Mean": ModelDefinition("Mean", ("plant_id", "timestamp"), PlantHourMeanRegressor),
-        # Diagnostic/oracle legacy only: actual weather is unavailable at forecast time.
-        "Weather": ModelDefinition("Weather", WEATHER_ORACLE_LEGACY_FEATURES, _ridge_pipeline),
-        "ForecastWeather": ModelDefinition(
-            "ForecastWeather", FORECAST_WEATHER_FEATURES, _ridge_pipeline
-        ),
-        "Ldaps": ModelDefinition("Ldaps", LDAPS_FEATURES, _ridge_pipeline),
-        "SPOT": ModelDefinition("SPOT", SPOT_FEATURES, _spot_pipeline),
-    }
     try:
-        return definitions[name]
+        return _MODEL_DEFINITIONS[name]
     except KeyError as exc:
         raise ValueError(f"unknown model: {name}") from exc
 
@@ -159,6 +192,7 @@ __all__ = [
     "ModelDefinition",
     "PlantHourMeanRegressor",
     "SPOT_FEATURES",
+    "SUPPORTED_MODEL_NAMES",
     "WEATHER_ORACLE_LEGACY_FEATURES",
     "model_definition",
 ]
