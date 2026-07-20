@@ -18,6 +18,8 @@ def render_performance_report(
     legacy_results: Mapping[str, EvaluationResult],
     aidm_result: AIDMResult,
     artifact_paths: Mapping[str, Path | str],
+    *,
+    workflow_status: str | None = None,
 ) -> str:
     _validate_report_inputs(dataset_summary, legacy_results, aidm_result, artifact_paths)
     lines: list[str] = [
@@ -141,6 +143,10 @@ def render_performance_report(
     else:
         lines.append("None")
 
+    if workflow_status is not None:
+        lines.extend(["", "## Workflow status", ""])
+        lines.append(_markdown_text(workflow_status))
+
     lines.extend(["", "## Artifact paths", ""])
     lines.extend(
         _table(
@@ -158,10 +164,15 @@ def write_performance_report(
     artifact_paths: Mapping[str, Path | str],
     *,
     target: Path,
+    workflow_status: str | None = None,
 ) -> Path:
     target = Path(target)
     content = render_performance_report(
-        dataset_summary, legacy_results, aidm_result, artifact_paths
+        dataset_summary,
+        legacy_results,
+        aidm_result,
+        artifact_paths,
+        workflow_status=workflow_status,
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(target, content)

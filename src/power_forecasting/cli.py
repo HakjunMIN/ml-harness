@@ -84,6 +84,9 @@ def run_all(
     plants: int = 3,
     seed: int = 42,
     folds: int = 3,
+    *,
+    minimum_improvement: float = AIDMConfig().minimum_improvement,
+    max_plant_regression: float = AIDMConfig().max_plant_regression,
 ) -> dict[str, Path]:
     output_root = _ensure_output_root(output)
     _validate_folds(folds)
@@ -94,14 +97,43 @@ def run_all(
         dataset=dataset_path,
         config=AIDMConfig(
             folds=folds,
-            minimum_improvement=0.0,
-            max_plant_regression=0.2,
+            minimum_improvement=minimum_improvement,
+            max_plant_regression=max_plant_regression,
             seed=seed,
         ),
     )
     manifest_path = output_root / MANIFEST_NAME
     _write_json_atomic(manifest_path, aidm_result.manifest)
     artifact_paths = _workflow_artifact_paths(output_root, dataset_path)
+    if aidm_result.manifest.get("decision") != "promote":
+        _write_workflow_report(
+            output_root,
+            dataset_path,
+            legacy_results,
+            aidm_result,
+            artifact_paths,
+        )
+        raise RuntimeError(_promotion_rejection_message(aidm_result))
+
+    try:
+        generated_module = run_aidd_workflow(output_root, manifest=manifest_path)
+    except Exception as exc:
+        try:
+            _write_workflow_report(
+                output_root,
+                dataset_path,
+                legacy_results,
+                aidm_result,
+                artifact_paths,
+                workflow_status=(
+                    "AIDD generation failed: "
+                    f"{str(exc) or exc.__class__.__name__}"
+                ),
+            )
+        except Exception as report_exc:
+            raise exc from report_exc
+        raise
+    artifact_paths = _with_generated_artifact(artifact_paths, generated_module)
     _write_workflow_report(
         output_root,
         dataset_path,
@@ -109,11 +141,6 @@ def run_all(
         aidm_result,
         artifact_paths,
     )
-    if aidm_result.manifest.get("decision") != "promote":
-        raise RuntimeError(_promotion_rejection_message(aidm_result))
-
-    generated_module = run_aidd_workflow(output_root, manifest=manifest_path)
-    artifact_paths["generated_module"] = generated_module
     return artifact_paths
 
 
@@ -169,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
                 plants=args.plants,
                 seed=args.seed,
                 folds=args.folds,
+                minimum_improvement=args.minimum_improvement,
+                max_plant_regression=args.max_plant_regression,
             )
             for key, path in paths.items():
                 print(f"{key}: {path}")
@@ -225,8 +254,14 @@ def _build_parser() -> argparse.ArgumentParser:
     all_parser = subparsers.add_parser("all", parents=[output_parent])
     all_parser.add_argument("--days", type=int, default=60)
     all_parser.add_argument("--plants", type=int, default=3)
-    all_parser.add_argument("--seed", type=int, default=42)
-    all_parser.add_argument("--folds", type=int, default=3)
+    all_parser.add_argument("--seed", type=int, default=default_aidm.seed)
+    all_parser.add_argument("--folds", type=int, default=default_aidm.folds)
+    all_parser.add_argument(
+        "--minimum-improvement", type=float, default=default_aidm.minimum_improvement
+    )
+    all_parser.add_argument(
+        "--max-plant-regression", type=float, default=default_aidm.max_plant_regression
+    )
     return parser
 
 
@@ -250,8 +285,19 @@ def _workflow_artifact_paths(output_root: Path, dataset_path: Path) -> dict[str,
         "dataset": Path(dataset_path),
         "database": output_root / DATABASE_NAME,
         "manifest": output_root / MANIFEST_NAME,
-        "generated_module": _generated_module_path(output_root),
         "report": output_root / REPORT_NAME,
+    }
+
+
+def _with_generated_artifact(
+    artifact_paths: Mapping[str, Path], generated_module: Path
+) -> dict[str, Path]:
+    return {
+        "dataset": Path(artifact_paths["dataset"]),
+        "database": Path(artifact_paths["database"]),
+        "manifest": Path(artifact_paths["manifest"]),
+        "generated_module": Path(generated_module),
+        "report": Path(artifact_paths["report"]),
     }
 
 
@@ -261,14 +307,19 @@ def _write_workflow_report(
     legacy_results: Mapping[str, EvaluationResult],
     aidm_result: AIDMResult,
     artifact_paths: Mapping[str, Path],
+    *,
+    workflow_status: str | None = None,
 ) -> Path:
     frame = _load_dataset(dataset_path)
+    report_kwargs: dict[str, Any] = {"target": Path(output_root) / REPORT_NAME}
+    if workflow_status is not None:
+        report_kwargs["workflow_status"] = workflow_status
     return write_performance_report(
         _dataset_summary(frame),
         legacy_results,
         aidm_result,
         artifact_paths,
-        target=Path(output_root) / REPORT_NAME,
+        **report_kwargs,
     )
 
 

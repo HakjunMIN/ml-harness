@@ -193,6 +193,111 @@ def test_missing_or_invalid_provided_dataset_is_rejected(tmp_path):
         cli.run_legacy(tmp_path, dataset=invalid)
 
 
+def test_run_all_defaults_match_standalone_aidm_config(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, "run_legacy", lambda output, dataset=None, folds=3: _legacy_results())
+
+    def fake_run_aidm_workflow(output, dataset=None, config=aidm.AIDMConfig()):
+        captured["config"] = config
+        return _aidm_result(valid_for_aidd=True)
+
+    monkeypatch.setattr(cli, "run_aidm_workflow", fake_run_aidm_workflow)
+    monkeypatch.setattr(cli, "run_aidd_workflow", _fake_run_aidd_workflow)
+
+    paths = cli.run_all(tmp_path, days=2, plants=1, seed=7, folds=2)
+
+    assert captured["config"] == aidm.AIDMConfig(folds=2, seed=7)
+    assert paths["generated_module"].exists()
+
+
+def test_run_all_accepts_explicit_gate_overrides(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, "run_legacy", lambda output, dataset=None, folds=3: _legacy_results())
+
+    def fake_run_aidm_workflow(output, dataset=None, config=aidm.AIDMConfig()):
+        captured["config"] = config
+        return _aidm_result(valid_for_aidd=True)
+
+    monkeypatch.setattr(cli, "run_aidm_workflow", fake_run_aidm_workflow)
+    monkeypatch.setattr(cli, "run_aidd_workflow", _fake_run_aidd_workflow)
+
+    cli.run_all(
+        tmp_path,
+        days=2,
+        plants=1,
+        seed=11,
+        folds=1,
+        minimum_improvement=0.0,
+        max_plant_regression=0.2,
+    )
+
+    assert captured["config"] == aidm.AIDMConfig(
+        folds=1,
+        seed=11,
+        minimum_improvement=0.0,
+        max_plant_regression=0.2,
+    )
+
+
+def test_cli_all_passes_explicit_gate_overrides_to_run_all(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_all(
+        output,
+        *,
+        days=60,
+        plants=3,
+        seed=42,
+        folds=3,
+        minimum_improvement=aidm.AIDMConfig().minimum_improvement,
+        max_plant_regression=aidm.AIDMConfig().max_plant_regression,
+    ):
+        captured.update(
+            {
+                "output": output,
+                "days": days,
+                "plants": plants,
+                "seed": seed,
+                "folds": folds,
+                "minimum_improvement": minimum_improvement,
+                "max_plant_regression": max_plant_regression,
+            }
+        )
+        return {"report": Path(output) / "performance_report.md"}
+
+    monkeypatch.setattr(cli, "run_all", fake_run_all)
+    status = cli.main(
+        [
+            "all",
+            "--output",
+            str(tmp_path),
+            "--days",
+            "2",
+            "--plants",
+            "1",
+            "--seed",
+            "11",
+            "--folds",
+            "1",
+            "--minimum-improvement",
+            "0.0",
+            "--max-plant-regression",
+            "0.2",
+        ]
+    )
+
+    assert status == 0
+    assert captured == {
+        "output": tmp_path,
+        "days": 2,
+        "plants": 1,
+        "seed": 11,
+        "folds": 1,
+        "minimum_improvement": 0.0,
+        "max_plant_regression": 0.2,
+    }
+
+
 def test_run_all_rejected_decision_writes_report_but_does_not_generate_code(
     tmp_path, monkeypatch
 ):
@@ -218,6 +323,71 @@ def test_run_all_rejected_decision_writes_report_but_does_not_generate_code(
     report = (tmp_path / "performance_report.md").read_text(encoding="utf-8")
     assert "Promotion decision: reject" in report
     assert "insufficient_improvement:improvement_ratio=0.000000" in report
+    assert "generated_module" not in report
+    assert "promoted_features.py" not in report
+
+
+def test_run_all_success_report_is_written_after_generated_module_exists(
+    tmp_path, monkeypatch
+):
+    observed = {}
+    original_write = cli.write_performance_report
+    monkeypatch.setattr(cli, "run_legacy", lambda output, dataset=None, folds=3: _legacy_results())
+    monkeypatch.setattr(
+        cli,
+        "run_aidm_workflow",
+        lambda output, dataset=None, config=aidm.AIDMConfig(): _aidm_result(
+            valid_for_aidd=True
+        ),
+    )
+    monkeypatch.setattr(cli, "run_aidd_workflow", _fake_run_aidd_workflow)
+
+    def assert_generated_exists(
+        dataset_summary,
+        legacy_results,
+        aidm_result,
+        artifact_paths,
+        *,
+        target,
+    ):
+        generated = Path(artifact_paths["generated_module"])
+        assert generated.exists()
+        observed["artifact_paths"] = dict(artifact_paths)
+        return original_write(
+            dataset_summary,
+            legacy_results,
+            aidm_result,
+            artifact_paths,
+            target=target,
+        )
+
+    monkeypatch.setattr(cli, "write_performance_report", assert_generated_exists)
+
+    paths = cli.run_all(tmp_path, days=2, plants=1, seed=3, folds=1)
+
+    assert observed["artifact_paths"]["generated_module"] == paths["generated_module"]
+
+
+def test_run_all_codegen_failure_report_does_not_claim_generated_artifact(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "generated").write_text("not a directory\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "run_legacy", lambda output, dataset=None, folds=3: _legacy_results())
+    monkeypatch.setattr(
+        cli,
+        "run_aidm_workflow",
+        lambda output, dataset=None, config=aidm.AIDMConfig(): _aidm_result(
+            valid_for_aidd=True
+        ),
+    )
+
+    with pytest.raises(OSError):
+        cli.run_all(tmp_path, days=2, plants=1, seed=3, folds=1)
+
+    report = (tmp_path / "performance_report.md").read_text(encoding="utf-8")
+    assert "AIDD generation failed" in report
+    assert "generated_module" not in report
+    assert "promoted_features.py" not in report
 
 
 def test_cli_all_module_invocation_succeeds_and_errors_report_to_stderr(tmp_path):
@@ -315,6 +485,13 @@ def _evaluation(nmae):
         fold_metrics=[{"MAE": nmae * 10.0, "RMSE": nmae * 12.0, "NMAE": nmae}],
         predictions=pd.DataFrame({"prediction": [1.0]}),
     )
+
+
+def _fake_run_aidd_workflow(output, manifest):
+    path = Path(output) / "generated" / "promoted_features.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# generated\n", encoding="utf-8")
+    return path
 
 
 def _aidm_result(
