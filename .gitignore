@@ -27,7 +27,13 @@ dist/
 *.sqlite3
 
 # Local artifacts and generated run outputs
-artifacts/
+artifacts/*
+!artifacts/demo/
+artifacts/demo/*
+!artifacts/demo/promotion_manifest.json
+!artifacts/demo/generated/
+artifacts/demo/generated/*
+!artifacts/demo/generated/promoted_features.py
 outputs/
 runs/
 run_outputs/

@@ -202,6 +202,14 @@ artifacts/demo/
     └── promoted_features.py
 ```
 
+The canonical review evidence is versioned at
+`artifacts/demo/promotion_manifest.json` and
+`artifacts/demo/generated/promoted_features.py`. These files make the promoted
+feature decision and generated production feature module reviewable in code
+review; the manifest uses deterministic logical run identifiers for stable
+regeneration. Other demo artifacts, including the dataset, SQLite experiment
+DB, performance report, and transient run outputs, remain local and ignored.
+
 On rejection, `dataset.csv`, `experiments.db`, `promotion_manifest.json`, and `performance_report.md` are still useful for diagnosis. `generated/promoted_features.py` is written only after a promoted manifest passes AIDD validation.
 
 ## Notebooks and dashboard

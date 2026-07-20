@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import itertools
+import json
 import math
+import uuid
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -360,14 +362,14 @@ def _manifest(
         "baseline": {
             "model": "SPOT",
             "metrics": _copy_metrics(baseline.metrics),
-            "run_id": baseline.run_id,
+            "run_id": _manifest_run_id("baseline", config, baseline),
         },
         "winner": None
         if winner is None
         else {
             "name": winner.name,
             "metrics": _copy_metrics(winner.metrics),
-            "run_id": winner.run_id,
+            "run_id": _manifest_run_id("winner", config, winner),
         },
         "selected_specs": []
         if winner is None
@@ -381,6 +383,36 @@ def _manifest(
         "decision": gates["decision"],
         "failed_gates": list(gates["failed_gates"]),
     }
+
+
+def _manifest_run_id(role: str, config: AIDMConfig, candidate: CandidateResult) -> str:
+    payload = {
+        "schema_version": "1",
+        "role": role,
+        "seed": config.seed,
+        "folds": config.folds,
+        "thresholds": {
+            "minimum_improvement": float(config.minimum_improvement),
+            "max_plant_regression": float(config.max_plant_regression),
+        },
+        "candidate": {
+            "name": candidate.name,
+            "metrics": _copy_metrics(candidate.metrics),
+            "specs": [spec.to_dict() for spec in candidate.specs],
+        },
+    }
+    canonical = json.dumps(
+        _json_safe_value(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"power-forecasting/aidm/manifest-run/{canonical}",
+        )
+    )
 
 
 def _validate_config(config: AIDMConfig) -> None:

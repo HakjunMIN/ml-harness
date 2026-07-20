@@ -1,4 +1,3 @@
-import copy
 import json
 import shutil
 from dataclasses import FrozenInstanceError
@@ -44,7 +43,7 @@ def test_real_aidm_run_promotes_and_is_deterministic_on_45_day_dataset(aidm_db_p
     assert first.manifest["failed_gates"] == []
     assert json.loads(json.dumps(first.manifest, sort_keys=True, allow_nan=False)) == first.manifest
     assert json.loads(json.dumps(first.winner.summary(), sort_keys=True)) == first.winner.summary()
-    assert _normalize_run_ids(first.manifest) == _normalize_run_ids(second.manifest)
+    assert first.manifest == second.manifest
 
 
 def test_exact_candidate_catalog_has_no_leakage_and_bounded_combination_count(
@@ -309,11 +308,3 @@ def _candidate(name, specs, nmae, plant_scores=None):
         },
         run_id=f"{name}-run",
     )
-
-
-def _normalize_run_ids(manifest):
-    normalized = copy.deepcopy(manifest)
-    normalized["baseline"]["run_id"] = "<run-id>"
-    if normalized["winner"] is not None:
-        normalized["winner"]["run_id"] = "<run-id>"
-    return normalized

@@ -1,0 +1,87 @@
+{
+  "baseline": {
+    "metrics": {
+      "mae": 0.969006447598503,
+      "nmae": 0.015756202399975657,
+      "rmse": 1.9150720674916668
+    },
+    "model": "SPOT",
+    "run_id": "14112d9f-6cb1-5333-85ad-935bede3d6ed"
+  },
+  "decision": "promote",
+  "failed_gates": [],
+  "improvement_ratio": 0.257571794429,
+  "per_plant_deltas": {
+    "plant_01": -0.003190231495,
+    "plant_02": -0.005707353733,
+    "plant_03": -0.003259019445
+  },
+  "schema_version": "1",
+  "seed": 42,
+  "selected_specs": [
+    {
+      "inputs": [
+        "timestamp"
+      ],
+      "name": "doy_cos",
+      "parameters": {},
+      "rationale": "",
+      "transform": "cyclic_day_of_year",
+      "version": "1"
+    },
+    {
+      "inputs": [
+        "timestamp"
+      ],
+      "name": "doy_sin",
+      "parameters": {},
+      "rationale": "",
+      "transform": "cyclic_day_of_year",
+      "version": "1"
+    },
+    {
+      "inputs": [
+        "forecast_irradiance",
+        "forecast_cloud_cover"
+      ],
+      "name": "effective_irradiance",
+      "parameters": {},
+      "rationale": "",
+      "transform": "effective_irradiance",
+      "version": "1"
+    },
+    {
+      "inputs": [
+        "timestamp"
+      ],
+      "name": "hour_cos",
+      "parameters": {},
+      "rationale": "",
+      "transform": "cyclic_hour",
+      "version": "1"
+    },
+    {
+      "inputs": [
+        "timestamp"
+      ],
+      "name": "hour_sin",
+      "parameters": {},
+      "rationale": "",
+      "transform": "cyclic_hour",
+      "version": "1"
+    }
+  ],
+  "thresholds": {
+    "max_plant_regression": 0.03,
+    "minimum_improvement": 0.01
+  },
+  "winner": {
+    "metrics": {
+      "mae": 0.7194177180769481,
+      "nmae": 0.01169784907442192,
+      "rmse": 1.4359852353012215
+    },
+    "name": "doy_cos+doy_sin+effective_irradiance+hour_cos+hour_sin",
+    "run_id": "bab8e090-5441-5e61-b986-ece8c6805dd9"
+  }
+}
