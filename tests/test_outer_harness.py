@@ -122,6 +122,54 @@ def test_run_adapter_rejects_empty_predictions(tmp_path: Path) -> None:
         run_adapter(manifest, tmp_path / "run")
 
 
+def test_run_adapter_rejects_malformed_quoted_predictions(tmp_path: Path) -> None:
+    command = tmp_path / "malformed_writer.py"
+    command.write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "Path(os.environ['HARNESS_PREDICTIONS_OUTPUT']).write_text("
+        "'plant_id,timestamp,prediction_mw\\nplant-1,\"2026-01-01T00:00:00Z,10\\n',"
+        " encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    manifest = write_manifest(tmp_path / "adapter.json", legacy_command=["python3", str(command)])
+    (tmp_path / "valid-dataset.csv").write_text((FIXTURES / "valid-dataset.csv").read_text(encoding="utf-8"), encoding="utf-8")
+
+    with pytest.raises(AdapterContractError, match="malformed prediction"):
+        run_adapter(manifest, tmp_path / "run")
+
+    evidence = read_json(tmp_path / "run" / "legacy-evidence.json")
+    assert evidence["status"] == "failure"
+    assert "malformed prediction" in evidence["error"]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "plant-1,2026-01-01T00:00:00Z\n",
+        "plant-1,2026-01-01T00:00:00Z,10,extra\n",
+    ],
+)
+def test_run_adapter_rejects_ragged_prediction_rows(tmp_path: Path, row: str) -> None:
+    command = tmp_path / "ragged_writer.py"
+    csv_content = "plant_id,timestamp,prediction_mw\n" + row
+    command.write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        f"Path(os.environ['HARNESS_PREDICTIONS_OUTPUT']).write_text({csv_content!r}, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    manifest = write_manifest(tmp_path / "adapter.json", legacy_command=["python3", str(command)])
+    (tmp_path / "valid-dataset.csv").write_text((FIXTURES / "valid-dataset.csv").read_text(encoding="utf-8"), encoding="utf-8")
+
+    with pytest.raises(AdapterContractError, match="ragged prediction"):
+        run_adapter(manifest, tmp_path / "run")
+
+    evidence = read_json(tmp_path / "run" / "legacy-evidence.json")
+    assert evidence["status"] == "failure"
+    assert "ragged prediction" in evidence["error"]
+
+
 def test_cli_module_is_usable_from_shell(tmp_path: Path) -> None:
     completed = subprocess.run(
         ["python3", "-m", "harness.contract", "--adapter", str(FIXTURES / "valid-adapter.json"), "--run-dir", str(tmp_path), "--run-id", "cli"],

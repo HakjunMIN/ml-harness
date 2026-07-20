@@ -233,9 +233,9 @@ def _validate_predictions(
 
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
-            rows = list(csv.reader(handle))
+            rows = list(csv.reader(handle, strict=True))
     except csv.Error as exc:
-        raise AdapterContractError(f"predictions_output is not valid CSV: {exc}") from exc
+        raise AdapterContractError(f"predictions_output has malformed prediction CSV: {exc}") from exc
     except UnicodeDecodeError as exc:
         raise AdapterContractError("predictions_output must be UTF-8 CSV") from exc
 
@@ -247,6 +247,12 @@ def _validate_predictions(
     data_rows = rows[1:]
     if not data_rows:
         raise AdapterContractError("predictions_output must contain data rows")
+    for row_number, row in enumerate(data_rows, start=2):
+        if len(row) != len(header):
+            raise AdapterContractError(
+                f"predictions_output has ragged prediction row {row_number}: "
+                f"expected {len(header)} fields, got {len(row)}"
+            )
     if any(row == header for row in data_rows):
         raise AdapterContractError("predictions_output must contain exactly one header row")
     missing = [column for column in required_columns if column not in header]
