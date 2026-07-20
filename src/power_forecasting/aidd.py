@@ -152,6 +152,10 @@ def _validate_provenance(
     thresholds = _require_mapping(manifest, "thresholds")
     per_plant_deltas = _require_mapping(manifest, "per_plant_deltas")
 
+    _require_aidm_seed(manifest)
+    baseline_model = _require_nonblank_string(baseline, "model", "baseline.model")
+    if baseline_model != "SPOT":
+        raise PromotionManifestError("baseline.model must be exactly 'SPOT'")
     _require_nonempty_string(baseline, "run_id", "baseline.run_id")
     _require_nonempty_string(winner, "name", "winner.name")
     _require_nonempty_string(winner, "run_id", "winner.run_id")
@@ -160,12 +164,14 @@ def _validate_provenance(
         raise PromotionManifestError("winner.name does not match selected_specs")
 
     baseline_metrics = _metrics(_require_mapping(baseline, "metrics"), "baseline.metrics")
+    if baseline_metrics["nmae"] < 0:
+        raise PromotionManifestError("baseline.metrics.nmae must be non-negative")
     winner_metrics = _metrics(_require_mapping(winner, "metrics"), "winner.metrics")
-    minimum_improvement = _finite_float(
+    minimum_improvement = _finite_number(
         "thresholds.minimum_improvement",
         _require_key(thresholds, "minimum_improvement"),
     )
-    max_plant_regression = _finite_float(
+    max_plant_regression = _finite_number(
         "thresholds.max_plant_regression",
         _require_key(thresholds, "max_plant_regression"),
     )
@@ -240,6 +246,25 @@ def _require_mapping(mapping: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     return value
 
 
+def _require_aidm_seed(manifest: Mapping[str, Any]) -> None:
+    value = _require_key(manifest, "seed")
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PromotionManifestError("seed must be an integer")
+    if value < 0:
+        raise PromotionManifestError("seed must be >= 0")
+
+
+def _require_nonblank_string(
+    mapping: Mapping[str, Any], key: str, label: str
+) -> str:
+    if key not in mapping:
+        raise PromotionManifestError(f"missing {label}")
+    value = mapping[key]
+    if type(value) is not str or not value.strip():
+        raise PromotionManifestError(f"{label} must be a non-blank string")
+    return value
+
+
 def _require_nonempty_string(
     mapping: Mapping[str, Any], key: str, label: str
 ) -> None:
@@ -260,6 +285,18 @@ def _finite_float(label: str, value: Any) -> float:
         number = float(value)
     except (TypeError, ValueError) as exc:
         raise PromotionManifestError(f"{label} must be numeric") from exc
+    if not math.isfinite(number):
+        raise PromotionManifestError(f"{label} must be finite")
+    return number
+
+
+def _finite_number(label: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PromotionManifestError(f"{label} must be numeric")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise PromotionManifestError(f"{label} must be finite") from exc
     if not math.isfinite(number):
         raise PromotionManifestError(f"{label} must be finite")
     return number

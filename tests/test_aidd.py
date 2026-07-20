@@ -7,12 +7,13 @@ import re
 import shutil
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from power_forecasting import aidd
+from power_forecasting import aidd, aidm
 from power_forecasting.data import generate_synthetic_data
 from power_forecasting.features import FeatureSpec, apply_feature_specs
 
@@ -95,6 +96,36 @@ def test_valid_ratio_spec_with_large_epsilon_is_accepted_and_validates_on_real_s
         module.build_promoted_features(frame),
         apply_feature_specs(frame, specs),
     )
+
+
+def test_valid_aidm_manifest_is_accepted_for_promotion_rendering(aidd_run_dir, monkeypatch):
+    def fake_evaluate(frame, definition, feature_specs, folds):
+        score = 0.2 if not feature_specs else 0.1
+        return SimpleNamespace(
+            metrics={"MAE": score * 100.0, "RMSE": score * 120.0, "NMAE": score},
+            per_plant={
+                "plant_01": {"MAE": score * 100.0, "RMSE": score * 120.0, "NMAE": score},
+                "plant_02": {"MAE": score * 100.0, "RMSE": score * 120.0, "NMAE": score},
+            },
+            fold_metrics=[{"MAE": score * 100.0, "RMSE": score * 120.0, "NMAE": score}],
+            predictions=pd.DataFrame({"prediction": [1.0]}),
+        )
+
+    monkeypatch.setattr(aidm, "evaluate_model", fake_evaluate)
+
+    result = aidm.run_aidm(
+        generate_synthetic_data(days=4, plants=2, seed=14),
+        aidd_run_dir / "experiments.sqlite",
+        aidm.AIDMConfig(
+            folds=1,
+            minimum_improvement=0.0,
+            max_plant_regression=0.2,
+            top_single_candidates=1,
+        ),
+    )
+
+    assert result.winner is not None
+    assert aidd.validate_promotion_manifest(result.manifest) == result.winner.specs
 
 
 @pytest.mark.parametrize(
@@ -200,6 +231,109 @@ def test_invalid_manifests_are_rejected(case_name, mutate):
     manifest = mutate(_valid_manifest())
 
     with pytest.raises(aidd.PromotionManifestError):
+        aidd.validate_promotion_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("case_name", "mutate"),
+    [
+        ("missing_seed", lambda manifest: _without_key(manifest, "seed")),
+        ("bool_seed", lambda manifest: {**manifest, "seed": True}),
+        ("float_seed", lambda manifest: {**manifest, "seed": 42.0}),
+        ("negative_seed", lambda manifest: {**manifest, "seed": -1}),
+    ],
+    ids=lambda item: item if isinstance(item, str) else None,
+)
+def test_promotion_manifest_requires_aidm_compatible_seed(case_name, mutate):
+    manifest = mutate(_valid_manifest())
+
+    with pytest.raises(aidd.PromotionManifestError, match="seed"):
+        aidd.validate_promotion_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("case_name", "mutate"),
+    [
+        (
+            "missing_model",
+            lambda manifest: {
+                **manifest,
+                "baseline": _without_key(manifest["baseline"], "model"),
+            },
+        ),
+        (
+            "blank_model",
+            lambda manifest: {
+                **manifest,
+                "baseline": {**manifest["baseline"], "model": ""},
+            },
+        ),
+        (
+            "whitespace_model",
+            lambda manifest: {
+                **manifest,
+                "baseline": {**manifest["baseline"], "model": "   "},
+            },
+        ),
+        (
+            "non_spot_model",
+            lambda manifest: {
+                **manifest,
+                "baseline": {**manifest["baseline"], "model": "baseline"},
+            },
+        ),
+    ],
+    ids=lambda item: item if isinstance(item, str) else None,
+)
+def test_promotion_manifest_requires_spot_baseline_model(case_name, mutate):
+    manifest = mutate(_valid_manifest())
+
+    with pytest.raises(aidd.PromotionManifestError, match=r"baseline\.model"):
+        aidd.validate_promotion_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("case_name", "nmae"),
+    [
+        ("nan_nmae", math.nan),
+        ("infinite_nmae", math.inf),
+        ("negative_nmae", -0.001),
+    ],
+    ids=lambda item: item if isinstance(item, str) else None,
+)
+def test_promotion_manifest_rejects_nonfinite_or_negative_baseline_nmae(
+    case_name, nmae
+):
+    manifest = _valid_manifest()
+    manifest["baseline"]["metrics"]["nmae"] = nmae
+
+    with pytest.raises(aidd.PromotionManifestError, match=r"baseline\.metrics\.nmae"):
+        aidd.validate_promotion_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("case_name", "field", "value"),
+    [
+        ("minimum_improvement_nan", "minimum_improvement", math.nan),
+        ("minimum_improvement_below_zero", "minimum_improvement", -0.001),
+        ("minimum_improvement_above_one", "minimum_improvement", 1.001),
+        ("minimum_improvement_huge_integer", "minimum_improvement", 10**1000),
+        ("minimum_improvement_string", "minimum_improvement", "0.01"),
+        ("max_plant_regression_infinite", "max_plant_regression", math.inf),
+        ("max_plant_regression_below_zero", "max_plant_regression", -0.001),
+        ("max_plant_regression_above_one", "max_plant_regression", 1.001),
+        ("max_plant_regression_huge_integer", "max_plant_regression", 10**1000),
+        ("max_plant_regression_string", "max_plant_regression", "0.03"),
+    ],
+    ids=lambda item: item if isinstance(item, str) else None,
+)
+def test_promotion_manifest_rejects_nonfinite_or_out_of_range_thresholds(
+    case_name, field, value
+):
+    manifest = _valid_manifest()
+    manifest["thresholds"][field] = value
+
+    with pytest.raises(aidd.PromotionManifestError, match=rf"thresholds\.{field}"):
         aidd.validate_promotion_manifest(manifest)
 
 
