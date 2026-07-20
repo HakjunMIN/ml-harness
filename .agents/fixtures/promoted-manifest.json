@@ -1,0 +1,40 @@
+{
+  "baseline": {
+    "metrics": {
+      "nmae": 0.2
+    },
+    "model": "SPOT",
+    "run_id": "baseline-fixture"
+  },
+  "decision": "promote",
+  "failed_gates": [],
+  "improvement_ratio": 0.25,
+  "per_plant_deltas": {
+    "plant-a": -0.05
+  },
+  "schema_version": "1",
+  "seed": 7,
+  "selected_specs": [
+    {
+      "inputs": [
+        "timestamp"
+      ],
+      "name": "hour_sin",
+      "parameters": {},
+      "rationale": "Synthetic fixture prediction-time hour signal.",
+      "transform": "cyclic_hour",
+      "version": "1"
+    }
+  ],
+  "thresholds": {
+    "max_plant_regression": 1.0,
+    "minimum_improvement": 0.0
+  },
+  "winner": {
+    "metrics": {
+      "nmae": 0.15
+    },
+    "name": "hour_sin",
+    "run_id": "winner-fixture"
+  }
+}

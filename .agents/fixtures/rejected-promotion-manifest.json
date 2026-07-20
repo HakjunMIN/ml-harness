@@ -1,0 +1,23 @@
+{
+  "baseline": {
+    "metrics": {
+      "nmae": 0.2
+    },
+    "model": "SPOT",
+    "run_id": "baseline-fixture"
+  },
+  "decision": "reject",
+  "failed_gates": [
+    "insufficient_improvement"
+  ],
+  "improvement_ratio": 0.0,
+  "per_plant_deltas": {},
+  "schema_version": "1",
+  "seed": 7,
+  "selected_specs": [],
+  "thresholds": {
+    "max_plant_regression": 0.03,
+    "minimum_improvement": 0.01
+  },
+  "winner": null
+}
