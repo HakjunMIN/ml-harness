@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run-aidm.sh --dataset PATH --run-dir DIR [--folds N] [--minimum-improvement X] [--max-plant-regression X] [--top-single-candidates N] [--seed N]
+usage: run-aidm.sh --dataset PATH --run-dir DIR [--proposal PATH] [--legacy-predictions PATH] [--folds N] [--minimum-improvement X] [--max-plant-regression X] [--top-single-candidates N] [--seed N]
 USAGE
 }
 
@@ -14,6 +14,12 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dataset) [[ $# -ge 2 ]] || { echo "missing value for --dataset" >&2; exit 2; }; dataset="$2"; shift 2 ;;
     --run-dir) [[ $# -ge 2 ]] || { echo "missing value for --run-dir" >&2; exit 2; }; run_dir="$2"; shift 2 ;;
+    --proposal|--legacy-predictions)
+      [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }
+      [[ -f "$2" ]] || { echo "${1#--} not found: $2" >&2; exit 2; }
+      args+=("$1" "$2")
+      shift 2
+      ;;
     --folds|--minimum-improvement|--max-plant-regression|--top-single-candidates|--seed)
       [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }
       args+=("$1" "$2")

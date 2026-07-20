@@ -226,6 +226,46 @@ def test_run_aidm_script_requires_explicit_dataset_and_writes_artifacts(tmp_path
     assert (tmp_path / "performance_report.md").exists()
 
 
+def test_run_aidm_script_forwards_agentic_proposal_and_legacy_predictions(tmp_path: Path) -> None:
+    legacy_predictions = tmp_path / "legacy-predictions.csv"
+    legacy_predictions.write_text(
+        (FIXTURES / "legacy-predictions.csv").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            str(SCRIPTS / "run-aidm.sh"),
+            "--dataset",
+            str(FIXTURES / "valid-dataset.csv"),
+            "--run-dir",
+            str(tmp_path),
+            "--proposal",
+            str(FIXTURES / "research-proposal.json"),
+            "--legacy-predictions",
+            str(legacy_predictions),
+            "--folds",
+            "1",
+            "--minimum-improvement",
+            "0",
+            "--max-plant-regression",
+            "1",
+            "--seed",
+            "7",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode in {0, 2}, completed.stderr
+    manifest = read_json(tmp_path / "promotion_manifest.json")
+    assert manifest["proposal"]["proposal_id"] == "fixture-agentic-proposal"
+    assert "legacy_baseline" in manifest
+    assert "selected_model_recipe" in manifest
+
+
 def test_verify_promotion_script_writes_evidence_only_after_success(tmp_path: Path) -> None:
     manifest = tmp_path / "promotion_manifest.json"
     manifest.write_text((FIXTURES / "promoted-manifest.json").read_text(encoding="utf-8"), encoding="utf-8")
@@ -247,6 +287,53 @@ def test_verify_promotion_script_writes_evidence_only_after_success(tmp_path: Pa
     assert payload["status"] == "success"
     assert payload["manifest_sha256"] == sha256_file(manifest)
     assert payload["generated_module_sha256"] == sha256_file(generated)
+
+
+def test_verify_promotion_script_writes_model_recipe_patch_and_cleans_up_on_failure(tmp_path: Path) -> None:
+    manifest = tmp_path / "promotion_manifest.json"
+    payload = read_json(FIXTURES / "promoted-manifest.json")
+    payload["proposal"] = {
+        "schema_version": "1",
+        "proposal_id": "fixture-agentic-proposal",
+        "rationale": "Fixture proposal evidence.",
+    }
+    payload["winner"]["name"] = "ridge_low:hour"
+    payload["selected_model_recipe"] = {
+        "name": "ridge_low",
+        "recipe": "ridge",
+        "parameters": {"alpha": 1.0},
+        "rationale": "Linear regularized baseline.",
+    }
+    manifest.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    completed = subprocess.run(
+        [str(SCRIPTS / "verify-promotion.sh"), "--run-dir", str(tmp_path)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    evidence = read_json(tmp_path / "promotion-evidence.json")
+    assert (tmp_path / "model-recipe-patch.json").exists()
+    assert evidence["model_recipe_patch_sha256"] == sha256_file(tmp_path / "model-recipe-patch.json")
+
+    broken = read_json(FIXTURES / "promoted-manifest.json")
+    broken["selected_specs"][0]["inputs"] = ["actual_irradiance"]
+    manifest.write_text(json.dumps(broken, sort_keys=True), encoding="utf-8")
+    completed = subprocess.run(
+        [str(SCRIPTS / "verify-promotion.sh"), "--run-dir", str(tmp_path)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert not (tmp_path / "promotion-evidence.json").exists()
+    assert not (tmp_path / "generated" / "promoted_features.py").exists()
+    assert not (tmp_path / "model-recipe-patch.json").exists()
 
 
 def test_verify_promotion_script_fails_closed_for_rejected_manifest(tmp_path: Path) -> None:

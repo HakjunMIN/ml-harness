@@ -49,6 +49,17 @@ AIDM 피처 탐색 실행 및 `experiments.db`, `promotion_manifest.json`, 보�
 python3 -m power_forecasting.cli aidm --output artifacts/demo --dataset artifacts/demo/dataset.csv --folds 3 --seed 42
 ```
 
+에이전트 제안 JSON과 선택적 레거시 예측 CSV를 함께 비교:
+
+```bash
+python3 -m power_forecasting.cli aidm \
+  --output artifacts/demo \
+  --dataset artifacts/demo/dataset.csv \
+  --proposal .agents/fixtures/research-proposal.json \
+  --legacy-predictions .agents/fixtures/legacy-predictions.csv \
+  --folds 1
+```
+
 승격된 매니페스트에서 피처 모듈 생성:
 
 ```bash
@@ -171,6 +182,17 @@ AIDM은 SPOT을 예측 시점 기준 모델로 사용합니다. 다음과 같은
 
 매니페스트에는 seed, 기준 및 우승 모델 지표, 선택 피처 명세, 임계값, 개선율, 발전소별 변화량, 결정, 실패 게이트가 기록됩니다.
 
+### 에이전트 제안 스키마와 모델 레시피
+
+에이전트는 코드를 생성하지 않고 `schema_version: "1"`인 선언적 JSON 제안만 제출할 수 있습니다. 최상위 키는 `proposal_id`, `rationale`, `baseline`, `feature_sets`, `model_recipes`, `budget`으로 고정됩니다. `feature_sets`에는 기존 `FeatureSpec` 사전만 들어가며, AIDD와 동일한 예측 시점 입력 검증으로 `generation_mw`, `actual_*`, 계약 밖 입력을 거부합니다. `budget.max_evaluations`는 1~50, `budget.top_feature_groups`는 1~10입니다.
+
+지원 모델 레시피는 두 가지뿐입니다.
+
+- `ridge`: `alpha`가 `0.1`, `1.0`, `10.0` 중 하나인 `SimpleImputer` + `StandardScaler` + `Ridge`
+- `hist_gradient_boosting`: `max_iter` `50/100/200`, `learning_rate` `0.03/0.1`, `max_leaf_nodes` `15/31/63` 중 하나인 결정론적 `HistGradientBoostingRegressor(random_state=0)`
+
+AIDM은 모든 `model_recipe × feature_set` 조합을 평가하며 예산을 초과하면 어떤 평가도 실행하지 않고 실패합니다. 기본 SPOT 기준선은 항상 유지됩니다. `--legacy-predictions`를 제공하면 `plant_id,timestamp,prediction_mw`가 평가 행과 정확히 1:1로 일치해야 하며, 예측값은 용량으로 clipping된 뒤 NMAE를 계산합니다. 우승 후보가 레거시 예측 NMAE보다 나쁘면 기존 SPOT 게이트를 통과해도 `legacy_regression` 게이트로 거부됩니다.
+
 ## AIDD의 제한된 결정론적 안전성
 
 AIDD는 승격 매니페스트만 읽고 `generated/promoted_features.py`를 생성합니다. 다음을 검증합니다.
@@ -186,6 +208,8 @@ AIDD는 승격 매니페스트만 읽고 `generated/promoted_features.py`를 생
 
 생성 모듈에는 `PROMOTED_FEATURE_SPECS`와 `build_promoted_features(frame)`이 포함됩니다. 런타임 피처 엔진과 동일한 결정론적 변환을 적용하며, 학습·배포·네트워크 접근·자율 동작을 포함하지 않습니다.
 
+에이전트 레시피가 승격된 경우 AIDD는 추가로 `model-recipe-patch.json`을 생성합니다. 이 파일은 `status: "requires_human_review"`인 UTF-8 LF JSON 요청이며, 선택 모델 레시피, 선택 피처 명세 해시, 우승 지표, 매니페스트 해시만 담습니다. 실행 가능한 코드, 고객 경로, 임의 필드 전달은 포함하지 않으며, 사람이 검토하기 전에는 고객 저장소나 운영 설정을 직접 수정하지 않습니다.
+
 ## 산출물 구조
 
 성공적인 `all` 실행은 다음을 생성합니다.
@@ -194,6 +218,7 @@ AIDD는 승격 매니페스트만 읽고 `generated/promoted_features.py`를 생
 artifacts/demo/
 ├── dataset.csv
 ├── experiments.db
+├── model-recipe-patch.json        # 에이전트 모델 레시피 승격 시, 사람 검토용 요청
 ├── promotion_manifest.json
 ├── performance_report.md
 └── generated/

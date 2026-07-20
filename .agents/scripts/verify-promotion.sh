@@ -19,8 +19,9 @@ done
 manifest="$run_dir/promotion_manifest.json"
 evidence="$run_dir/promotion-evidence.json"
 generated="$run_dir/generated/promoted_features.py"
+patch="$run_dir/model-recipe-patch.json"
 [[ -f "$manifest" ]] || { echo "promotion manifest not found: $manifest" >&2; exit 2; }
-rm -f "$evidence" "$generated"
+rm -f "$evidence" "$generated" "$patch"
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd "$script_dir/../.." && pwd -P)
@@ -34,14 +35,26 @@ if payload.get('decision') != 'promote':
     raise SystemExit('promotion manifest decision must be promote')
 PY
 if ! python3 -m power_forecasting.cli aidd --output "$run_dir" --manifest "$manifest"; then
-  rm -f "$generated" "$evidence"
+  rm -f "$generated" "$evidence" "$patch"
   exit 2
 fi
 if ! python3 -m py_compile "$generated"; then
-  rm -f "$generated" "$evidence"
+  rm -f "$generated" "$evidence" "$patch"
   exit 2
 fi
-python3 - <<'PY' "$manifest" "$generated" "$evidence"
+if ! python3 - <<'PY' "$manifest" "$patch"
+import json, sys
+from pathlib import Path
+from power_forecasting.aidd import render_model_recipe_patch
+payload = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+if payload.get('selected_model_recipe') is not None:
+    render_model_recipe_patch(payload, Path(sys.argv[2]))
+PY
+then
+  rm -f "$generated" "$evidence" "$patch"
+  exit 2
+fi
+if ! python3 - <<'PY' "$manifest" "$generated" "$patch" "$evidence"
 import hashlib, json, sys
 from pathlib import Path
 
@@ -53,7 +66,8 @@ def sha(path: Path) -> str:
     return h.hexdigest()
 manifest = Path(sys.argv[1])
 generated = Path(sys.argv[2])
-evidence = Path(sys.argv[3])
+patch = Path(sys.argv[3])
+evidence = Path(sys.argv[4])
 payload = {
     'schema_version': '1',
     'status': 'success',
@@ -61,6 +75,13 @@ payload = {
     'generated_module_sha256': sha(generated),
     'generated_module': 'generated/promoted_features.py',
 }
+if patch.exists():
+    payload['model_recipe_patch_sha256'] = sha(patch)
+    payload['model_recipe_patch'] = 'model-recipe-patch.json'
 evidence.write_text(json.dumps(payload, sort_keys=True, indent=2) + '\n', encoding='utf-8')
 print(evidence)
 PY
+then
+  rm -f "$generated" "$evidence" "$patch"
+  exit 2
+fi

@@ -57,13 +57,24 @@ def run_legacy(
 
 
 def run_aidm_workflow(
-    output: Path, dataset: Path | None = None, config: AIDMConfig = AIDMConfig()
+    output: Path,
+    dataset: Path | None = None,
+    config: AIDMConfig = AIDMConfig(),
+    *,
+    proposal: Path | Mapping[str, Any] | None = None,
+    legacy_predictions: Path | pd.DataFrame | None = None,
 ) -> AIDMResult:
     output_root = _ensure_output_root(output)
     if not isinstance(config, AIDMConfig):
         raise TypeError("config must be an AIDMConfig")
     frame = _load_dataset(_dataset_path(output_root, dataset))
-    result = run_aidm(frame, output_root / DATABASE_NAME, config)
+    result = run_aidm(
+        frame,
+        output_root / DATABASE_NAME,
+        config,
+        proposal=proposal,
+        legacy_predictions=legacy_predictions,
+    )
     _write_json_atomic(output_root / MANIFEST_NAME, result.manifest)
     return result
 
@@ -170,7 +181,13 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
             )
             legacy_results = run_legacy(output_root, dataset=dataset_path, folds=args.folds)
-            result = run_aidm_workflow(output_root, dataset=dataset_path, config=config)
+            result = run_aidm_workflow(
+                output_root,
+                dataset=dataset_path,
+                config=config,
+                proposal=args.proposal,
+                legacy_predictions=args.legacy_predictions,
+            )
             artifact_paths = _workflow_artifact_paths(output_root, dataset_path)
             _write_workflow_report(
                 output_root,
@@ -247,6 +264,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--top-single-candidates", type=int, default=default_aidm.top_single_candidates
     )
     aidm_parser.add_argument("--seed", type=int, default=default_aidm.seed)
+    aidm_parser.add_argument("--proposal", type=Path)
+    aidm_parser.add_argument("--legacy-predictions", type=Path)
 
     aidd_parser = subparsers.add_parser("aidd", parents=[output_parent])
     aidd_parser.add_argument("--manifest", required=True, type=Path)
