@@ -1,17 +1,17 @@
-# Power Forecasting Harness
+# 발전량 예측 하니스
 
-Power Forecasting Harness is an offline demonstration of AI-assisted power-generation forecasting. It generates or accepts tabular plant/weather data, evaluates legacy baselines, searches deterministic feature candidates with AIDM, promotes a safe manifest through AIDD, and writes auditable artifacts for review.
+발전량 예측 하니스는 AI 보조 발전량 예측을 위한 오프라인 데모입니다. 발전소/기상 테이블 데이터를 생성하거나 입력받아 레거시 기준 모델을 평가하고, AIDM으로 결정론적 피처 후보를 탐색하며, AIDD로 안전한 매니페스트를 승격하고 감사 가능한 산출물을 생성합니다.
 
-## Goal and safety scope
+## 목표 및 안전 범위
 
-The goal is to show a repeatable forecasting workflow from data contract to reportable artifacts. The safety scope is intentionally narrow:
+데이터 계약부터 보고 가능한 산출물까지 반복 가능한 예측 워크플로를 보여주는 것이 목표입니다. 안전 범위는 의도적으로 제한합니다.
 
-- Runs locally on CSV-like tabular data and a SQLite experiment store.
-- Promotes only feature specifications that pass validation gates and manifest checks.
-- Generates deterministic Python feature code under the selected output directory.
-- Does not deploy models, start production jobs, modify live systems, make autonomous operational decisions, or manage live plant controls.
+- CSV와 유사한 테이블 데이터 및 SQLite 실험 저장소에서 로컬 실행합니다.
+- 검증 게이트와 매니페스트 검사를 통과한 피처 명세만 승격합니다.
+- 선택한 출력 디렉터리에 결정론적 Python 피처 코드를 생성합니다.
+- 모델을 배포하거나, 운영 작업을 시작하거나, 실시간 시스템을 변경하거나, 자율 운영 의사결정을 하거나, 실제 발전소 제어를 관리하지 않습니다.
 
-## Quick start
+## 빠른 시작
 
 ```bash
 python3 -m venv .venv
@@ -21,176 +21,174 @@ python3 -m pip install -e '.[dev,dashboard]'
 python3 -m pytest -q
 ```
 
-Run the full demo:
+전체 데모 실행:
 
 ```bash
 python3 -m power_forecasting.cli all --output artifacts/demo --days 60 --plants 3 --seed 42
 ```
 
-## CLI examples
+## CLI 예시
 
-Commands that persist files place them under `--output`. `generate-data`, `aidm`,
-`aidd`, and `all` write artifacts; `legacy` reads a dataset and prints metrics
-to stdout without persisting a legacy metrics artifact.
+파일을 생성하는 명령은 `--output` 하위에 저장합니다. `generate-data`, `aidm`, `aidd`, `all`은 산출물을 생성하며, `legacy`는 데이터셋을 읽고 지표만 표준 출력에 표시합니다.
 
-Generate a deterministic synthetic dataset:
+결정론적 합성 데이터셋 생성:
 
 ```bash
 python3 -m power_forecasting.cli generate-data --output artifacts/demo --days 60 --plants 3 --seed 42
 ```
 
-Evaluate legacy models against an existing dataset:
+기존 데이터셋으로 레거시 모델 평가:
 
 ```bash
 python3 -m power_forecasting.cli legacy --output artifacts/demo --dataset artifacts/demo/dataset.csv --folds 3
 ```
 
-Run AIDM feature discovery and write `experiments.db`, `promotion_manifest.json`, and a report:
+AIDM 피처 탐색 실행 및 `experiments.db`, `promotion_manifest.json`, 보고서 생성:
 
 ```bash
 python3 -m power_forecasting.cli aidm --output artifacts/demo --dataset artifacts/demo/dataset.csv --folds 3 --seed 42
 ```
 
-Render the promoted feature module from a promoted manifest:
+승격된 매니페스트에서 피처 모듈 생성:
 
 ```bash
 python3 -m power_forecasting.cli aidd --output artifacts/demo --manifest artifacts/demo/promotion_manifest.json
 ```
 
-Run the complete workflow:
+전체 워크플로 실행:
 
 ```bash
 python3 -m power_forecasting.cli all --output artifacts/demo --days 60 --plants 3 --seed 42
 ```
 
-Optional gate overrides are available for experiments:
+실험에서는 선택적으로 게이트 임계값을 재정의할 수 있습니다.
 
 ```bash
 python3 -m power_forecasting.cli all --output artifacts/demo --minimum-improvement 0.01 --max-plant-regression 0.03
 ```
 
-The production defaults are a minimum NMAE improvement ratio of `0.01` and a maximum per-plant NMAE regression of `0.03`.
+운영 기본값은 최소 NMAE 개선율 `0.01` 및 발전소별 최대 NMAE 저하율 `0.03`입니다.
 
-## Legacy model meanings
+## 레거시 모델 의미
 
-The legacy comparison intentionally mixes simple and richer baselines:
+레거시 비교는 의도적으로 단순 기준 모델과 풍부한 기준 모델을 함께 사용합니다.
 
-- `Mean`: historical plant/hour mean baseline using plant ID and timestamp.
-- `Weather`: actual-weather diagnostic/oracle baseline using `actual_*` columns. It is not a forecast-time production model because actual weather is unavailable before the forecast horizon.
-- `ForecastWeather`: linear forecast-weather baseline using forecast irradiance, temperature, cloud cover, wind speed, and capacity.
-- `Ldaps`: linear baseline using LDAPS-style forecast columns.
-- `SPOT`: gradient-boosted forecast-time baseline using forecast weather, capacity, latitude, and longitude. AIDM compares feature candidates against SPOT.
+- `Mean`: 발전소 ID와 시각을 사용하는 발전소/시간별 과거 평균 기준 모델입니다.
+- `Weather`: `actual_*` 컬럼을 사용하는 실제 기상 진단/오라클 기준 모델입니다. 예측 시점에는 실제 기상을 알 수 없으므로 운영 예측 모델이 아닙니다.
+- `ForecastWeather`: 예측 일사량·온도·운량·풍속·용량을 사용하는 선형 기준 모델입니다.
+- `Ldaps`: LDAPS 형식의 예측 컬럼을 사용하는 선형 기준 모델입니다.
+- `SPOT`: 예측 기상, 용량, 위도, 경도를 사용하는 gradient-boosted 예측 시점 기준 모델입니다. AIDM은 피처 후보를 SPOT과 비교합니다.
 
-## Architecture and data flow
+## 아키텍처 및 데이터 흐름
 
 ```text
-synthetic generator or customer adapter
+합성 데이터 생성기 또는 고객 어댑터
         |
         v
-data contract validation
+데이터 계약 검증
         |
-        +--> legacy model evaluation
+        +--> 레거시 모델 평가
         |
-        +--> AIDM feature search with chronological folds
+        +--> 시간순 fold 기반 AIDM 피처 탐색
                   |
                   v
-            promotion manifest and SQLite experiment store
+            승격 매니페스트 및 SQLite 실험 저장소
                   |
                   v
-            AIDD manifest validation and deterministic code generation
+            AIDD 매니페스트 검증 및 결정론적 코드 생성
                   |
                   v
-            performance report, generated/promoted_features.py, dashboard/notebooks
+            성능 보고서, generated/promoted_features.py, 대시보드/Notebook
 ```
 
-Main modules:
+주요 모듈:
 
-- `power_forecasting.data`: synthetic data, timestamp parsing, and contract validation.
-- `power_forecasting.models`: legacy model definitions and forecast-time feature sets.
-- `power_forecasting.features`: deterministic feature spec transforms.
-- `power_forecasting.evaluation`: chronological validation and metrics.
-- `power_forecasting.aidm`: candidate catalog, experiment recording, ranking, gates, and manifest creation.
-- `power_forecasting.aidd`: safe manifest validation and generated feature-module rendering.
-- `power_forecasting.reporting`: Markdown performance report generation.
-- `dashboard/app.py`: Streamlit artifact viewer.
+- `power_forecasting.data`: 합성 데이터, 타임스탬프 파싱, 계약 검증
+- `power_forecasting.models`: 레거시 모델 정의 및 예측 시점 피처 집합
+- `power_forecasting.features`: 결정론적 피처 명세 변환
+- `power_forecasting.evaluation`: 시간순 검증 및 지표
+- `power_forecasting.aidm`: 후보 카탈로그, 실험 기록, 순위, 게이트, 매니페스트 생성
+- `power_forecasting.aidd`: 안전한 매니페스트 검증 및 생성 피처 모듈 렌더링
+- `power_forecasting.reporting`: Markdown 성능 보고서 생성
+- `dashboard/app.py`: Streamlit 산출물 뷰어
 
-## Data contract
+## 데이터 계약
 
-Every dataset must contain the required semantic columns below. Extra columns may exist, but the workflow only depends on these names.
+모든 데이터셋은 아래 필수 의미 컬럼을 포함해야 합니다. 추가 컬럼은 허용하지만 워크플로는 아래 이름에만 의존합니다.
 
-| Column | Type and expectation | Meaning |
+| 컬럼 | 형식 및 조건 | 의미 |
 | --- | --- | --- |
-| `plant_id` | non-empty string | Stable plant identifier. |
-| `timestamp` | parseable datetime | Forecast/actual timestamp. Rows must be unique by `plant_id,timestamp`. |
-| `capacity_mw` | finite number greater than zero | Plant capacity used for clipping and NMAE normalization. |
-| `latitude` | finite number | Plant latitude for SPOT. |
-| `longitude` | finite number | Plant longitude for SPOT. |
-| `actual_irradiance` | finite number | Actual irradiance for diagnostics and synthetic target realism. Not allowed in promoted features. |
-| `actual_temperature` | finite number | Actual temperature for diagnostics. Not allowed in promoted features. |
-| `actual_cloud_cover` | finite number | Actual cloud cover for diagnostics. Not allowed in promoted features. |
-| `actual_wind_speed` | finite number | Actual wind speed for diagnostics. Not allowed in promoted features. |
-| `forecast_irradiance` | finite number | Forecast-time irradiance input. |
-| `forecast_temperature` | finite number | Forecast-time temperature input. |
-| `forecast_cloud_cover` | finite number | Forecast-time cloud-cover input. |
-| `forecast_wind_speed` | finite number | Forecast-time wind-speed input. |
-| `ldaps_irradiance` | finite number | LDAPS-style forecast irradiance. |
-| `ldaps_temperature` | finite number | LDAPS-style forecast temperature. |
-| `ldaps_cloud_cover` | finite number | LDAPS-style forecast cloud cover. |
-| `ldaps_humidity` | finite number | LDAPS-style forecast humidity. |
-| `generation_mw` | finite number in `[0, capacity_mw]` | Target generation. Not allowed in promoted features. |
+| `plant_id` | 비어 있지 않은 문자열 | 안정적인 발전소 식별자 |
+| `timestamp` | 파싱 가능한 datetime | 예측/실측 시각. `plant_id,timestamp` 조합은 유일해야 함 |
+| `capacity_mw` | 0보다 큰 유한 수 | 예측값 clipping 및 NMAE 정규화에 사용하는 발전소 용량 |
+| `latitude` | 유한 수 | SPOT용 발전소 위도 |
+| `longitude` | 유한 수 | SPOT용 발전소 경도 |
+| `actual_irradiance` | 유한 수 | 진단 및 합성 타깃 현실성을 위한 실제 일사량. 승격 피처에서 사용 불가 |
+| `actual_temperature` | 유한 수 | 진단용 실제 온도. 승격 피처에서 사용 불가 |
+| `actual_cloud_cover` | 유한 수 | 진단용 실제 운량. 승격 피처에서 사용 불가 |
+| `actual_wind_speed` | 유한 수 | 진단용 실제 풍속. 승격 피처에서 사용 불가 |
+| `forecast_irradiance` | 유한 수 | 예측 시점 일사량 입력 |
+| `forecast_temperature` | 유한 수 | 예측 시점 온도 입력 |
+| `forecast_cloud_cover` | 유한 수 | 예측 시점 운량 입력 |
+| `forecast_wind_speed` | 유한 수 | 예측 시점 풍속 입력 |
+| `ldaps_irradiance` | 유한 수 | LDAPS 형식 예측 일사량 |
+| `ldaps_temperature` | 유한 수 | LDAPS 형식 예측 온도 |
+| `ldaps_cloud_cover` | 유한 수 | LDAPS 형식 예측 운량 |
+| `ldaps_humidity` | 유한 수 | LDAPS 형식 예측 습도 |
+| `generation_mw` | `[0, capacity_mw]` 범위의 유한 수 | 타깃 발전량. 승격 피처에서 사용 불가 |
 
-Validation rejects missing required columns, unparseable timestamps, duplicate `plant_id,timestamp` keys, blank plant IDs, non-finite numeric values, non-positive capacity, and target values outside `[0, capacity_mw]`.
+검증은 필수 컬럼 누락, 파싱 불가 타임스탬프, 중복 `plant_id,timestamp` 키, 비어 있는 발전소 ID, 유한하지 않은 수치, 0 이하 용량, `[0, capacity_mw]` 범위를 벗어난 타깃을 거부합니다.
 
-### Customer adapter expectations
+### 고객 어댑터 요구사항
 
-A customer adapter should map source systems into the contract before calling the CLI or Python API:
+고객 어댑터는 CLI 또는 Python API를 호출하기 전에 원천 시스템 데이터를 계약 형식으로 변환해야 합니다.
 
-1. Emit one row per plant/timestamp with stable plant IDs and consistent timestamp semantics.
-2. Provide all required numeric columns as finite values with MW units for capacity and generation.
-3. Keep forecast-time columns separate from `actual_*` diagnostic columns and from `generation_mw`.
-4. Use only information available at forecast time for features intended for promotion.
-5. Run `validate_dataset` before evaluation and fail fast on contract errors.
-6. Preserve chronological order or allow the workflow to sort/validate timestamps before folds.
+1. 발전소/시각별 한 행을 생성하고 안정적인 발전소 ID와 일관된 타임스탬프 의미를 유지합니다.
+2. 모든 필수 수치 컬럼에 유한 값을 제공하고 용량·발전량은 MW 단위를 사용합니다.
+3. 예측 시점 컬럼을 `actual_*` 진단 컬럼 및 `generation_mw`와 분리합니다.
+4. 승격 대상 피처에는 예측 시점에 이용 가능한 정보만 사용합니다.
+5. 평가 전 `validate_dataset`을 실행하고 계약 오류 시 즉시 실패 처리합니다.
+6. 시간순을 유지하거나, 워크플로가 fold 전에 타임스탬프를 정렬·검증하도록 합니다.
 
-## AIDM discovery, validation, gates, and experiment store
+## AIDM 탐색, 검증, 게이트 및 실험 저장소
 
-AIDM starts with SPOT as the forecast-time baseline. It evaluates a bounded catalog of deterministic feature specs:
+AIDM은 SPOT을 예측 시점 기준 모델로 사용합니다. 다음과 같은 제한된 결정론적 피처 명세 카탈로그를 평가합니다.
 
-- hour sine/cosine
-- day-of-year sine/cosine
-- effective irradiance
-- temperature derating
-- cloud attenuation
-- irradiance-temperature interaction
+- 시간 sine/cosine
+- 연중 일자 sine/cosine
+- 유효 일사량
+- 온도 derating
+- 운량 감쇠
+- 일사량-온도 상호작용
 
-It first scores single feature groups, retains the configured top single candidates, then evaluates two- and three-group combinations. Evaluation uses chronological folds: each validation block is later than its training data, preventing future-to-past leakage.
+먼저 단일 피처 그룹을 평가하고, 설정된 상위 후보를 남긴 뒤 2개와 3개 그룹 조합을 평가합니다. 검증은 시간순 fold를 사용하므로 각 검증 블록은 학습 데이터보다 이후 시점에만 위치하며 미래 정보 누수를 방지합니다.
 
-Every baseline and candidate run is stored in `experiments.db` with parameters, metrics, artifacts, status, and errors. The winner must pass all promotion gates:
+모든 기준 모델 및 후보 실행은 파라미터, 지표, 산출물, 상태, 오류와 함께 `experiments.db`에 저장됩니다. 우승 후보는 다음 승격 게이트를 모두 통과해야 합니다.
 
-- improvement ratio: `(baseline_nmae - winner_nmae) / baseline_nmae >= 0.01` by default
-- per-plant regression: each winner-vs-baseline NMAE delta must be `<= 0.03` by default
-- feature availability: promoted specs cannot use `generation_mw` or any `actual_*` input
+- 개선율: 기본적으로 `(baseline_nmae - winner_nmae) / baseline_nmae >= 0.01`
+- 발전소별 저하: 기본적으로 각 우승 후보 대비 기준 모델 NMAE 차이는 `<= 0.03`
+- 피처 가용성: 승격 피처는 `generation_mw`, `actual_*`, 또는 데이터 계약 밖의 입력을 사용할 수 없음
 
-The manifest records the seed, baseline and winner metrics, selected specs, thresholds, improvement ratio, per-plant deltas, decision, and failed gates.
+매니페스트에는 seed, 기준 및 우승 모델 지표, 선택 피처 명세, 임계값, 개선율, 발전소별 변화량, 결정, 실패 게이트가 기록됩니다.
 
-## AIDD constrained deterministic safety
+## AIDD의 제한된 결정론적 안전성
 
-AIDD reads only a promotion manifest and writes `generated/promoted_features.py`. It validates:
+AIDD는 승격 매니페스트만 읽고 `generated/promoted_features.py`를 생성합니다. 다음을 검증합니다.
 
-- schema version and `decision == "promote"`
-- non-empty selected feature specs
-- known deterministic transforms and primitive literal parameters
-- no duplicate feature names
-- no target leakage or actual-weather inputs
-- baseline model provenance is exactly `SPOT`
-- improvement ratio and per-plant deltas satisfy manifest thresholds
-- winner name matches the selected specs
+- 스키마 버전 및 `decision == "promote"`
+- 비어 있지 않은 선택 피처 명세
+- 알려진 결정론적 변환 및 원시 리터럴 파라미터
+- 중복되지 않는 피처 이름
+- 타깃 누수, 실제 기상 입력, 데이터 계약 밖의 예측 시점 입력 부재
+- 기준 모델 출처가 정확히 `SPOT`
+- 개선율 및 발전소별 변화량이 매니페스트 임계값 충족
+- 우승 모델 이름과 선택 피처 명세의 일치
 
-The generated module contains `PROMOTED_FEATURE_SPECS` and `build_promoted_features(frame)`. It applies the same deterministic transforms as the runtime feature engine and does not include training, deployment, network access, or autonomous behavior.
+생성 모듈에는 `PROMOTED_FEATURE_SPECS`와 `build_promoted_features(frame)`이 포함됩니다. 런타임 피처 엔진과 동일한 결정론적 변환을 적용하며, 학습·배포·네트워크 접근·자율 동작을 포함하지 않습니다.
 
-## Artifact layout
+## 산출물 구조
 
-A successful `all` run writes:
+성공적인 `all` 실행은 다음을 생성합니다.
 
 ```text
 artifacts/demo/
@@ -202,64 +200,56 @@ artifacts/demo/
     └── promoted_features.py
 ```
 
-The canonical review evidence is versioned at
-`artifacts/demo/promotion_manifest.json` and
-`artifacts/demo/generated/promoted_features.py`. These files make the promoted
-feature decision and generated production feature module reviewable in code
-review; the manifest uses deterministic logical run identifiers for stable
-regeneration. Other demo artifacts, including the dataset, SQLite experiment
-DB, performance report, and transient run outputs, remain local and ignored.
+표준 검토 증적은 `artifacts/demo/promotion_manifest.json` 및 `artifacts/demo/generated/promoted_features.py`로 버전 관리합니다. 이 파일들은 코드 리뷰에서 승격 결정과 생성된 운영용 피처 모듈을 검토할 수 있게 합니다. 매니페스트는 안정적인 재생성을 위해 결정론적 논리 실행 ID를 사용합니다. 데이터셋, SQLite 실험 DB, 성능 보고서, 임시 실행 출력 등 다른 데모 산출물은 로컬에만 저장되며 Git에서 무시됩니다.
 
-On rejection, `dataset.csv`, `experiments.db`, `promotion_manifest.json`, and `performance_report.md` are still useful for diagnosis. `generated/promoted_features.py` is written only after a promoted manifest passes AIDD validation.
+거부된 경우에도 `dataset.csv`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`는 진단에 유용합니다. `generated/promoted_features.py`는 승격 매니페스트가 AIDD 검증을 통과한 뒤에만 생성됩니다.
 
-## Notebooks and dashboard
+## Notebook 및 대시보드
 
-The notebooks in `notebooks/` are short workflow demonstrations that assume `Path("artifacts/demo")`:
+`notebooks/`의 Notebook은 `Path("artifacts/demo")`를 가정한 간단한 워크플로 예제입니다.
 
 - `01_legacy_baseline.ipynb`
 - `02_aidm_feature_discovery.ipynb`
 - `03_aidd_promotion.ipynb`
 
-After creating artifacts, launch the dashboard:
+산출물을 생성한 뒤 대시보드를 실행합니다.
 
 ```bash
 streamlit run dashboard/app.py -- --artifacts artifacts/demo
 ```
 
-The dashboard reads local artifacts, shows the promotion decision, winner metrics, AIDM ranking, experiment runs, report text, selected specs, and discovered artifact paths.
+대시보드는 로컬 산출물을 읽어 승격 결정, 우승 지표, AIDM 순위, 실험 실행, 보고서 텍스트, 선택 피처 명세, 발견된 산출물 경로를 표시합니다.
 
-## Production migration and extension points not included
+## 포함하지 않은 운영 마이그레이션 및 확장 지점
 
-The repository is a local harness, not a production platform. The following are extension points and are not included:
+이 저장소는 로컬 하니스이며 운영 플랫폼이 아닙니다. 다음은 확장 지점이며 포함하지 않습니다.
 
-- MLflow or managed experiment tracking in place of SQLite.
-- A customer data adapter connected to live source systems.
-- A deployment agent, scheduler, model registry, serving endpoint, or rollout mechanism.
-- Live monitoring, alerting, rollback, or production incident automation.
-- An automated diagnosis/self-improving loop that changes production behavior without review.
+- SQLite 대신 MLflow 또는 관리형 실험 추적 사용
+- 실시간 원천 시스템에 연결하는 고객 데이터 어댑터
+- 배포 에이전트, 스케줄러, 모델 레지스트리, 서빙 엔드포인트, 롤아웃 메커니즘
+- 실시간 모니터링, 알림, 롤백, 운영 장애 자동화
+- 검토 없이 운영 동작을 변경하는 자동 진단/Self-Improving Loop
 
-Production migration should add those pieces explicitly, keep the data contract boundary, retain chronological validation, and require human review before deployment.
+운영 마이그레이션에서는 이 구성 요소를 명시적으로 추가하고, 데이터 계약 경계를 유지하며, 시간순 검증과 배포 전 사람 검토를 유지해야 합니다.
 
-## Testing
+## 테스트
 
-Use the existing test suite:
+기존 테스트 스위트를 사용합니다.
 
 ```bash
 python3 -m pytest -q
 python3 -m compileall -q src dashboard artifacts/demo/generated
 ```
 
-The end-to-end smoke test runs the production CLI path:
+종단 간 smoke test는 운영 CLI 경로를 실행합니다.
 
 ```bash
 python3 -m power_forecasting.cli all --output <tmp> --days 45 --plants 2 --seed 21
 ```
 
-It asserts a promoted decision, default `0.01`/`0.03` gates, non-empty selected specs, `generated/promoted_features.py`, and a non-trivial report.
+이 테스트는 승격 결정, 기본 `0.01`/`0.03` 게이트, 비어 있지 않은 선택 피처 명세, `generated/promoted_features.py`, 일정 수준 이상의 보고서를 확인합니다.
 
-After a successful run, validate the promotion evidence. The snippet checks
-`artifacts/demo` by default; set `OUTPUT_DIR` to inspect another output
-directory:
+성공적으로 실행한 뒤에는 승격 증적을 검증합니다. 아래 스니펫은 기본적으로 `artifacts/demo`를 검사하며 다른 출력 디렉터리를 보려면 `OUTPUT_DIR`을 지정합니다.
 
 <!-- readme-evidence-check: start -->
 ```bash
@@ -281,12 +271,12 @@ PY
 ```
 <!-- readme-evidence-check: end -->
 
-Expected: prints the promoted winner NMAE and exits zero.
+예상 결과: 승격된 우승 모델의 NMAE를 출력하고 종료 코드 0으로 종료합니다.
 
-## Troubleshooting and reject behavior
+## 문제 해결 및 거부 동작
 
-- `ERROR: dataset not found`: run `generate-data` first or pass the correct `--dataset`.
-- `ERROR: missing required columns` or `invalid timestamps`: fix the customer adapter output to satisfy the data contract.
-- `ERROR: AIDM rejected promotion`: inspect `promotion_manifest.json`, `failed_gates`, `experiments.db`, and `performance_report.md`. Rejection is expected when a candidate does not meet improvement, per-plant regression, or feature-availability gates.
-- Missing `generated/promoted_features.py`: the manifest was rejected or AIDD validation failed. The workflow intentionally avoids generated code unless promotion is safe.
-- Streamlit import error: install dashboard extras with `python3 -m pip install -e '.[dashboard]'`.
+- `ERROR: dataset not found`: 먼저 `generate-data`를 실행하거나 올바른 `--dataset`을 지정합니다.
+- `ERROR: missing required columns` 또는 `invalid timestamps`: 고객 어댑터 출력이 데이터 계약을 충족하도록 수정합니다.
+- `ERROR: AIDM rejected promotion`: `promotion_manifest.json`, `failed_gates`, `experiments.db`, `performance_report.md`를 확인합니다. 후보가 개선율, 발전소별 저하율, 피처 가용성 게이트를 만족하지 않을 때 거부는 정상입니다.
+- `generated/promoted_features.py` 누락: 매니페스트가 거부되었거나 AIDD 검증에 실패한 것입니다. 워크플로는 안전한 승격이 확인되기 전까지 코드를 생성하지 않습니다.
+- Streamlit import 오류: `python3 -m pip install -e '.[dashboard]'`로 dashboard extra를 설치합니다.
