@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import keyword
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ class FeatureSet:
     specs: tuple[FeatureSpec, ...]
 
     def __post_init__(self) -> None:
-        _nonblank(self.name, "feature set name")
+        _identifier_name(self.name, "feature set name")
         _nonblank(self.rationale, f"feature set {self.name}: rationale")
         specs = tuple(self.specs)
         if not specs:
@@ -58,7 +59,7 @@ class ModelRecipe:
     rationale: str
 
     def __post_init__(self) -> None:
-        _nonblank(self.name, "model recipe name")
+        _identifier_name(self.name, "model recipe name")
         _nonblank(self.recipe, f"model recipe {self.name}: recipe")
         _nonblank(self.rationale, f"model recipe {self.name}: rationale")
         if not isinstance(self.parameters, Mapping):
@@ -264,6 +265,13 @@ def _unique_names(values: tuple[Any, ...], label: str) -> None:
 def _nonblank(value: Any, label: str) -> str:
     if type(value) is not str or not value.strip():
         raise ProposalValidationError(f"{label} must be a nonblank string")
+    return value
+
+
+def _identifier_name(value: Any, label: str) -> str:
+    _nonblank(value, label)
+    if not value.isidentifier() or keyword.iskeyword(value):
+        raise ProposalValidationError(f"{label} must be an identifier string")
     return value
 
 

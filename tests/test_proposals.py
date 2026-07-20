@@ -246,3 +246,39 @@ def test_valid_proposal_round_trips_and_model_recipes_build_expected_estimators(
 def test_strict_proposal_rejections(mutate, message):
     with pytest.raises(ProposalValidationError, match=message):
         load_proposal(mutate(_proposal()))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: {
+            **p,
+            "feature_sets": [{**p["feature_sets"][0], "name": "safe:solar"}],
+        },
+        lambda p: {
+            **p,
+            "model_recipes": [{**p["model_recipes"][0], "name": "ridge:low"}],
+        },
+    ],
+)
+def test_candidate_identity_parts_reject_colons(mutate):
+    with pytest.raises(ProposalValidationError, match="name"):
+        load_proposal(mutate(_proposal()))
+
+
+def test_candidate_identity_collision_shapes_are_rejected():
+    proposal = _proposal()
+    colliding = {
+        **proposal,
+        "feature_sets": [
+            {**proposal["feature_sets"][0], "name": "gamma"},
+            {**proposal["feature_sets"][0], "name": "beta:gamma"},
+        ],
+        "model_recipes": [
+            {**proposal["model_recipes"][0], "name": "alpha:beta"},
+            {**proposal["model_recipes"][1], "name": "alpha"},
+        ],
+    }
+
+    with pytest.raises(ProposalValidationError, match="name"):
+        load_proposal(colliding)
