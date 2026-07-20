@@ -16,6 +16,20 @@ FIXTURES = ROOT / ".agents" / "fixtures"
 SCRIPTS = ROOT / ".agents" / "scripts"
 
 
+@pytest.mark.parametrize("script_name", ["run-legacy.sh", "run-aidm.sh", "verify-promotion.sh"])
+def test_outer_harness_scripts_run_python_through_uv(script_name: str) -> None:
+    content = (SCRIPTS / script_name).read_text(encoding="utf-8")
+
+    assert "uv run python" in content
+
+
+def test_readme_has_no_stale_direct_python3_uv_invocations() -> None:
+    content = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "python3 -m" not in content
+    assert "python3 -" not in content
+
+
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 

@@ -14,17 +14,16 @@
 ## 빠른 시작
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -e '.[dev,dashboard]'
-python3 -m pytest -q
+uv sync --all-extras
+uv run pytest -q
 ```
+
+커밋된 `uv.lock` 덕분에 `uv sync --all-extras`는 개발 환경을 재현합니다.
 
 전체 데모 실행:
 
 ```bash
-python3 -m power_forecasting.cli all --output artifacts/demo --days 60 --plants 3 --seed 42
+uv run python -m power_forecasting.cli all --output artifacts/demo --days 60 --plants 3 --seed 42
 ```
 
 ## CLI 예시
@@ -34,25 +33,25 @@ python3 -m power_forecasting.cli all --output artifacts/demo --days 60 --plants 
 결정론적 합성 데이터셋 생성:
 
 ```bash
-python3 -m power_forecasting.cli generate-data --output artifacts/demo --days 60 --plants 3 --seed 42
+uv run python -m power_forecasting.cli generate-data --output artifacts/demo --days 60 --plants 3 --seed 42
 ```
 
 기존 데이터셋으로 레거시 모델 평가:
 
 ```bash
-python3 -m power_forecasting.cli legacy --output artifacts/demo --dataset artifacts/demo/dataset.csv --folds 3
+uv run python -m power_forecasting.cli legacy --output artifacts/demo --dataset artifacts/demo/dataset.csv --folds 3
 ```
 
 AIDM 피처 탐색 실행 및 `experiments.db`, `promotion_manifest.json`, 보고서 생성:
 
 ```bash
-python3 -m power_forecasting.cli aidm --output artifacts/demo --dataset artifacts/demo/dataset.csv --folds 3 --seed 42
+uv run python -m power_forecasting.cli aidm --output artifacts/demo --dataset artifacts/demo/dataset.csv --folds 3 --seed 42
 ```
 
 에이전트 제안 JSON과 선택적 레거시 예측 CSV를 함께 비교:
 
 ```bash
-python3 -m power_forecasting.cli aidm \
+uv run python -m power_forecasting.cli aidm \
   --output artifacts/demo \
   --dataset artifacts/demo/dataset.csv \
   --proposal .agents/fixtures/research-proposal.json \
@@ -63,19 +62,19 @@ python3 -m power_forecasting.cli aidm \
 승격된 매니페스트에서 피처 모듈 생성:
 
 ```bash
-python3 -m power_forecasting.cli aidd --output artifacts/demo --manifest artifacts/demo/promotion_manifest.json
+uv run python -m power_forecasting.cli aidd --output artifacts/demo --manifest artifacts/demo/promotion_manifest.json
 ```
 
 전체 워크플로 실행:
 
 ```bash
-python3 -m power_forecasting.cli all --output artifacts/demo --days 60 --plants 3 --seed 42
+uv run python -m power_forecasting.cli all --output artifacts/demo --days 60 --plants 3 --seed 42
 ```
 
 실험에서는 선택적으로 게이트 임계값을 재정의할 수 있습니다.
 
 ```bash
-python3 -m power_forecasting.cli all --output artifacts/demo --minimum-improvement 0.01 --max-plant-regression 0.03
+uv run python -m power_forecasting.cli all --output artifacts/demo --minimum-improvement 0.01 --max-plant-regression 0.03
 ```
 
 운영 기본값은 최소 NMAE 개선율 `0.01` 및 발전소별 최대 NMAE 저하율 `0.03`입니다.
@@ -240,7 +239,7 @@ artifacts/demo/
 산출물을 생성한 뒤 대시보드를 실행합니다.
 
 ```bash
-streamlit run dashboard/app.py -- --artifacts artifacts/demo
+uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
 ```
 
 대시보드는 로컬 산출물을 읽어 승격 결정, 우승 지표, AIDM 순위, 실험 실행, 보고서 텍스트, 선택 피처 명세, 발견된 산출물 경로를 표시합니다.
@@ -275,14 +274,14 @@ release-gate 스킬로 baseline, AIDM, AIDD, compile, human approval 증거를 �
 기존 테스트 스위트를 사용합니다.
 
 ```bash
-python3 -m pytest -q
-python3 -m compileall -q src dashboard artifacts/demo/generated
+uv run python -m pytest -q
+uv run python -m compileall -q src dashboard artifacts/demo/generated
 ```
 
 종단 간 smoke test는 운영 CLI 경로를 실행합니다.
 
 ```bash
-python3 -m power_forecasting.cli all --output <tmp> --days 45 --plants 2 --seed 21
+uv run python -m power_forecasting.cli all --output <tmp> --days 45 --plants 2 --seed 21
 ```
 
 이 테스트는 승격 결정, 기본 `0.01`/`0.03` 게이트, 비어 있지 않은 선택 피처 명세, `generated/promoted_features.py`, 일정 수준 이상의 보고서를 확인합니다.
@@ -291,7 +290,7 @@ python3 -m power_forecasting.cli all --output <tmp> --days 45 --plants 2 --seed 
 
 <!-- readme-evidence-check: start -->
 ```bash
-OUTPUT_DIR="${OUTPUT_DIR:-artifacts/demo}" python3 - <<'PY'
+OUTPUT_DIR="${OUTPUT_DIR:-artifacts/demo}" uv run python - <<'PY'
 import json
 import math
 import os
@@ -317,7 +316,7 @@ PY
 - `ERROR: missing required columns` 또는 `invalid timestamps`: 고객 어댑터 출력이 데이터 계약을 충족하도록 수정합니다.
 - `ERROR: AIDM rejected promotion`: `promotion_manifest.json`, `failed_gates`, `experiments.db`, `performance_report.md`를 확인합니다. 후보가 개선율, 발전소별 저하율, 피처 가용성 게이트를 만족하지 않을 때 거부는 정상입니다.
 - `generated/promoted_features.py` 누락: 매니페스트가 거부되었거나 AIDD 검증에 실패한 것입니다. 워크플로는 안전한 승격이 확인되기 전까지 코드를 생성하지 않습니다.
-- Streamlit import 오류: `python3 -m pip install -e '.[dashboard]'`로 dashboard extra를 설치합니다.
+- Streamlit import 오류: `uv sync --extra dashboard`로 dashboard extra를 설치합니다.
 
 ## 레거시 외부 하니스(`.agents/`) 안전 사용
 
@@ -326,7 +325,7 @@ PY
 Fixture-first 순서:
 
 ```bash
-PYTHONPATH=.agents python3 -m harness.contract --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/fixture
+PYTHONPATH=.agents uv run python -m harness.contract --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/fixture
 .agents/scripts/run-legacy.sh --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/legacy
 .agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --run-dir .agents/runs/aidm --folds 1 --top-single-candidates 1
 cp .agents/fixtures/promoted-manifest.json .agents/runs/promotion/promotion_manifest.json

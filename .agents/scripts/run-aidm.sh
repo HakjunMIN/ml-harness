@@ -38,4 +38,4 @@ repo_root=$(cd "$script_dir/../.." && pwd -P)
 mkdir -p "$run_dir"
 export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
 cd "$repo_root"
-python3 -m power_forecasting.cli aidm --output "$run_dir" --dataset "$dataset" "${args[@]}"
+uv run python -m power_forecasting.cli aidm --output "$run_dir" --dataset "$dataset" "${args[@]}"
