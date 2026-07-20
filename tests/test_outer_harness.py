@@ -292,18 +292,29 @@ def test_verify_promotion_script_writes_evidence_only_after_success(tmp_path: Pa
 def test_verify_promotion_script_writes_model_recipe_patch_and_cleans_up_on_failure(tmp_path: Path) -> None:
     manifest = tmp_path / "promotion_manifest.json"
     payload = read_json(FIXTURES / "promoted-manifest.json")
-    payload["proposal"] = {
-        "schema_version": "1",
-        "proposal_id": "fixture-agentic-proposal",
-        "rationale": "Fixture proposal evidence.",
-    }
-    payload["winner"]["name"] = "ridge_low:hour"
-    payload["selected_model_recipe"] = {
+    selected_model_recipe = {
         "name": "ridge_low",
         "recipe": "ridge",
         "parameters": {"alpha": 1.0},
         "rationale": "Linear regularized baseline.",
     }
+    payload["proposal"] = {
+        "schema_version": "1",
+        "proposal_id": "fixture-agentic-proposal",
+        "rationale": "Fixture proposal evidence.",
+        "baseline": {"model": "SPOT"},
+        "feature_sets": [
+            {
+                "name": "hour",
+                "rationale": "Synthetic fixture prediction-time hour signal.",
+                "specs": payload["selected_specs"],
+            }
+        ],
+        "model_recipes": [selected_model_recipe],
+        "budget": {"max_evaluations": 1, "top_feature_groups": 1},
+    }
+    payload["winner"]["name"] = "ridge_low:hour"
+    payload["selected_model_recipe"] = selected_model_recipe
     manifest.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
     completed = subprocess.run(
