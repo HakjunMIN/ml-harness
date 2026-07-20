@@ -13,6 +13,8 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.validation import check_is_fitted
 
+from power_forecasting.data import parse_timestamps
+
 
 @dataclass(frozen=True)
 class ModelDefinition:
@@ -35,7 +37,7 @@ class ModelDefinition:
             )
 
 
-class PlantHourMeanRegressor(BaseEstimator, RegressorMixin):
+class PlantHourMeanRegressor(RegressorMixin, BaseEstimator):
     def fit(self, X: pd.DataFrame, y: Any) -> "PlantHourMeanRegressor":
         features = self._feature_frame(X)
         target = np.asarray(y, dtype=float)
@@ -85,9 +87,7 @@ class PlantHourMeanRegressor(BaseEstimator, RegressorMixin):
 
     @staticmethod
     def _hours(features: pd.DataFrame) -> np.ndarray:
-        timestamps = pd.to_datetime(features["timestamp"], errors="coerce")
-        if timestamps.isna().any():
-            raise ValueError("timestamp contains unparseable values")
+        timestamps = parse_timestamps(features["timestamp"])
         return timestamps.dt.hour.to_numpy(dtype=int)
 
 

@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.base import clone
 
-from power_forecasting.data import validate_dataset
+from power_forecasting.data import parse_timestamps, validate_dataset
 from power_forecasting.features import FeatureSpec, apply_feature_specs
 from power_forecasting.models import ModelDefinition
 
@@ -23,7 +23,7 @@ class EvaluationResult:
 
 def chronological_folds(
     frame: pd.DataFrame, folds: int = 3, minimum_train_fraction: float = 0.5
-) -> Iterable[tuple[pd.Index, pd.Index]]:
+) -> Iterable[tuple[np.ndarray, np.ndarray]]:
     if not isinstance(folds, int) or folds < 1:
         raise ValueError("folds must be a positive integer")
     if not 0.0 < minimum_train_fraction < 1.0:
@@ -31,8 +31,8 @@ def chronological_folds(
     if "timestamp" not in frame.columns:
         raise ValueError("timestamp column is required")
 
-    timestamps = _timestamp_series(frame)
-    unique_timestamps = pd.Index(sorted(timestamps.unique()))
+    timestamps = _timestamp_series(frame).to_numpy()
+    unique_timestamps = pd.Index(sorted(pd.unique(timestamps)))
     initial_train_count = math.ceil(len(unique_timestamps) * minimum_train_fraction)
     validation_timestamps = unique_timestamps[initial_train_count:]
     if initial_train_count < 1 or len(validation_timestamps) < folds:
@@ -41,10 +41,11 @@ def chronological_folds(
     for validation_block in np.array_split(validation_timestamps, folds):
         if len(validation_block) == 0:
             raise ValueError("insufficient timestamps for requested folds")
-        validation_start = validation_block[0]
+        validation_values = np.asarray(validation_block)
+        validation_start = validation_values[0]
         train_mask = timestamps < validation_start
-        validation_mask = timestamps.isin(validation_block)
-        yield frame.index[train_mask], frame.index[validation_mask]
+        validation_mask = np.isin(timestamps, validation_values)
+        yield np.flatnonzero(train_mask), np.flatnonzero(validation_mask)
 
 
 def compute_metrics(
@@ -87,8 +88,8 @@ def evaluate_model(
     for fold_number, (train_index, validation_index) in enumerate(
         chronological_folds(frame, folds=folds), start=1
     ):
-        train = frame.loc[train_index]
-        validation = frame.loc[validation_index]
+        train = frame.iloc[train_index]
+        validation = frame.iloc[validation_index]
         x_train = _feature_matrix(train, definition.base_features, specs)
         x_validation = _feature_matrix(validation, definition.base_features, specs)
         y_train = train["generation_mw"].to_numpy(dtype=float)
@@ -133,15 +134,7 @@ def evaluate_model(
 
 
 def _timestamp_series(frame: pd.DataFrame) -> pd.Series:
-    timestamp_format = None
-    if not pd.api.types.is_datetime64_any_dtype(frame["timestamp"]):
-        timestamp_format = "mixed"
-    timestamps = pd.to_datetime(
-        frame["timestamp"], errors="coerce", format=timestamp_format
-    )
-    if timestamps.isna().any():
-        raise ValueError("timestamp contains unparseable values")
-    return pd.Series(timestamps.to_numpy(), index=frame.index)
+    return parse_timestamps(frame["timestamp"])
 
 
 def _feature_matrix(

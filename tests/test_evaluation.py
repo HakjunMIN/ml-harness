@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pandas as pd
 import pytest
-from sklearn.base import BaseEstimator, RegressorMixin, clone
+from sklearn.base import BaseEstimator, RegressorMixin, clone, is_regressor
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
@@ -35,20 +35,69 @@ def test_chronological_folds_keep_timestamps_grouped_and_time_ordered():
     assert len(fold_pairs) == 3
     validation_timestamps = []
     for train_index, validation_index in fold_pairs:
-        train = frame.loc[train_index]
-        validation = frame.loc[validation_index]
+        train = frame.iloc[train_index]
+        validation = frame.iloc[validation_index]
 
         assert not train.empty
         assert not validation.empty
         assert train["timestamp"].max() < validation["timestamp"].min()
         assert set(train["timestamp"]).isdisjoint(set(validation["timestamp"]))
         for timestamp in validation["timestamp"].unique():
-            assert set(frame.index[frame["timestamp"] == timestamp]) <= set(validation_index)
+            expected_positions = set(
+                np.flatnonzero(frame["timestamp"].to_numpy() == timestamp)
+            )
+            assert expected_positions <= set(validation_index)
         validation_timestamps.extend(validation["timestamp"].unique())
 
     assert len(validation_timestamps) == len(set(validation_timestamps))
     expected_validation_timestamps = frame["timestamp"].drop_duplicates().iloc[12:].tolist()
     assert validation_timestamps == expected_validation_timestamps
+
+
+def test_chronological_folds_and_evaluation_use_positions_with_duplicate_index_labels():
+    frame = generate_synthetic_data(days=2, plants=2, seed=27)
+    frame.index = pd.Index(["duplicate"] * len(frame))
+    unique_timestamps = pd.Index(sorted(pd.to_datetime(frame["timestamp"]).unique()))
+    expected_validation_timestamps = unique_timestamps[
+        math.ceil(len(unique_timestamps) * 0.5) :
+    ]
+
+    fold_pairs = list(chronological_folds(frame, folds=2, minimum_train_fraction=0.5))
+
+    assert len(fold_pairs) == 2
+    validation_timestamps = []
+    validation_row_count = 0
+    for train_positions, validation_positions in fold_pairs:
+        assert np.issubdtype(np.asarray(train_positions).dtype, np.integer)
+        assert np.issubdtype(np.asarray(validation_positions).dtype, np.integer)
+        train = frame.iloc[train_positions]
+        validation = frame.iloc[validation_positions]
+
+        assert not train.empty
+        assert not validation.empty
+        assert train["timestamp"].max() < validation["timestamp"].min()
+        assert set(train["timestamp"]).isdisjoint(set(validation["timestamp"]))
+        assert len(validation) == len(validation["timestamp"].unique()) * 2
+        validation_timestamps.extend(validation["timestamp"].unique())
+        validation_row_count += len(validation)
+
+    assert len(validation_timestamps) == len(set(validation_timestamps))
+    assert validation_timestamps == list(expected_validation_timestamps)
+    assert validation_row_count == len(expected_validation_timestamps) * 2
+
+    result = evaluate_model(frame, model_definition("Mean"), feature_specs=[], folds=2)
+
+    assert len(result.predictions) == validation_row_count
+    expected_keys = frame[
+        pd.to_datetime(frame["timestamp"]).isin(expected_validation_timestamps)
+    ][["timestamp", "plant_id", "generation_mw"]].rename(
+        columns={"generation_mw": "actual"}
+    )
+    actual_keys = result.predictions[["timestamp", "plant_id", "actual"]]
+    pd.testing.assert_frame_equal(
+        actual_keys.reset_index(drop=True),
+        expected_keys.reset_index(drop=True),
+    )
 
 
 @pytest.mark.parametrize(
@@ -125,6 +174,24 @@ def test_mean_model_evaluation_returns_finite_metrics_and_bounded_predictions():
     ]
 
 
+def test_mean_model_evaluation_accepts_mixed_timestamp_formats():
+    frame = generate_synthetic_data(days=4, plants=2, seed=29)
+    formatters = (
+        lambda timestamp: timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        lambda timestamp: timestamp.strftime("%m/%d/%Y %H:%M"),
+        lambda timestamp: timestamp.isoformat(),
+    )
+    frame["timestamp"] = [
+        formatters[index % len(formatters)](timestamp)
+        for index, timestamp in enumerate(frame["timestamp"])
+    ]
+
+    result = evaluate_model(frame, model_definition("Mean"), feature_specs=[], folds=3)
+
+    assert len(result.predictions) > 0
+    assert np.isfinite(result.predictions["prediction"]).all()
+
+
 def test_plant_hour_mean_regressor_uses_plant_hour_and_fallback_means():
     estimator = PlantHourMeanRegressor()
     X = pd.DataFrame(
@@ -156,6 +223,10 @@ def test_plant_hour_mean_regressor_uses_plant_hour_and_fallback_means():
 
     np.testing.assert_allclose(predictions, [3.0, 14.0 / 3.0, 6.0])
     assert isinstance(clone(estimator), PlantHourMeanRegressor)
+
+
+def test_plant_hour_mean_regressor_is_recognized_by_sklearn_as_regressor():
+    assert is_regressor(PlantHourMeanRegressor())
 
 
 @pytest.mark.parametrize("name", ["Mean", "Weather", "ForecastWeather", "Ldaps", "SPOT"])

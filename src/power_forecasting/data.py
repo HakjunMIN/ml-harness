@@ -52,6 +52,22 @@ class DataContractError(ValueError):
     """Raised when a data frame violates the forecasting data contract."""
 
 
+def parse_timestamps(
+    values: pd.Series,
+    *,
+    error_message: str = "timestamp contains unparseable values",
+    error_type: type[Exception] = ValueError,
+) -> pd.Series:
+    timestamp_format = None
+    if not pd.api.types.is_datetime64_any_dtype(values):
+        timestamp_format = "mixed"
+    parsed = pd.to_datetime(values, errors="coerce", format=timestamp_format)
+    parsed_series = pd.Series(parsed.to_numpy(), index=getattr(values, "index", None))
+    if parsed_series.isna().any():
+        raise error_type(error_message)
+    return parsed_series
+
+
 def generate_synthetic_data(days: int, plants: int, seed: int) -> pd.DataFrame:
     if days <= 0:
         raise ValueError("days must be positive")
@@ -202,14 +218,11 @@ def validate_dataset(frame: pd.DataFrame) -> None:
             "invalid plant_id: must be non-empty, non-whitespace strings"
         )
 
-    timestamp_format = None
-    if not pd.api.types.is_datetime64_any_dtype(frame["timestamp"]):
-        timestamp_format = "mixed"
-    parsed_timestamps = pd.to_datetime(
-        frame["timestamp"], errors="coerce", format=timestamp_format
+    parsed_timestamps = parse_timestamps(
+        frame["timestamp"],
+        error_message="invalid timestamps: unparseable values",
+        error_type=DataContractError,
     )
-    if parsed_timestamps.isna().any():
-        raise DataContractError("invalid timestamps: unparseable values")
 
     keys = pd.DataFrame(
         {"plant_id": frame["plant_id"].to_numpy(), "timestamp": parsed_timestamps.to_numpy()}
