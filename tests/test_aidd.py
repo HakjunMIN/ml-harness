@@ -128,6 +128,31 @@ def test_valid_aidm_manifest_is_accepted_for_promotion_rendering(aidd_run_dir, m
     assert aidd.validate_promotion_manifest(result.manifest) == result.winner.specs
 
 
+def test_promotion_manifest_rejects_feature_inputs_outside_prediction_contract():
+    manifest = _valid_manifest(
+        [
+            FeatureSpec(
+                "effective_irradiance",
+                "effective_irradiance",
+                ("forecast_irradiance", "forecast_cloud_cover"),
+            )
+        ]
+    )
+    manifest["selected_specs"][0]["inputs"][1] = "definitely_not_a_contract_column"
+
+    with pytest.raises(
+        aidd.PromotionManifestError,
+        match=r"feature effective_irradiance: unavailable prediction input definitely_not_a_contract_column",
+    ):
+        aidd.validate_promotion_manifest(manifest)
+
+
+def test_canonical_aidm_selected_specs_are_accepted_by_prediction_contract():
+    specs = aidm.candidate_catalog()
+
+    assert aidd.validate_promotion_manifest(_valid_manifest(specs)) == specs
+
+
 @pytest.mark.parametrize(
     ("case_name", "mutate"),
     [

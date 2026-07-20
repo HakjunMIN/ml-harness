@@ -8,11 +8,18 @@ from typing import Any
 
 import pandas as pd
 
+from power_forecasting.data import REQUIRED_COLUMNS
 from power_forecasting.features import FeatureSpec, TRANSFORMS, apply_feature_specs
 
 
 class PromotionManifestError(ValueError):
     """Raised when an AIDM promotion manifest cannot be trusted for rendering."""
+
+
+_DATETIME_TRANSFORMS = frozenset({"cyclic_hour", "cyclic_day_of_year"})
+_NUMERIC_TRANSFORMS = frozenset(TRANSFORMS) - _DATETIME_TRANSFORMS
+_PREDICTION_TIME_PREFIXES = ("forecast_", "ldaps_")
+_NUMERIC_METADATA_INPUTS = frozenset({"capacity_mw", "latitude", "longitude"})
 
 
 def validate_promotion_manifest(manifest) -> tuple[FeatureSpec, ...]:
@@ -65,6 +72,7 @@ def _parse_specs(selected_specs: list[Any]) -> tuple[FeatureSpec, ...]:
                 f"feature {spec.name}: unknown transform {spec.transform}"
             )
         _reject_unavailable_inputs(spec)
+        _validate_prediction_time_inputs(spec)
         _validate_spec_without_source_existence(spec)
         _canonical_spec_dict(spec)
         parsed.append(spec)
@@ -113,6 +121,29 @@ def _reject_unavailable_inputs(spec: FeatureSpec) -> None:
             raise PromotionManifestError(
                 f"feature {spec.name}: unavailable actual input {source}"
             )
+
+
+def _validate_prediction_time_inputs(spec: FeatureSpec) -> None:
+    allowed = _prediction_time_inputs_for_transform(spec.transform)
+    for source in spec.inputs:
+        if source not in allowed:
+            raise PromotionManifestError(
+                f"feature {spec.name}: unavailable prediction input {source}"
+            )
+
+
+def _prediction_time_inputs_for_transform(transform: str) -> frozenset[str]:
+    required = frozenset(REQUIRED_COLUMNS)
+    if transform in _DATETIME_TRANSFORMS:
+        return frozenset(source for source in required if source == "timestamp")
+    if transform in _NUMERIC_TRANSFORMS:
+        return frozenset(
+            source
+            for source in required
+            if source.startswith(_PREDICTION_TIME_PREFIXES)
+            or source in _NUMERIC_METADATA_INPUTS
+        )
+    return frozenset()
 
 
 def _validate_spec_without_source_existence(spec: FeatureSpec) -> None:
