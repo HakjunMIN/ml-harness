@@ -1,1 +1,33 @@
 .worktrees/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and coverage caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build outputs and package metadata
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Local artifacts and generated run outputs
+artifacts/
+outputs/
+runs/
+run_outputs/
