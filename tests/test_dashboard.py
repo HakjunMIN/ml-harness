@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import ast
 import json
 import os
 import re
@@ -77,6 +78,70 @@ def test_load_dashboard_data_reads_manifest_report_and_experiment_runs(dashboard
     assert data["artifacts"]["generated_module"] == dashboard_root / "generated" / "promoted_features.py"
 
 
+def test_load_dashboard_data_derives_safe_candidate_ranking_from_completed_runs(dashboard_root):
+    best_run_id = _write_demo_artifacts(dashboard_root)
+    store = ExperimentStore(dashboard_root / "experiments.db")
+    worse_run_id = store.start_run(
+        "aidm-candidate-hour_cos",
+        {"candidate_name": "hour_cos", "folds": 1},
+    )
+    store.complete_run(
+        worse_run_id,
+        {"mae": 2.0, "rmse": 2.5, "nmae": 0.2},
+        {"summary": {"name": "hour_cos"}},
+    )
+    running_run_id = store.start_run(
+        "aidm-candidate-running",
+        {"candidate_name": "running", "folds": 1},
+    )
+    module = importlib.import_module("dashboard.app")
+
+    data = module.load_dashboard_data(dashboard_root)
+
+    assert data["candidate_ranking"] == [
+        {
+            "rank": 1,
+            "candidate": "hour_sin",
+            "run_id": best_run_id,
+            "mae": 1.0,
+            "rmse": None,
+            "nmae": 0.1,
+            "source": "experiment",
+        },
+        {
+            "rank": 2,
+            "candidate": "hour_cos",
+            "run_id": worse_run_id,
+            "mae": 2.0,
+            "rmse": 2.5,
+            "nmae": 0.2,
+            "source": "experiment",
+        },
+    ]
+    assert running_run_id not in {row["run_id"] for row in data["candidate_ranking"]}
+    assert all(_is_safe_table_value(value) for row in data["candidate_ranking"] for value in row.values())
+
+
+def test_load_dashboard_data_uses_manifest_winner_when_experiment_db_absent(dashboard_root):
+    _write_demo_artifacts(dashboard_root)
+    (dashboard_root / "experiments.db").unlink()
+    module = importlib.import_module("dashboard.app")
+
+    data = module.load_dashboard_data(dashboard_root)
+
+    assert data["candidate_ranking"] == [
+        {
+            "rank": 1,
+            "candidate": "hour_sin",
+            "run_id": "winner-run",
+            "mae": 1.0,
+            "rmse": 1.2,
+            "nmae": 0.1,
+            "source": "manifest",
+        }
+    ]
+
+
 def test_load_dashboard_data_raises_clear_missing_root_and_manifest_errors(dashboard_root):
     module = importlib.import_module("dashboard.app")
     missing_root = dashboard_root / "missing"
@@ -89,12 +154,44 @@ def test_load_dashboard_data_raises_clear_missing_root_and_manifest_errors(dashb
         module.load_dashboard_data(dashboard_root)
 
 
+def test_load_dashboard_data_rejects_artifact_root_file(dashboard_root):
+    module = importlib.import_module("dashboard.app")
+    file_root = dashboard_root / "artifact-file"
+    file_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(NotADirectoryError, match=f"artifact root is not a directory: {re.escape(str(file_root))}"):
+        module.load_dashboard_data(file_root)
+
+
+def test_load_dashboard_data_invalid_manifest_json_includes_path_context(dashboard_root):
+    module = importlib.import_module("dashboard.app")
+    (dashboard_root / "promotion_manifest.json").write_text("{not-valid-json", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError) as excinfo:
+        module.load_dashboard_data(dashboard_root)
+
+    assert str(dashboard_root / "promotion_manifest.json") in str(excinfo.value)
+
+
 def test_dashboard_help_subprocess_works_without_streamlit():
     result = _run_dashboard("--help")
 
     assert result.returncode == 0
     assert "--artifacts" in result.stdout
     assert "Streamlit" not in result.stderr
+
+
+def test_main_uses_default_artifacts_path_when_argument_is_omitted(monkeypatch):
+    module = importlib.import_module("dashboard.app")
+    called_with = []
+
+    def fake_run_dashboard(root):
+        called_with.append(root)
+
+    monkeypatch.setattr(module, "run_dashboard", fake_run_dashboard)
+
+    assert module.main([]) == 0
+    assert called_with == [Path("artifacts/demo")]
 
 
 def test_main_returns_two_with_precise_error_for_missing_artifacts(capsys, dashboard_root):
@@ -142,8 +239,40 @@ def test_run_dashboard_renders_expected_sections_without_unsafe_html(
     assert ("title", "Power Forecasting Demo Dashboard") in fake_streamlit.calls
     assert any(call[0] == "metric" and call[1] == "Promotion decision" for call in fake_streamlit.calls)
     assert any(call[0] in {"dataframe", "table"} for call in fake_streamlit.calls)
+    assert ("subheader", "AIDM candidate ranking") in fake_streamlit.calls
+    assert any(
+        call[0] in {"dataframe", "table"}
+        and call[1]
+        and call[1][0]["candidate"] == "hour_sin"
+        for call in fake_streamlit.calls
+    )
     assert any(call[0] == "markdown" and "Performance report" in call[1] for call in fake_streamlit.calls)
     assert all(call[2].get("unsafe_allow_html") is not True for call in fake_streamlit.calls if call[0] == "markdown")
+
+
+def test_dashboard_source_does_not_start_server_or_allow_unsafe_html():
+    source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    forbidden_calls = {
+        "os.system",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "subprocess.Popen",
+        "subprocess.run",
+        "streamlit.bootstrap.run",
+        "streamlit.cli.main",
+        "streamlit.web.bootstrap.run",
+        "streamlit.web.cli.main",
+    }
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            call_name = _call_name(node.func)
+            assert call_name not in forbidden_calls
+            assert all(keyword.arg != "unsafe_allow_html" for keyword in node.keywords)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            assert "streamlit run" not in node.value.lower()
 
 
 def _run_dashboard(*args):
@@ -181,6 +310,19 @@ def _write_demo_artifacts(root: Path) -> str:
     run_id = store.start_run("aidm-candidate-hour_sin", {"folds": 1})
     store.complete_run(run_id, {"nmae": 0.1, "mae": 1.0}, {"summary": {"candidate": "hour_sin"}})
     return run_id
+
+
+def _is_safe_table_value(value):
+    return value is None or isinstance(value, (str, int, float))
+
+
+def _call_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _call_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return None
 
 
 def _manifest() -> dict:

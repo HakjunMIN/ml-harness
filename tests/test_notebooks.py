@@ -12,6 +12,7 @@ EXPECTED_NOTEBOOKS = (
     "02_aidm_feature_discovery.ipynb",
     "03_aidd_promotion.ipynb",
 )
+ALLOWED_CELL_TYPES = {"code", "markdown", "raw"}
 
 
 def test_expected_notebooks_exist_with_no_extras():
@@ -22,6 +23,7 @@ def test_notebooks_are_minimal_valid_nbformat_workflow_demos():
     for name in EXPECTED_NOTEBOOKS:
         notebook = _read_notebook(NOTEBOOK_DIR / name)
 
+        _assert_valid_nbformat4_notebook(notebook, name)
         assert notebook["nbformat"] == 4
         assert isinstance(notebook.get("nbformat_minor"), int)
         if notebook["nbformat_minor"] >= 5:
@@ -73,6 +75,29 @@ def _notebook_code(path: Path) -> str:
     return "\n".join(
         _source(cell) for cell in notebook["cells"] if cell.get("cell_type") == "code"
     )
+
+
+def _assert_valid_nbformat4_notebook(notebook: dict, name: str) -> None:
+    assert isinstance(notebook, dict), name
+    assert isinstance(notebook.get("cells"), list), name
+    assert isinstance(notebook.get("metadata"), dict), name
+    assert isinstance(notebook.get("nbformat"), int), name
+    assert isinstance(notebook.get("nbformat_minor"), int), name
+
+    for index, cell in enumerate(notebook["cells"]):
+        label = f"{name} cell {index}"
+        assert isinstance(cell, dict), label
+        assert cell.get("cell_type") in ALLOWED_CELL_TYPES, label
+        assert isinstance(cell.get("metadata"), dict), label
+        assert isinstance(cell.get("source"), (str, list)), label
+        if isinstance(cell.get("source"), list):
+            assert all(isinstance(line, str) for line in cell["source"]), label
+
+        if cell["cell_type"] == "code":
+            execution_count = cell.get("execution_count")
+            assert execution_count is None or isinstance(execution_count, int), label
+            assert isinstance(cell.get("outputs"), list), label
+            assert all(isinstance(output, dict) for output in cell["outputs"]), label
 
 
 def _source(cell: dict) -> str:
