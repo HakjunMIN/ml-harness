@@ -31,7 +31,7 @@ def validate_promotion_manifest(manifest) -> tuple[FeatureSpec, ...]:
         return specs
     except PromotionManifestError:
         raise
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
         raise PromotionManifestError(str(exc) or exc.__class__.__name__) from exc
 
 
@@ -93,7 +93,10 @@ def _validate_primitive_value(label: str, value: Any) -> None:
         for index, item in enumerate(value):
             _validate_primitive_value(f"{label}[{index}]", item)
         return
-    if value is None or type(value) in {str, bool, int, float}:
+    if value is None or type(value) in {str, bool}:
+        return
+    if type(value) in {int, float}:
+        _finite_number(label, value)
         return
     raise PromotionManifestError(
         f"{label} must contain primitive literal values, got {type(value).__name__}"
@@ -122,7 +125,7 @@ def _validate_spec_without_source_existence(spec: FeatureSpec) -> None:
         frame = pd.DataFrame(index=[0])
     try:
         apply_feature_specs(frame, [spec])
-    except ValueError as exc:
+    except (ValueError, OverflowError) as exc:
         raise PromotionManifestError(str(exc)) from exc
 
 
@@ -130,7 +133,10 @@ def _dummy_value_for_transform(spec: FeatureSpec, position: int) -> Any:
     if spec.transform in {"cyclic_hour", "cyclic_day_of_year"}:
         return pd.Timestamp("2024-01-01 12:00:00")
     if spec.transform == "ratio" and position == 1:
-        epsilon = _finite_float("ratio epsilon", spec.parameters.get("epsilon", 1e-6))
+        epsilon = _finite_float(
+            f"feature {spec.name}: parameter epsilon",
+            spec.parameters.get("epsilon", 1e-6),
+        )
         denominator = math.nextafter(epsilon, math.inf)
         if not math.isfinite(denominator) or denominator <= epsilon:
             raise PromotionManifestError("ratio epsilon is too large for validation")
@@ -164,8 +170,6 @@ def _validate_provenance(
         raise PromotionManifestError("winner.name does not match selected_specs")
 
     baseline_metrics = _metrics(_require_mapping(baseline, "metrics"), "baseline.metrics")
-    if baseline_metrics["nmae"] < 0:
-        raise PromotionManifestError("baseline.metrics.nmae must be non-negative")
     winner_metrics = _metrics(_require_mapping(winner, "metrics"), "winner.metrics")
     minimum_improvement = _finite_number(
         "thresholds.minimum_improvement",
@@ -207,7 +211,11 @@ def _metrics(metrics: Mapping[str, Any], label: str) -> dict[str, float]:
     for key, value in metrics.items():
         if type(key) is not str or not key:
             raise PromotionManifestError(f"{label} keys must be non-empty strings")
-        normalized[key.lower()] = _finite_float(f"{label}.{key}", value)
+        metric_name = key.lower()
+        number = _finite_float(f"{label}.{key}", value)
+        if metric_name in {"mae", "rmse", "nmae"} and number < 0:
+            raise PromotionManifestError(f"{label}.{key} must be non-negative")
+        normalized[metric_name] = number
     if "nmae" not in normalized:
         raise PromotionManifestError(f"{label} must include nmae")
     return normalized
@@ -283,6 +291,8 @@ def _finite_float(label: str, value: Any) -> float:
         raise PromotionManifestError(f"{label} must be numeric")
     try:
         number = float(value)
+    except OverflowError as exc:
+        raise PromotionManifestError(f"{label} must be finite") from exc
     except (TypeError, ValueError) as exc:
         raise PromotionManifestError(f"{label} must be numeric") from exc
     if not math.isfinite(number):

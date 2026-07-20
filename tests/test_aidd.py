@@ -311,6 +311,89 @@ def test_promotion_manifest_rejects_nonfinite_or_negative_baseline_nmae(
         aidd.validate_promotion_manifest(manifest)
 
 
+def test_promotion_manifest_rejects_negative_winner_nmae_with_field_context():
+    manifest = _valid_manifest()
+    manifest["winner"]["metrics"]["nmae"] = -0.001
+    manifest["improvement_ratio"] = 1.005
+
+    with pytest.raises(aidd.PromotionManifestError, match=r"winner\.metrics\.nmae"):
+        aidd.validate_promotion_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("case_name", "section", "metric_name"),
+    [
+        ("baseline_mae", "baseline", "MAE"),
+        ("winner_rmse", "winner", "RMSE"),
+    ],
+    ids=lambda item: item if isinstance(item, str) else None,
+)
+def test_promotion_manifest_rejects_negative_named_error_metrics(
+    case_name, section, metric_name
+):
+    manifest = _valid_manifest()
+    manifest[section]["metrics"][metric_name] = -0.001
+
+    with pytest.raises(
+        aidd.PromotionManifestError,
+        match=rf"{section}\.metrics\.{metric_name}",
+    ):
+        aidd.validate_promotion_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("case_name", "mutate", "match"),
+    [
+        (
+            "improvement_ratio",
+            lambda manifest: {**manifest, "improvement_ratio": 10**1000},
+            r"improvement_ratio",
+        ),
+        (
+            "winner_metric",
+            lambda manifest: {
+                **manifest,
+                "winner": {
+                    **manifest["winner"],
+                    "metrics": {**manifest["winner"]["metrics"], "nmae": 10**1000},
+                },
+            },
+            r"winner\.metrics\.nmae",
+        ),
+        (
+            "per_plant_delta",
+            lambda manifest: {
+                **manifest,
+                "per_plant_deltas": {"plant_01": 10**1000},
+            },
+            r"per_plant_deltas\.plant_01",
+        ),
+        (
+            "ratio_epsilon",
+            lambda manifest: _valid_manifest(
+                [
+                    FeatureSpec(
+                        "irradiance_cloud_ratio",
+                        "ratio",
+                        ("forecast_irradiance", "forecast_cloud_cover"),
+                        {"epsilon": 10**1000},
+                    )
+                ]
+            ),
+            r"feature irradiance_cloud_ratio: parameter epsilon",
+        ),
+    ],
+    ids=lambda item: item if isinstance(item, str) else None,
+)
+def test_promotion_manifest_wraps_huge_integer_numeric_fields_with_context(
+    case_name, mutate, match
+):
+    manifest = mutate(_valid_manifest())
+
+    with pytest.raises(aidd.PromotionManifestError, match=match):
+        aidd.validate_promotion_manifest(manifest)
+
+
 @pytest.mark.parametrize(
     ("case_name", "field", "value"),
     [
