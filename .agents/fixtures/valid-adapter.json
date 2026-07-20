@@ -1,0 +1,16 @@
+{
+  "input_dataset": "valid-dataset.csv",
+  "legacy_command": [
+    "python3",
+    "legacy_fixture.py",
+    "valid"
+  ],
+  "predictions_output": "generated/predictions.csv",
+  "required_prediction_columns": [
+    "plant_id",
+    "timestamp",
+    "prediction_mw"
+  ],
+  "schema_version": "1",
+  "timeout_seconds": 30
+}

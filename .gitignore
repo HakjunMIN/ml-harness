@@ -37,3 +37,6 @@ artifacts/demo/generated/*
 outputs/
 runs/
 run_outputs/
+# Local agent harness outputs
+.agents/runs/
+.agents/output/

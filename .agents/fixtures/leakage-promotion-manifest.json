@@ -1,0 +1,40 @@
+{
+  "baseline": {
+    "metrics": {
+      "nmae": 0.2
+    },
+    "model": "SPOT",
+    "run_id": "baseline-fixture"
+  },
+  "decision": "promote",
+  "failed_gates": [],
+  "improvement_ratio": 0.5,
+  "per_plant_deltas": {
+    "plant-a": -0.1
+  },
+  "schema_version": "1",
+  "seed": 7,
+  "selected_specs": [
+    {
+      "inputs": [
+        "generation_mw"
+      ],
+      "name": "leaked_generation",
+      "parameters": {},
+      "rationale": "Invalid leakage fixture.",
+      "transform": "cloud_attenuation",
+      "version": "1"
+    }
+  ],
+  "thresholds": {
+    "max_plant_regression": 1.0,
+    "minimum_improvement": 0.0
+  },
+  "winner": {
+    "metrics": {
+      "nmae": 0.1
+    },
+    "name": "leaked_generation",
+    "run_id": "winner-fixture"
+  }
+}
