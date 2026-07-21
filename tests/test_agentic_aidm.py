@@ -176,10 +176,10 @@ def test_lightgbm_optuna_search_selects_best_trial_with_deterministic_provenance
 
     assert optuna_state["sampler_seeds"] == [7]
     assert optuna_state["pruners"] == ["NopPruner"]
-    assert result.ranking == ("optuna_lightgbm_1:safe_solar", "ridge_low:safe_solar")
-    assert result.winner.name == "optuna_lightgbm_1:safe_solar"
+    assert result.ranking == ("selected_lightgbm:safe_solar", "ridge_low:safe_solar")
+    assert result.winner.name == "selected_lightgbm:safe_solar"
     assert result.winner.model_recipe == {
-        "name": "optuna_lightgbm_1",
+        "name": "selected_lightgbm",
         "recipe": "lightgbm",
         "parameters": {
             "n_estimators": 300,
@@ -187,13 +187,14 @@ def test_lightgbm_optuna_search_selects_best_trial_with_deterministic_provenance
             "num_leaves": 31,
             "min_child_samples": 20,
         },
-        "rationale": "Optuna TPE trial 1 for bounded LightGBM search.",
+        "rationale": "Selected bounded LightGBM parameters from Optuna TPE trial 1.",
         "search": {
             "sampler": "tpe",
             "seed": 7,
             "n_trials": 2,
             "space": proposal["search"]["spaces"]["lightgbm"],
-            "trial_number": 1,
+            "selected_trial_number": 1,
+            "selected_trial_candidate_name": "optuna_lightgbm_1:safe_solar",
             "feature_set": "safe_solar",
         },
     }
@@ -214,11 +215,22 @@ def test_lightgbm_optuna_search_selects_best_trial_with_deterministic_provenance
         "trial_number": 1,
         "feature_set": "safe_solar",
     }
-    assert trial_runs[1]["params"]["model_recipe"] == result.winner.model_recipe
-    assert trial_runs[1]["artifacts"]["summary"]["model_recipe"] == result.winner.model_recipe
+    assert trial_runs[1]["params"]["model_recipe"]["search"]["trial_number"] == 1
+    selected_runs = [run for run in runs if run["name"] == "aidm-selected-lightgbm-safe_solar"]
+    assert len(selected_runs) == 1
+    assert selected_runs[0]["params"]["model_recipe"] == result.winner.model_recipe
+    assert selected_runs[0]["params"]["search"] == result.winner.model_recipe["search"]
+    assert selected_runs[0]["artifacts"]["selected_from_trial"] == {
+        "trial_number": 1,
+        "candidate_name": "optuna_lightgbm_1:safe_solar",
+        "run_id": trial_runs[1]["id"],
+    }
+    assert result.winner.run_id == selected_runs[0]["id"]
     assert calls[0][0] == "Recipe:ridge:ridge_low"
     assert calls[1][0] == "Recipe:lightgbm:optuna_lightgbm_0"
     assert calls[2][0] == "Recipe:lightgbm:optuna_lightgbm_1"
+    assert calls[3][0] == "Recipe:lightgbm:selected_lightgbm"
+    assert calls[3][1] == calls[2][1]
 
 
 def test_lightgbm_optuna_search_reuses_duplicate_resolved_parameters(agentic_db_path, monkeypatch):
@@ -271,9 +283,17 @@ def test_lightgbm_optuna_search_reuses_duplicate_resolved_parameters(agentic_db_
             15,
             10,
             ("effective_irradiance",),
-        )
+        ),
+        (
+            "Recipe:lightgbm:selected_lightgbm",
+            100,
+            0.03,
+            15,
+            10,
+            ("effective_irradiance",),
+        ),
     ]
-    assert result.winner.name == "optuna_lightgbm_0:safe_solar"
+    assert result.winner.name == "selected_lightgbm:safe_solar"
 
     store = ExperimentStore(agentic_db_path)
     trial_runs = [
@@ -281,17 +301,16 @@ def test_lightgbm_optuna_search_reuses_duplicate_resolved_parameters(agentic_db_
         for run in store.list_runs()
         if run["name"].startswith("aidm-optuna-lightgbm")
     ]
-    assert len(trial_runs) == 1
-    actual_run = trial_runs[0]
-    assert result.winner.run_id == actual_run["id"]
-    assert actual_run["artifacts"]["reused_trials"] == [
-        {
-            "trial_number": 1,
-            "source_trial_number": 0,
-            "source_run_id": actual_run["id"],
-            "source_candidate_name": "optuna_lightgbm_0:safe_solar",
-        }
+    assert [run["name"] for run in sorted(trial_runs, key=lambda run: run["name"])] == [
+        "aidm-optuna-lightgbm-safe_solar-trial-0",
+        "aidm-optuna-lightgbm-safe_solar-trial-1",
     ]
+    actual_run = next(run for run in trial_runs if run["name"].endswith("trial-0"))
+    reused_run = next(run for run in trial_runs if run["name"].endswith("trial-1"))
+    assert reused_run["metrics"] == actual_run["metrics"]
+    assert reused_run["params"]["model_recipe"]["search"]["trial_number"] == 1
+    assert reused_run["artifacts"]["reused_from_run_id"] == actual_run["id"]
+    assert reused_run["artifacts"]["reused_from_trial_number"] == 0
 
 
 def test_search_budget_fails_before_baseline_or_store_creation(agentic_db_path, monkeypatch):
@@ -378,7 +397,7 @@ def test_legacy_gate_still_applies_to_search_winner(agentic_db_path, monkeypatch
         legacy_predictions=legacy,
     )
 
-    assert result.winner.name == "optuna_lightgbm_0:safe_solar"
+    assert result.winner.name == "selected_lightgbm:safe_solar"
     assert result.manifest["decision"] == "reject"
     assert result.manifest["failed_gates"] == [
         "legacy_regression:winner_nmae=0.100000>legacy_nmae=0.000000"

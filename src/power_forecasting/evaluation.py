@@ -52,6 +52,18 @@ def compute_metrics(
     actual: Sequence[float],
     prediction: Sequence[float],
     capacity_mw: Sequence[float],
+    *,
+    undefined_r2: str = "raise",
+) -> dict[str, float]:
+    return _compute_metrics(actual, prediction, capacity_mw, undefined_r2=undefined_r2)
+
+
+def _compute_metrics(
+    actual: Sequence[float],
+    prediction: Sequence[float],
+    capacity_mw: Sequence[float],
+    *,
+    undefined_r2: str,
 ) -> dict[str, float]:
     actual_values = _finite_1d("actual", actual)
     prediction_values = _finite_1d("prediction", prediction)
@@ -69,13 +81,19 @@ def compute_metrics(
     absolute_error = np.abs(error)
     total_sum_squares = float(np.sum(np.square(actual_values - np.mean(actual_values))))
     residual_sum_squares = float(np.sum(np.square(error)))
-    r2 = 0.0 if total_sum_squares == 0.0 else 1.0 - residual_sum_squares / total_sum_squares
-    return {
+    metrics = {
         "MAE": float(np.mean(absolute_error)),
         "RMSE": float(np.sqrt(np.mean(np.square(error)))),
         "NMAE": float(np.sum(absolute_error) / denominator),
-        "R2": float(r2),
     }
+    if total_sum_squares == 0.0:
+        if undefined_r2 == "raise":
+            raise ValueError("R2 is undefined for constant actual targets")
+        if undefined_r2 == "omit":
+            return metrics
+        raise ValueError("undefined_r2 must be 'raise' or 'omit'")
+    metrics["R2"] = float(1.0 - residual_sum_squares / total_sum_squares)
+    return metrics
 
 
 def evaluate_model(
@@ -129,8 +147,8 @@ def evaluate_model(
         predictions["actual"], predictions["prediction"], predictions["capacity_mw"]
     )
     per_plant = {
-        str(plant_id): compute_metrics(
-            group["actual"], group["prediction"], group["capacity_mw"]
+        str(plant_id): _compute_metrics(
+            group["actual"], group["prediction"], group["capacity_mw"], undefined_r2="omit"
         )
         for plant_id, group in predictions.groupby("plant_id", sort=True)
     }

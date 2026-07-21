@@ -422,9 +422,14 @@ def _validate_agentic_model_recipe_binding(
             feature_set_name=feature_set_name,
             selected_recipe=selected_recipe,
         )
-        expected_name = f"optuna_lightgbm_{search.get('trial_number')}"
-        if selected_recipe["name"] != expected_name:
-            raise PromotionManifestError("selected_model_recipe search trial_number does not match name")
+        if _is_selected_lightgbm_name(selected_recipe["name"]):
+            expected_candidate = f"optuna_lightgbm_{search.get('selected_trial_number')}:{feature_set_name}"
+            if search.get("selected_trial_candidate_name") != expected_candidate:
+                raise PromotionManifestError("selected_model_recipe search selected trial does not match feature set")
+        else:
+            expected_name = f"optuna_lightgbm_{search.get('trial_number')}"
+            if selected_recipe["name"] != expected_name:
+                raise PromotionManifestError("selected_model_recipe search trial_number does not match name")
         return
 
     if selected_recipe not in model_recipes:
@@ -616,7 +621,8 @@ def _validate_optuna_search_provenance(
         "sampler": _require_nonblank_string(proposal_search, "sampler", "proposal.search.sampler"),
         "seed": _strict_int("proposal.search.seed", proposal_search["seed"]) + feature_set_index,
         "space": proposal_lightgbm_space,
-        "trial_number": selected_search["trial_number"],
+        "selected_trial_candidate_name": selected_search["selected_trial_candidate_name"],
+        "selected_trial_number": selected_search["selected_trial_number"],
     }
     if selected_space != proposal_lightgbm_space:
         raise PromotionManifestError("selected_model_recipe search space does not match proposal.search")
@@ -638,16 +644,30 @@ def _is_optuna_lightgbm_recipe(recipe: Mapping[str, Any]) -> bool:
 
 
 def _is_optuna_lightgbm_name(name: Any) -> bool:
+    if _is_selected_lightgbm_name(name):
+        return True
     if type(name) is not str or not name.startswith("optuna_lightgbm_"):
         return False
     suffix = name.removeprefix("optuna_lightgbm_")
     return suffix.isdecimal()
 
 
+def _is_selected_lightgbm_name(name: Any) -> bool:
+    return name == "selected_lightgbm"
+
+
 def _canonical_optuna_lightgbm_search(search: Mapping[str, Any]) -> dict[str, Any]:
     _require_exact_keys(
         search,
-        {"sampler", "seed", "n_trials", "space", "trial_number", "feature_set"},
+        {
+            "sampler",
+            "seed",
+            "n_trials",
+            "space",
+            "selected_trial_number",
+            "selected_trial_candidate_name",
+            "feature_set",
+        },
         "selected_model_recipe.search",
     )
     sampler = _require_nonblank_string(search, "sampler", "selected_model_recipe.search.sampler")
@@ -655,13 +675,25 @@ def _canonical_optuna_lightgbm_search(search: Mapping[str, Any]) -> dict[str, An
         raise PromotionManifestError("selected_model_recipe.search.sampler must be exactly 'tpe'")
     seed = _strict_int("selected_model_recipe.search.seed", search["seed"])
     n_trials = _strict_int("selected_model_recipe.search.n_trials", search["n_trials"])
-    trial_number = _strict_int("selected_model_recipe.search.trial_number", search["trial_number"])
+    selected_trial_number = _strict_int(
+        "selected_model_recipe.search.selected_trial_number",
+        search["selected_trial_number"],
+    )
     if seed < 0:
         raise PromotionManifestError("selected_model_recipe.search.seed must be >= 0")
     if not 1 <= n_trials <= 50:
         raise PromotionManifestError("selected_model_recipe.search.n_trials must be 1..50")
-    if not 0 <= trial_number < n_trials:
-        raise PromotionManifestError("selected_model_recipe.search.trial_number outside n_trials")
+    if not 0 <= selected_trial_number < n_trials:
+        raise PromotionManifestError("selected_model_recipe.search.selected_trial_number outside n_trials")
+    selected_trial_candidate_name = _require_nonblank_string(
+        search,
+        "selected_trial_candidate_name",
+        "selected_model_recipe.search.selected_trial_candidate_name",
+    )
+    _reject_unsafe_string(
+        "selected_model_recipe.search.selected_trial_candidate_name",
+        selected_trial_candidate_name,
+    )
     feature_set = _require_nonblank_string(
         search, "feature_set", "selected_model_recipe.search.feature_set"
     )
@@ -672,7 +704,8 @@ def _canonical_optuna_lightgbm_search(search: Mapping[str, Any]) -> dict[str, An
         "sampler": sampler,
         "seed": seed,
         "space": _canonical_lightgbm_search_space(_require_mapping(search, "space")),
-        "trial_number": trial_number,
+        "selected_trial_candidate_name": selected_trial_candidate_name,
+        "selected_trial_number": selected_trial_number,
     }
 
 

@@ -172,7 +172,7 @@ def test_render_model_recipe_patch_accepts_valid_optuna_search_manifest(aidd_pat
     aidd.render_model_recipe_patch(manifest, target)
 
     payload = json.loads(target.read_text(encoding="utf-8"))
-    assert payload["evidence"]["winner_name"] == "optuna_lightgbm_0:safe_solar"
+    assert payload["evidence"]["winner_name"] == "selected_lightgbm:safe_solar"
     assert payload["selected_model_recipe"] == manifest["selected_model_recipe"]
 
 
@@ -211,7 +211,7 @@ def test_render_model_recipe_patch_rejects_optuna_winner_feature_set_mismatch(ai
     manifest = _optuna_search_manifest()
     manifest["winner"] = {
         **manifest["winner"],
-        "name": "optuna_lightgbm_0:alternative_solar",
+        "name": "selected_lightgbm:alternative_solar",
     }
     target = aidd_patch_dir / "model-recipe-patch.json"
 
@@ -342,7 +342,8 @@ def _optuna_search_manifest():
             "num_leaves": [15],
             "min_child_samples": [10],
         },
-        "trial_number": 0,
+        "selected_trial_number": 0,
+        "selected_trial_candidate_name": "optuna_lightgbm_0:safe_solar",
         "feature_set": "safe_solar",
     }
     return {
@@ -360,10 +361,10 @@ def _optuna_search_manifest():
         },
         "winner": {
             **manifest["winner"],
-            "name": "optuna_lightgbm_0:safe_solar",
+            "name": "selected_lightgbm:safe_solar",
         },
         "selected_model_recipe": {
-            "name": "optuna_lightgbm_0",
+            "name": "selected_lightgbm",
             "recipe": "lightgbm",
             "parameters": {
                 "n_estimators": 100,
@@ -371,7 +372,7 @@ def _optuna_search_manifest():
                 "num_leaves": 15,
                 "min_child_samples": 10,
             },
-            "rationale": "Optuna TPE trial 0 for bounded LightGBM search.",
+            "rationale": "Selected bounded LightGBM parameters from Optuna TPE trial 0.",
             "search": search,
         },
     }

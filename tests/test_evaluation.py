@@ -137,7 +137,7 @@ def test_compute_metrics_matches_hand_calculated_values():
     }
 
 
-def test_compute_metrics_reports_r2_and_returns_zero_for_constant_actuals():
+def test_compute_metrics_reports_r2_and_rejects_constant_actuals():
     perfect = compute_metrics(
         actual=[1.0, 2.0, 3.0],
         prediction=[1.0, 2.0, 3.0],
@@ -148,15 +148,27 @@ def test_compute_metrics_reports_r2_and_returns_zero_for_constant_actuals():
         prediction=[3.0, 2.0, 1.0],
         capacity_mw=[10.0, 10.0, 10.0],
     )
-    constant = compute_metrics(
-        actual=[5.0, 5.0, 5.0],
-        prediction=[5.0, 4.0, 6.0],
-        capacity_mw=[10.0, 10.0, 10.0],
-    )
-
     assert perfect["R2"] == pytest.approx(1.0)
     assert bad["R2"] == pytest.approx(-3.0)
-    assert constant["R2"] == 0.0
+    with pytest.raises(ValueError, match="R2 is undefined for constant actual targets"):
+        compute_metrics(
+            actual=[5.0, 5.0, 5.0],
+            prediction=[5.0, 4.0, 6.0],
+            capacity_mw=[10.0, 10.0, 10.0],
+        )
+
+
+def test_evaluate_model_omits_per_plant_r2_when_only_plant_targets_are_constant():
+    frame = generate_synthetic_data(days=4, plants=2, seed=31)
+    frame.loc[frame["plant_id"] == "plant_01", "generation_mw"] = 5.0
+    frame.loc[frame["plant_id"] == "plant_02", "generation_mw"] = 15.0
+
+    result = evaluate_model(frame, model_definition("Mean"), feature_specs=[], folds=2)
+
+    assert set(result.metrics) == {"MAE", "RMSE", "NMAE", "R2"}
+    assert set(result.per_plant) == {"plant_01", "plant_02"}
+    assert set(result.per_plant["plant_01"]) == {"MAE", "RMSE", "NMAE"}
+    assert set(result.per_plant["plant_02"]) == {"MAE", "RMSE", "NMAE"}
 
 
 @pytest.mark.parametrize(
