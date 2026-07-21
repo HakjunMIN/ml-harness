@@ -195,6 +195,12 @@ def test_lightgbm_optuna_search_selects_best_trial_with_deterministic_provenance
             "space": proposal["search"]["spaces"]["lightgbm"],
             "selected_trial_number": 1,
             "selected_trial_candidate_name": "optuna_lightgbm_1:safe_solar",
+            "selected_trial_parameters": {
+                "n_estimators": 300,
+                "learning_rate": 0.1,
+                "num_leaves": 31,
+                "min_child_samples": 20,
+            },
             "feature_set": "safe_solar",
         },
     }

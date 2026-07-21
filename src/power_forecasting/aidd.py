@@ -623,6 +623,7 @@ def _validate_optuna_search_provenance(
         "space": proposal_lightgbm_space,
         "selected_trial_candidate_name": selected_search["selected_trial_candidate_name"],
         "selected_trial_number": selected_search["selected_trial_number"],
+        "selected_trial_parameters": selected_search["selected_trial_parameters"],
     }
     if selected_space != proposal_lightgbm_space:
         raise PromotionManifestError("selected_model_recipe search space does not match proposal.search")
@@ -633,6 +634,12 @@ def _validate_optuna_search_provenance(
     for name, value in parameters.items():
         if value not in selected_space[name]:
             raise PromotionManifestError("selected_model_recipe parameters do not match search space")
+    selected_trial_parameters = _require_mapping(selected_search, "selected_trial_parameters")
+    for name, value in selected_trial_parameters.items():
+        if value not in selected_space[name]:
+            raise PromotionManifestError("selected trial parameters do not match search space")
+    if dict(parameters) != dict(selected_trial_parameters):
+        raise PromotionManifestError("selected_model_recipe parameters do not match selected trial parameters")
 
 
 def _is_optuna_lightgbm_recipe(recipe: Mapping[str, Any]) -> bool:
@@ -666,6 +673,7 @@ def _canonical_optuna_lightgbm_search(search: Mapping[str, Any]) -> dict[str, An
             "space",
             "selected_trial_number",
             "selected_trial_candidate_name",
+            "selected_trial_parameters",
             "feature_set",
         },
         "selected_model_recipe.search",
@@ -706,6 +714,10 @@ def _canonical_optuna_lightgbm_search(search: Mapping[str, Any]) -> dict[str, An
         "space": _canonical_lightgbm_search_space(_require_mapping(search, "space")),
         "selected_trial_candidate_name": selected_trial_candidate_name,
         "selected_trial_number": selected_trial_number,
+        "selected_trial_parameters": _canonical_lightgbm_parameter_values(
+            "selected_model_recipe.search.selected_trial_parameters",
+            _require_mapping(search, "selected_trial_parameters"),
+        ),
     }
 
 
@@ -737,6 +749,34 @@ def _canonical_lightgbm_search_space(space: Mapping[str, Any]) -> dict[str, Any]
             space["num_leaves"],
             {15, 31},
         ),
+    }
+
+
+def _canonical_lightgbm_parameter_values(
+    label: str, parameters: Mapping[str, Any]
+) -> dict[str, int | float]:
+    _require_exact_keys(
+        parameters,
+        {"n_estimators", "learning_rate", "num_leaves", "min_child_samples"},
+        label,
+    )
+    n_estimators = _strict_int(f"{label}.n_estimators", parameters["n_estimators"])
+    learning_rate = _finite_number(f"{label}.learning_rate", parameters["learning_rate"])
+    num_leaves = _strict_int(f"{label}.num_leaves", parameters["num_leaves"])
+    min_child_samples = _strict_int(f"{label}.min_child_samples", parameters["min_child_samples"])
+    if n_estimators not in {100, 300}:
+        raise PromotionManifestError(f"{label}.n_estimators outside allowed set")
+    if learning_rate not in {0.03, 0.1}:
+        raise PromotionManifestError(f"{label}.learning_rate outside allowed set")
+    if num_leaves not in {15, 31}:
+        raise PromotionManifestError(f"{label}.num_leaves outside allowed set")
+    if min_child_samples not in {10, 20}:
+        raise PromotionManifestError(f"{label}.min_child_samples outside allowed set")
+    return {
+        "learning_rate": learning_rate,
+        "min_child_samples": min_child_samples,
+        "n_estimators": n_estimators,
+        "num_leaves": num_leaves,
     }
 
 

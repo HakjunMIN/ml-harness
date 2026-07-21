@@ -638,6 +638,7 @@ def _selected_lightgbm_recipe(source: CandidateResult) -> dict[str, Any]:
         "space": source_search["space"],
         "selected_trial_number": selected_trial_number,
         "selected_trial_candidate_name": source.name,
+        "selected_trial_parameters": _json_safe_value(dict(source_recipe.get("parameters", {}))),
         "feature_set": source_search["feature_set"],
     }
     return {

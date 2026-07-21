@@ -176,6 +176,38 @@ def test_render_model_recipe_patch_accepts_valid_optuna_search_manifest(aidd_pat
     assert payload["selected_model_recipe"] == manifest["selected_model_recipe"]
 
 
+def test_render_model_recipe_patch_rejects_optuna_parameters_that_do_not_match_selected_trial(
+    aidd_patch_dir,
+):
+    manifest = _optuna_search_manifest()
+    search = manifest["selected_model_recipe"]["search"]
+    multi_value_space = {
+        "n_estimators": [100, 300],
+        "learning_rate": [0.03, 0.1],
+        "num_leaves": [15, 31],
+        "min_child_samples": [10, 20],
+    }
+    manifest["proposal"]["search"]["spaces"]["lightgbm"] = multi_value_space
+    search["space"] = multi_value_space
+    search["selected_trial_parameters"] = {
+        "n_estimators": 100,
+        "learning_rate": 0.03,
+        "num_leaves": 15,
+        "min_child_samples": 10,
+    }
+    manifest["selected_model_recipe"]["parameters"] = {
+        "n_estimators": 300,
+        "learning_rate": 0.1,
+        "num_leaves": 31,
+        "min_child_samples": 20,
+    }
+    target = aidd_patch_dir / "model-recipe-patch.json"
+
+    with pytest.raises(aidd.PromotionManifestError, match="selected trial parameters"):
+        aidd.render_model_recipe_patch(manifest, target)
+    assert not target.exists()
+
+
 @pytest.mark.parametrize(
     "recipe",
     [
@@ -250,7 +282,7 @@ def test_render_model_recipe_patch_rejects_optuna_search_provenance_mismatch(
     manifest = mutate(_optuna_search_manifest())
     target = aidd_patch_dir / "model-recipe-patch.json"
 
-    with pytest.raises(aidd.PromotionManifestError, match="search|space"):
+    with pytest.raises(aidd.PromotionManifestError, match="search|space|selected trial parameters"):
         aidd.render_model_recipe_patch(manifest, target)
     assert not target.exists()
 
@@ -344,6 +376,12 @@ def _optuna_search_manifest():
         },
         "selected_trial_number": 0,
         "selected_trial_candidate_name": "optuna_lightgbm_0:safe_solar",
+        "selected_trial_parameters": {
+            "n_estimators": 100,
+            "learning_rate": 0.03,
+            "num_leaves": 15,
+            "min_child_samples": 10,
+        },
         "feature_set": "safe_solar",
     }
     return {
