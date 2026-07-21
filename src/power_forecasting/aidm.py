@@ -619,6 +619,9 @@ def _record_reused_search_trial(
         "reused_from_trial_number": int(source_trial_number),
         "reused_from_candidate_name": source.name,
     }
+    source_artifacts = store.get_run(source.run_id)["artifacts"] or {}
+    if "fold_metrics" in source_artifacts:
+        artifacts["fold_metrics"] = _json_safe_value(source_artifacts["fold_metrics"])
     store.complete_run(run_id, source.metrics, artifacts)
 
 

@@ -308,6 +308,7 @@ def test_lightgbm_optuna_search_reuses_duplicate_resolved_parameters(agentic_db_
     actual_run = next(run for run in trial_runs if run["name"].endswith("trial-0"))
     reused_run = next(run for run in trial_runs if run["name"].endswith("trial-1"))
     assert reused_run["metrics"] == actual_run["metrics"]
+    assert reused_run["artifacts"]["fold_metrics"] == actual_run["artifacts"]["fold_metrics"]
     assert reused_run["params"]["model_recipe"]["search"]["trial_number"] == 1
     assert reused_run["artifacts"]["reused_from_run_id"] == actual_run["id"]
     assert reused_run["artifacts"]["reused_from_trial_number"] == 0
