@@ -1,0 +1,160 @@
+{
+  "baseline": {
+    "model": "SPOT"
+  },
+  "budget": {
+    "max_evaluations": 18,
+    "top_feature_groups": 3
+  },
+  "feature_sets": [
+    {
+      "name": "safe_temporal",
+      "rationale": "Prediction-time calendar features derived only from the forecast timestamp.",
+      "specs": [
+        {
+          "inputs": [
+            "timestamp"
+          ],
+          "name": "hour_sin",
+          "parameters": {},
+          "rationale": "Daily phase available at prediction time.",
+          "transform": "cyclic_hour",
+          "version": "1"
+        },
+        {
+          "inputs": [
+            "timestamp"
+          ],
+          "name": "hour_cos",
+          "parameters": {},
+          "rationale": "Daily phase companion available at prediction time.",
+          "transform": "cyclic_hour",
+          "version": "1"
+        }
+      ]
+    },
+    {
+      "name": "safe_weather",
+      "rationale": "Forecast weather interactions that exclude target and actual weather inputs.",
+      "specs": [
+        {
+          "inputs": [
+            "forecast_irradiance",
+            "forecast_cloud_cover"
+          ],
+          "name": "effective_irradiance",
+          "parameters": {},
+          "rationale": "Cloud-adjusted irradiance from forecast inputs only.",
+          "transform": "effective_irradiance",
+          "version": "1"
+        },
+        {
+          "inputs": [
+            "forecast_irradiance",
+            "forecast_temperature"
+          ],
+          "name": "forecast_temperature_derating",
+          "parameters": {
+            "coefficient": 0.004,
+            "reference": 25.0
+          },
+          "rationale": "Forecast-temperature derating with bounded literal parameters.",
+          "transform": "temperature_derating",
+          "version": "1"
+        }
+      ]
+    },
+    {
+      "name": "safe_history",
+      "rationale": "Strictly prior per-plant forecast history; early warmup gaps are imputed inside each fold.",
+      "specs": [
+        {
+          "inputs": [
+            "forecast_irradiance"
+          ],
+          "name": "prior_forecast_irradiance",
+          "parameters": {
+            "periods": 1
+          },
+          "rationale": "Uses only the previous timestamp's forecast irradiance for the same plant.",
+          "transform": "lag",
+          "version": "1"
+        },
+        {
+          "inputs": [
+            "forecast_cloud_cover"
+          ],
+          "name": "prior_cloud_cover_mean",
+          "parameters": {
+            "window": 3
+          },
+          "rationale": "Uses a strictly prior rolling mean; missing valid-dataset warmup rows are imputed fold-locally.",
+          "transform": "rolling_mean",
+          "version": "1"
+        }
+      ]
+    }
+  ],
+  "model_recipes": [
+    {
+      "name": "forest_small",
+      "parameters": {
+        "max_depth": 8,
+        "min_samples_leaf": 2,
+        "n_estimators": 100
+      },
+      "rationale": "Bounded deterministic random forest recipe.",
+      "recipe": "random_forest"
+    },
+    {
+      "name": "xgb_small",
+      "parameters": {
+        "learning_rate": 0.03,
+        "max_depth": 6,
+        "n_estimators": 200,
+        "subsample": 0.8
+      },
+      "rationale": "Bounded XGBoost recipe; requires the model-search optional extra.",
+      "recipe": "xgboost"
+    },
+    {
+      "name": "lgbm_small",
+      "parameters": {
+        "learning_rate": 0.03,
+        "min_child_samples": 10,
+        "n_estimators": 100,
+        "num_leaves": 15
+      },
+      "rationale": "Bounded LightGBM recipe; requires the model-search optional extra.",
+      "recipe": "lightgbm"
+    }
+  ],
+  "proposal_id": "fixture-model-search-proposal",
+  "rationale": "Reusable bounded model-search proposal for safe temporal, weather, and history hypotheses.",
+  "schema_version": "1",
+  "search": {
+    "n_trials": 2,
+    "sampler": "tpe",
+    "seed": 7,
+    "spaces": {
+      "lightgbm": {
+        "learning_rate": [
+          0.03,
+          0.1
+        ],
+        "min_child_samples": [
+          10,
+          20
+        ],
+        "n_estimators": [
+          100,
+          300
+        ],
+        "num_leaves": [
+          15,
+          31
+        ]
+      }
+    }
+  }
+}
