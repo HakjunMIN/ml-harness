@@ -67,8 +67,8 @@ class ModelRecipe:
 
     def __post_init__(self) -> None:
         _identifier_name(self.name, "model recipe name")
-        if self.name.startswith("optuna_lightgbm_"):
-            raise ProposalValidationError("model recipe name uses reserved search prefix")
+        if self.name.startswith("optuna_lightgbm_") or self.name == "selected_lightgbm":
+            raise ProposalValidationError(f"model recipe name {self.name} uses reserved search name")
         _nonblank(self.recipe, f"model recipe {self.name}: recipe")
         _nonblank(self.rationale, f"model recipe {self.name}: rationale")
         if not isinstance(self.parameters, Mapping):
@@ -304,8 +304,8 @@ def _validate_evaluation_budget(
     budget: Mapping[str, int],
     search: Mapping[str, Any] | None = None,
 ) -> None:
-    search_trials = int(search["n_trials"]) if search is not None else 0
-    combination_count = len(feature_sets) * (len(model_recipes) + search_trials)
+    search_evaluations = int(search["n_trials"]) + 1 if search is not None else 0
+    combination_count = len(feature_sets) * (len(model_recipes) + search_evaluations)
     max_evaluations = int(budget["max_evaluations"])
     if combination_count > max_evaluations:
         raise ProposalValidationError(

@@ -164,7 +164,7 @@ def test_lightgbm_optuna_search_selects_best_trial_with_deterministic_provenance
     proposal = _proposal(
         model_recipes=[_proposal()["model_recipes"][0]],
         search=_lightgbm_search(n_trials=2),
-        budget={"max_evaluations": 3, "top_feature_groups": 1},
+        budget={"max_evaluations": 4, "top_feature_groups": 1},
     )
 
     result = aidm.run_aidm(
@@ -265,7 +265,7 @@ def test_lightgbm_optuna_search_reuses_duplicate_resolved_parameters(agentic_db_
     proposal = _proposal(
         model_recipes=[_proposal()["model_recipes"][0]],
         search=singleton_search,
-        budget={"max_evaluations": 3, "top_feature_groups": 1},
+        budget={"max_evaluations": 4, "top_feature_groups": 1},
     )
 
     result = aidm.run_aidm(
@@ -335,6 +335,27 @@ def test_search_budget_fails_before_baseline_or_store_creation(agentic_db_path, 
     assert not agentic_db_path.exists()
 
 
+def test_search_budget_reserves_selected_lightgbm_evaluation_before_baseline_or_store_creation(agentic_db_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(aidm, "evaluate_model", lambda *args, **kwargs: calls.append(args))
+    proposal = _proposal(
+        model_recipes=[_proposal()["model_recipes"][0]],
+        search=_lightgbm_search(n_trials=49),
+        budget={"max_evaluations": 50, "top_feature_groups": 1},
+    )
+
+    with pytest.raises(ValueError, match="max_evaluations"):
+        aidm.run_aidm(
+            generate_synthetic_data(days=4, plants=2, seed=17),
+            agentic_db_path,
+            aidm.AIDMConfig(folds=1),
+            proposal=proposal,
+        )
+
+    assert calls == []
+    assert not agentic_db_path.exists()
+
+
 def test_failed_optuna_trial_is_recorded_before_exception(agentic_db_path, monkeypatch):
     _install_fake_optuna(monkeypatch)
     _install_fake_lightgbm(monkeypatch)
@@ -353,7 +374,7 @@ def test_failed_optuna_trial_is_recorded_before_exception(agentic_db_path, monke
     proposal = _proposal(
         model_recipes=[_proposal()["model_recipes"][0]],
         search=_lightgbm_search(n_trials=2),
-        budget={"max_evaluations": 3, "top_feature_groups": 1},
+        budget={"max_evaluations": 4, "top_feature_groups": 1},
     )
 
     with pytest.raises(RuntimeError, match="trial exploded"):
@@ -387,7 +408,7 @@ def test_legacy_gate_still_applies_to_search_winner(agentic_db_path, monkeypatch
     proposal = _proposal(
         model_recipes=[_proposal()["model_recipes"][0]],
         search=_lightgbm_search(n_trials=1),
-        budget={"max_evaluations": 2, "top_feature_groups": 1},
+        budget={"max_evaluations": 3, "top_feature_groups": 1},
     )
 
     result = aidm.run_aidm(

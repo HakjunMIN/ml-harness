@@ -173,7 +173,7 @@ def test_search_proposal_round_trips_without_breaking_legacy_proposals():
     proposal = _proposal(
         model_recipes=[_proposal()["model_recipes"][0]],
         search=_lightgbm_search(n_trials=3),
-        budget={"max_evaluations": 4, "top_feature_groups": 1},
+        budget={"max_evaluations": 5, "top_feature_groups": 1},
     )
 
     loaded = load_proposal(proposal)
@@ -198,7 +198,7 @@ def test_search_proposal_rejects_duplicate_lightgbm_choices():
     proposal = _proposal(
         model_recipes=[_proposal()["model_recipes"][0]],
         search=_lightgbm_search(n_trials=3),
-        budget={"max_evaluations": 4, "top_feature_groups": 1},
+        budget={"max_evaluations": 5, "top_feature_groups": 1},
     )
     proposal["search"]["spaces"]["lightgbm"]["n_estimators"] = [100, 100]
 
@@ -714,11 +714,29 @@ def test_strict_proposal_rejections(mutate, message):
             **p,
             "model_recipes": [{**p["model_recipes"][0], "name": "optuna_lightgbm_0"}],
         },
+        lambda p: {
+            **p,
+            "model_recipes": [{**p["model_recipes"][0], "name": "selected_lightgbm"}],
+        },
     ],
 )
 def test_candidate_identity_parts_reject_colons(mutate):
     with pytest.raises(ProposalValidationError, match="name"):
         load_proposal(mutate(_proposal()))
+
+
+def test_direct_model_recipe_rejects_selected_lightgbm_internal_name():
+    proposal = _proposal(
+        model_recipes=[
+            {
+                **_proposal()["model_recipes"][4],
+                "name": "selected_lightgbm",
+            }
+        ]
+    )
+
+    with pytest.raises(ProposalValidationError, match="selected_lightgbm|reserved"):
+        load_proposal(proposal)
 
 
 def test_candidate_identity_collision_shapes_are_rejected():

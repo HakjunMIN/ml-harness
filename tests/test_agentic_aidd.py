@@ -351,7 +351,7 @@ def _optuna_search_manifest():
         "proposal": {
             **manifest["proposal"],
             "model_recipes": [manifest["proposal"]["model_recipes"][0]],
-            "budget": {"max_evaluations": 6, "top_feature_groups": 1},
+            "budget": {"max_evaluations": 8, "top_feature_groups": 1},
             "search": {
                 "sampler": "tpe",
                 "seed": 7,
