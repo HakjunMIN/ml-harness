@@ -18,6 +18,7 @@ class PromotionManifestError(ValueError):
 
 
 _DATETIME_TRANSFORMS = frozenset({"cyclic_hour", "cyclic_day_of_year"})
+_HISTORY_TRANSFORMS = frozenset({"lag", "rolling_mean"})
 _NUMERIC_TRANSFORMS = frozenset(TRANSFORMS) - _DATETIME_TRANSFORMS
 _PREDICTION_TIME_PREFIXES = ("forecast_", "ldaps_")
 _NUMERIC_METADATA_INPUTS = frozenset({"capacity_mw", "latitude", "longitude"})
@@ -45,6 +46,7 @@ def validate_promotion_manifest(manifest) -> tuple[FeatureSpec, ...]:
 
 def render_promoted_module(manifest, target: Path) -> Path:
     specs = validate_promotion_manifest(manifest)
+    _reject_stateful_history_features_for_rendering(specs)
     target = Path(target)
     content = _render_module(
         specs=specs,
@@ -168,6 +170,9 @@ def _prediction_time_inputs_for_transform(transform: str) -> frozenset[str]:
 
 
 def _validate_spec_without_source_existence(spec: FeatureSpec) -> None:
+    if spec.transform in _HISTORY_TRANSFORMS:
+        _validate_history_parameters(spec)
+        return
     row = {
         source: _dummy_value_for_transform(spec, position)
         for position, source in enumerate(spec.inputs)
@@ -194,6 +199,36 @@ def _dummy_value_for_transform(spec: FeatureSpec, position: int) -> Any:
             raise PromotionManifestError("ratio epsilon is too large for validation")
         return max(2.0, denominator)
     return 1.0
+
+
+def _validate_history_parameters(spec: FeatureSpec) -> None:
+    if spec.transform == "lag":
+        _validate_exact_integer_parameter(spec, "periods", {1, 2, 3, 6, 12, 24})
+    elif spec.transform == "rolling_mean":
+        _validate_exact_integer_parameter(spec, "window", {3, 6, 12, 24})
+
+
+def _validate_exact_integer_parameter(
+    spec: FeatureSpec, key: str, allowed: set[int]
+) -> None:
+    unexpected = sorted(set(spec.parameters) - {key})
+    if unexpected:
+        raise PromotionManifestError(f"feature {spec.name}: unexpected parameters: {unexpected}")
+    if key not in spec.parameters:
+        raise PromotionManifestError(f"feature {spec.name}: missing parameter {key}")
+    value = spec.parameters[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PromotionManifestError(f"feature {spec.name}: parameter {key} must be an integer")
+    if value not in allowed:
+        raise PromotionManifestError(f"feature {spec.name}: parameter {key} outside allowed set")
+
+
+def _reject_stateful_history_features_for_rendering(specs: tuple[FeatureSpec, ...]) -> None:
+    for spec in specs:
+        if spec.transform in _HISTORY_TRANSFORMS:
+            raise PromotionManifestError(
+                f"feature {spec.name}: stateful history feature cannot be rendered"
+            )
 
 
 def _validate_provenance(

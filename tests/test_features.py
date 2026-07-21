@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from power_forecasting.data import generate_synthetic_data
-from power_forecasting.features import FeatureSpec, apply_feature_specs
+from power_forecasting.features import FeatureSpec, _history_values, apply_feature_specs
 
 
 def test_apply_feature_specs_generates_hour_sin_and_effective_irradiance_in_order():
@@ -123,6 +123,175 @@ def test_ratio_divides_numeric_inputs():
     )
 
     np.testing.assert_allclose(features["irradiance_per_cloud"].to_numpy(), [5.0, -0.75])
+
+
+def test_lag_rejects_same_timestamp_peers_instead_of_leaking_future_or_other_plants():
+    frame = pd.DataFrame(
+        {
+            "plant_id": ["b", "a", "a", "b", "a", "b", "a", "b"],
+            "timestamp": pd.to_datetime(
+                [
+                    "2024-01-01 01:00",
+                    "2024-01-01 01:00",
+                    "2024-01-01 02:00",
+                    "2024-01-01 03:00",
+                    "2024-01-01 01:00",
+                    "2024-01-01 02:00",
+                    "2024-01-01 03:00",
+                    "2024-01-01 01:00",
+                ]
+            ),
+            "forecast_irradiance": [10.0, 100.0, 200.0, 30.0, 999.0, 20.0, 300.0, 11.0],
+        },
+        index=list("hgfedcba"),
+    )
+
+    with pytest.raises(ValueError, match="prior_irradiance.*insufficient history"):
+        apply_feature_specs(
+            frame,
+            [
+                FeatureSpec(
+                    "prior_irradiance",
+                    "lag",
+                    ("forecast_irradiance",),
+                    {"periods": 1},
+                )
+            ],
+        )
+
+
+def test_history_values_are_strict_prior_per_plant_stably_sorted_and_index_aligned():
+    frame = pd.DataFrame(
+        {
+            "plant_id": ["b", "a", "a", "b", "a", "b", "a", "b"],
+            "timestamp": pd.to_datetime(
+                [
+                    "2024-01-01 01:00",
+                    "2024-01-01 01:00",
+                    "2024-01-01 02:00",
+                    "2024-01-01 03:00",
+                    "2024-01-01 01:00",
+                    "2024-01-01 02:00",
+                    "2024-01-01 03:00",
+                    "2024-01-01 01:00",
+                ]
+            ),
+            "forecast_irradiance": [10.0, 100.0, 200.0, 30.0, 999.0, 20.0, 300.0, 11.0],
+        },
+        index=list("hgfedcba"),
+    )
+
+    lag_values, lag_insufficient = _history_values(
+        frame,
+        FeatureSpec("prior_irradiance", "lag", ("forecast_irradiance",), {"periods": 1}),
+        window=1,
+        reducer=lambda values: values[-1],
+    )
+    mean_values, mean_insufficient = _history_values(
+        frame,
+        FeatureSpec("prior_mean", "rolling_mean", ("forecast_irradiance",), {"window": 3}),
+        window=3,
+        reducer=lambda values: float(np.mean(values)),
+        allow_partial=True,
+    )
+
+    np.testing.assert_allclose(
+        lag_values,
+        [np.nan, np.nan, 999.0, 20.0, np.nan, 11.0, 200.0, np.nan],
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        mean_values,
+        [np.nan, np.nan, 999.0, 15.5, np.nan, 11.0, 599.5, np.nan],
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(
+        lag_insufficient,
+        [True, True, False, False, True, False, False, True],
+    )
+    np.testing.assert_array_equal(
+        mean_insufficient,
+        [True, True, True, True, True, True, True, True],
+    )
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        (FeatureSpec("bad_lag", "lag", ("forecast_irradiance",), {}), "missing parameter periods"),
+        (
+            FeatureSpec("bad_lag", "lag", ("forecast_irradiance",), {"periods": True}),
+            "periods must be an integer",
+        ),
+        (
+            FeatureSpec("bad_lag", "lag", ("forecast_irradiance",), {"periods": 4}),
+            "periods outside allowed set",
+        ),
+        (
+            FeatureSpec("bad_lag", "lag", ("forecast_irradiance",), {"periods": 1, "window": 3}),
+            "unexpected parameters",
+        ),
+        (
+            FeatureSpec("bad_mean", "rolling_mean", ("forecast_irradiance",), {}),
+            "missing parameter window",
+        ),
+        (
+            FeatureSpec("bad_mean", "rolling_mean", ("forecast_irradiance",), {"window": False}),
+            "window must be an integer",
+        ),
+        (
+            FeatureSpec("bad_mean", "rolling_mean", ("forecast_irradiance",), {"window": 2}),
+            "window outside allowed set",
+        ),
+    ],
+)
+def test_history_transform_parameters_are_exact_and_bounded(spec, message):
+    frame = pd.DataFrame(
+        {
+            "plant_id": ["plant_1"],
+            "timestamp": pd.to_datetime(["2024-01-01 00:00"]),
+            "forecast_irradiance": [1.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match=message):
+        apply_feature_specs(frame, [spec])
+
+
+@pytest.mark.parametrize(
+    ("frame", "message"),
+    [
+        (
+            pd.DataFrame(
+                {
+                    "timestamp": pd.to_datetime(["2024-01-01 00:00"]),
+                    "forecast_irradiance": [1.0],
+                }
+            ),
+            "plant_id column is required",
+        ),
+        (
+            pd.DataFrame({"plant_id": ["plant_1"], "forecast_irradiance": [1.0]}),
+            "timestamp column is required",
+        ),
+        (
+            pd.DataFrame(
+                {
+                    "plant_id": ["plant_1", "plant_1"],
+                    "timestamp": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 01:00"]),
+                    "forecast_irradiance": [np.nan, 2.0],
+                }
+            ),
+            "non-finite numeric input forecast_irradiance",
+        ),
+    ],
+)
+def test_history_transforms_require_keys_and_finite_sources(frame, message):
+    with pytest.raises(ValueError, match=message):
+        apply_feature_specs(
+            frame,
+            [FeatureSpec("prior_irradiance", "lag", ("forecast_irradiance",), {"periods": 1})],
+        )
 
 
 def test_unknown_transform_rejected():

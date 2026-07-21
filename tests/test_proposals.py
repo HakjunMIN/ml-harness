@@ -134,6 +134,32 @@ def test_valid_proposal_round_trips_and_model_recipes_build_expected_estimators(
     assert xgb_estimator.subsample == 0.8
 
 
+def test_proposal_validation_accepts_forecast_history_feature_specs():
+    proposal = _proposal()
+    proposal["feature_sets"][0]["specs"] = [
+        {
+            "name": "prior_irradiance",
+            "transform": "lag",
+            "inputs": ["forecast_irradiance"],
+            "parameters": {"periods": 1},
+            "version": "1",
+            "rationale": "Use strictly prior forecast irradiance from the same plant.",
+        },
+        {
+            "name": "prior_cloud_mean",
+            "transform": "rolling_mean",
+            "inputs": ["forecast_cloud_cover"],
+            "parameters": {"window": 3},
+            "version": "1",
+            "rationale": "Use strictly prior forecast cloud cover from the same plant.",
+        },
+    ]
+
+    loaded = load_proposal(proposal)
+
+    assert proposal_to_dict(loaded) == proposal
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [

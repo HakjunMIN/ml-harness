@@ -67,10 +67,14 @@ def compute_metrics(
 
     error = prediction_values - actual_values
     absolute_error = np.abs(error)
+    total_sum_squares = float(np.sum(np.square(actual_values - np.mean(actual_values))))
+    residual_sum_squares = float(np.sum(np.square(error)))
+    r2 = 0.0 if total_sum_squares == 0.0 else 1.0 - residual_sum_squares / total_sum_squares
     return {
         "MAE": float(np.mean(absolute_error)),
         "RMSE": float(np.sqrt(np.mean(np.square(error)))),
         "NMAE": float(np.sum(absolute_error) / denominator),
+        "R2": float(r2),
     }
 
 

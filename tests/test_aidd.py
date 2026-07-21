@@ -147,6 +147,44 @@ def test_promotion_manifest_rejects_feature_inputs_outside_prediction_contract()
         aidd.validate_promotion_manifest(manifest)
 
 
+def test_prediction_contract_allows_forecast_history_specs_but_render_rejects_stateful_history(aidd_run_dir):
+    spec = FeatureSpec(
+        "prior_irradiance",
+        "lag",
+        ("forecast_irradiance",),
+        {"periods": 1},
+        rationale="Use strictly prior forecast irradiance from the same plant.",
+    )
+    manifest = _valid_manifest([spec])
+
+    aidd.validate_prediction_time_feature_spec(spec)
+    assert aidd.validate_promotion_manifest(manifest) == (spec,)
+    with pytest.raises(aidd.PromotionManifestError, match="stateful history feature"):
+        aidd.render_promoted_module(manifest, aidd_run_dir / "promoted.py")
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        (
+            FeatureSpec("prior_irradiance", "lag", ("forecast_irradiance",), {"periods": True}),
+            "periods must be an integer",
+        ),
+        (
+            FeatureSpec("prior_irradiance", "lag", ("forecast_irradiance",), {"periods": 4}),
+            "periods outside allowed set",
+        ),
+        (
+            FeatureSpec("prior_irradiance", "lag", ("forecast_irradiance",), {"periods": 1, "window": 3}),
+            "unexpected parameters",
+        ),
+    ],
+)
+def test_prediction_contract_rejects_invalid_history_parameters(spec, message):
+    with pytest.raises(aidd.PromotionManifestError, match=message):
+        aidd.validate_prediction_time_feature_spec(spec)
+
+
 def test_canonical_aidm_selected_specs_are_accepted_by_prediction_contract():
     specs = aidm.candidate_catalog()
 

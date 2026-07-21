@@ -133,7 +133,30 @@ def test_compute_metrics_matches_hand_calculated_values():
         "MAE": pytest.approx(10.0 / 3.0),
         "RMSE": pytest.approx(math.sqrt((4.0 + 25.0 + 9.0) / 3.0)),
         "NMAE": pytest.approx(10.0 / 200.0),
+        "R2": pytest.approx(1.0 - 38.0 / (1400.0 / 3.0)),
     }
+
+
+def test_compute_metrics_reports_r2_and_returns_zero_for_constant_actuals():
+    perfect = compute_metrics(
+        actual=[1.0, 2.0, 3.0],
+        prediction=[1.0, 2.0, 3.0],
+        capacity_mw=[10.0, 10.0, 10.0],
+    )
+    bad = compute_metrics(
+        actual=[1.0, 2.0, 3.0],
+        prediction=[3.0, 2.0, 1.0],
+        capacity_mw=[10.0, 10.0, 10.0],
+    )
+    constant = compute_metrics(
+        actual=[5.0, 5.0, 5.0],
+        prediction=[5.0, 4.0, 6.0],
+        capacity_mw=[10.0, 10.0, 10.0],
+    )
+
+    assert perfect["R2"] == pytest.approx(1.0)
+    assert bad["R2"] == pytest.approx(-3.0)
+    assert constant["R2"] == 0.0
 
 
 @pytest.mark.parametrize(
@@ -157,7 +180,7 @@ def test_mean_model_evaluation_returns_finite_metrics_and_bounded_predictions():
     result = evaluate_model(frame, model_definition("Mean"), feature_specs=[], folds=3)
 
     assert isinstance(result, EvaluationResult)
-    assert set(result.metrics) == {"MAE", "RMSE", "NMAE"}
+    assert set(result.metrics) == {"MAE", "RMSE", "NMAE", "R2"}
     assert np.isfinite(list(result.metrics.values())).all()
     assert set(result.per_plant) == set(frame["plant_id"].unique())
     assert len(result.fold_metrics) == 3
@@ -258,7 +281,7 @@ def test_all_legacy_model_names_evaluate_successfully(name):
 
     result = evaluate_model(frame, model_definition(name), feature_specs=[], folds=3)
 
-    assert set(result.metrics) == {"MAE", "RMSE", "NMAE"}
+    assert set(result.metrics) == {"MAE", "RMSE", "NMAE", "R2"}
     assert np.isfinite(list(result.metrics.values())).all()
     assert len(result.predictions) > 0
 

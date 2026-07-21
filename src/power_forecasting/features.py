@@ -167,6 +167,74 @@ def _ratio(frame: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:
     return numerator / denominator
 
 
+def _lag(frame: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:
+    periods = _parameter_int_member(spec, "periods", {1, 2, 3, 6, 12, 24})
+    values, insufficient = _history_values(
+        frame,
+        spec,
+        window=periods,
+        reducer=lambda history: history[-periods],
+    )
+    if insufficient.any():
+        raise ValueError(f"feature {spec.name}: insufficient history for lag periods={periods}")
+    return values
+
+
+def _rolling_mean(frame: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:
+    window = _parameter_int_member(spec, "window", {3, 6, 12, 24})
+    values, insufficient = _history_values(
+        frame,
+        spec,
+        window=window,
+        reducer=lambda history: float(np.mean(history[-window:])),
+    )
+    if insufficient.any():
+        raise ValueError(f"feature {spec.name}: insufficient history for rolling_mean window={window}")
+    return values
+
+
+def _history_values(
+    frame: pd.DataFrame,
+    spec: FeatureSpec,
+    *,
+    window: int,
+    reducer: Callable[[np.ndarray], float],
+    allow_partial: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    if "plant_id" not in frame.columns:
+        raise ValueError(f"feature {spec.name}: plant_id column is required")
+    if "timestamp" not in frame.columns:
+        raise ValueError(f"feature {spec.name}: timestamp column is required")
+
+    source = _numeric_input(frame, spec, 0)
+    timestamps = parse_timestamps(
+        frame["timestamp"],
+        error_message=f"feature {spec.name}: invalid timestamp column",
+    )
+    working = pd.DataFrame(
+        {
+            "_position": np.arange(len(frame), dtype=int),
+            "_plant_id": frame["plant_id"].to_numpy(),
+            "_timestamp": timestamps.to_numpy(),
+            "_source": source,
+        }
+    ).sort_values(["_plant_id", "_timestamp", "_position"], kind="mergesort")
+
+    values = np.full(len(frame), np.nan, dtype=float)
+    insufficient = np.zeros(len(frame), dtype=bool)
+    for _, plant_rows in working.groupby("_plant_id", sort=False):
+        prior_by_timestamp: list[float] = []
+        for _, timestamp_rows in plant_rows.groupby("_timestamp", sort=False):
+            positions = timestamp_rows["_position"].to_numpy(dtype=int)
+            if len(prior_by_timestamp) < window:
+                insufficient[positions] = True
+            if prior_by_timestamp and (allow_partial or len(prior_by_timestamp) >= window):
+                history = np.asarray(prior_by_timestamp, dtype=float)
+                values[positions] = reducer(history)
+            prior_by_timestamp.append(float(timestamp_rows["_source"].iloc[-1]))
+    return values, insufficient
+
+
 TRANSFORMS: dict[str, Callable[[pd.DataFrame, FeatureSpec], np.ndarray]] = {
     "cyclic_hour": _cyclic_hour,
     "cyclic_day_of_year": _cyclic_day_of_year,
@@ -175,6 +243,8 @@ TRANSFORMS: dict[str, Callable[[pd.DataFrame, FeatureSpec], np.ndarray]] = {
     "cloud_attenuation": _cloud_attenuation,
     "interaction": _interaction,
     "ratio": _ratio,
+    "lag": _lag,
+    "rolling_mean": _rolling_mean,
 }
 
 
@@ -186,6 +256,8 @@ _TRANSFORM_ARITY = {
     "cloud_attenuation": 1,
     "interaction": 2,
     "ratio": 2,
+    "lag": 1,
+    "rolling_mean": 1,
 }
 
 _TRANSFORM_PARAMETERS = {
@@ -196,6 +268,8 @@ _TRANSFORM_PARAMETERS = {
     "cloud_attenuation": frozenset(),
     "interaction": frozenset(),
     "ratio": frozenset({"epsilon"}),
+    "lag": frozenset({"periods"}),
+    "rolling_mean": frozenset({"window"}),
 }
 
 
@@ -207,6 +281,18 @@ def _parameter_float(spec: FeatureSpec, key: str, default: float) -> float:
         raise ValueError(f"feature {spec.name}: parameter {key} must be numeric") from exc
     if not math.isfinite(value):
         raise ValueError(f"feature {spec.name}: parameter {key} must be finite")
+    return value
+
+
+def _parameter_int_member(spec: FeatureSpec, key: str, allowed: set[int]) -> int:
+    if key not in spec.parameters:
+        raise ValueError(f"feature {spec.name}: missing parameter {key}")
+    raw_value = spec.parameters[key]
+    if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+        raise ValueError(f"feature {spec.name}: parameter {key} must be an integer")
+    value = int(raw_value)
+    if value not in allowed:
+        raise ValueError(f"feature {spec.name}: parameter {key} outside allowed set")
     return value
 
 
@@ -225,6 +311,10 @@ def _validate_parameters(spec: FeatureSpec) -> None:
         epsilon = _parameter_float(spec, "epsilon", 1e-6)
         if epsilon <= 0:
             raise ValueError(f"feature {spec.name}: epsilon must be > 0")
+    elif spec.transform == "lag":
+        _parameter_int_member(spec, "periods", {1, 2, 3, 6, 12, 24})
+    elif spec.transform == "rolling_mean":
+        _parameter_int_member(spec, "window", {3, 6, 12, 24})
 
 
 def _validate_spec(frame: pd.DataFrame, spec: FeatureSpec) -> None:
