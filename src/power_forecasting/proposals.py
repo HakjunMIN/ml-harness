@@ -203,6 +203,50 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
             "learning_rate": learning_rate,
             "max_leaf_nodes": max_leaf_nodes,
         }
+    if recipe == "random_forest":
+        _exact_parameter_keys(
+            parameters,
+            {"n_estimators", "max_depth", "min_samples_leaf"},
+            name,
+        )
+        n_estimators = _integer(parameters["n_estimators"], f"model recipe {name}: n_estimators")
+        max_depth = _integer_or_none(parameters["max_depth"], f"model recipe {name}: max_depth")
+        min_samples_leaf = _integer(parameters["min_samples_leaf"], f"model recipe {name}: min_samples_leaf")
+        if n_estimators not in {100, 200, 400}:
+            raise ProposalValidationError(f"model recipe {name}: n_estimators outside allowed set")
+        if max_depth not in {8, 12, None}:
+            raise ProposalValidationError(f"model recipe {name}: max_depth outside allowed set")
+        if min_samples_leaf not in {1, 2, 4}:
+            raise ProposalValidationError(f"model recipe {name}: min_samples_leaf outside allowed set")
+        return {
+            "n_estimators": n_estimators,
+            "max_depth": max_depth,
+            "min_samples_leaf": min_samples_leaf,
+        }
+    if recipe == "xgboost":
+        _exact_parameter_keys(
+            parameters,
+            {"n_estimators", "max_depth", "learning_rate", "subsample"},
+            name,
+        )
+        n_estimators = _integer(parameters["n_estimators"], f"model recipe {name}: n_estimators")
+        max_depth = _integer(parameters["max_depth"], f"model recipe {name}: max_depth")
+        learning_rate = _number(parameters["learning_rate"], f"model recipe {name}: learning_rate")
+        subsample = _number(parameters["subsample"], f"model recipe {name}: subsample")
+        if n_estimators not in {100, 200, 400}:
+            raise ProposalValidationError(f"model recipe {name}: n_estimators outside allowed set")
+        if max_depth not in {4, 6, 8}:
+            raise ProposalValidationError(f"model recipe {name}: max_depth outside allowed set")
+        if learning_rate not in {0.03, 0.1}:
+            raise ProposalValidationError(f"model recipe {name}: learning_rate outside allowed set")
+        if subsample not in {0.8, 1.0}:
+            raise ProposalValidationError(f"model recipe {name}: subsample outside allowed set")
+        return {
+            "n_estimators": n_estimators,
+            "max_depth": max_depth,
+            "learning_rate": learning_rate,
+            "subsample": subsample,
+        }
     raise ProposalValidationError(f"model recipe {name}: unsupported recipe {recipe}")
 
 
@@ -294,6 +338,12 @@ def _integer(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ProposalValidationError(f"{label} must be an integer")
     return int(value)
+
+
+def _integer_or_none(value: Any, label: str) -> int | None:
+    if value is None:
+        return None
+    return _integer(value, label)
 
 
 def _number(value: Any, label: str) -> float:

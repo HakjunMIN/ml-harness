@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import Ridge
 
 from power_forecasting.models import SPOT_FEATURES, model_definition_from_recipe
@@ -49,6 +49,27 @@ def _proposal(**overrides):
                 },
                 "rationale": "Bounded tree model.",
             },
+            {
+                "name": "forest_small",
+                "recipe": "random_forest",
+                "parameters": {
+                    "n_estimators": 100,
+                    "max_depth": 8,
+                    "min_samples_leaf": 2,
+                },
+                "rationale": "Bounded deterministic forest.",
+            },
+            {
+                "name": "xgb_small",
+                "recipe": "xgboost",
+                "parameters": {
+                    "n_estimators": 200,
+                    "max_depth": 6,
+                    "learning_rate": 0.03,
+                    "subsample": 0.8,
+                },
+                "rationale": "Bounded deterministic boosted tree model.",
+            },
         ],
         "budget": {"max_evaluations": 10, "top_feature_groups": 3},
     }
@@ -77,6 +98,40 @@ def test_valid_proposal_round_trips_and_model_recipes_build_expected_estimators(
     assert estimator.max_iter == 50
     assert estimator.learning_rate == 0.1
     assert estimator.max_leaf_nodes == 31
+
+    forest = model_definition_from_recipe(proposal.model_recipes[2])
+    assert forest.name == "Recipe:random_forest:forest_small"
+    assert forest.base_features == SPOT_FEATURES
+    assert forest.data_availability == "forecast"
+    forest_steps = forest.estimator_factory().steps
+    assert list(name for name, _ in forest_steps) == ["simpleimputer", "randomforestregressor"]
+    assert forest_steps[0][1].strategy == "median"
+    forest_estimator = forest_steps[-1][1]
+    assert isinstance(forest_estimator, RandomForestRegressor)
+    assert forest_estimator.random_state == 0
+    assert forest_estimator.n_jobs == 1
+    assert forest_estimator.n_estimators == 100
+    assert forest_estimator.max_depth == 8
+    assert forest_estimator.min_samples_leaf == 2
+
+    xgboost = _import_xgboost_or_skip()
+    xgb = model_definition_from_recipe(proposal.model_recipes[3])
+    assert xgb.name == "Recipe:xgboost:xgb_small"
+    assert xgb.base_features == SPOT_FEATURES
+    assert xgb.data_availability == "forecast"
+    xgb_steps = xgb.estimator_factory().steps
+    assert list(name for name, _ in xgb_steps) == ["simpleimputer", "xgbregressor"]
+    assert xgb_steps[0][1].strategy == "median"
+    xgb_estimator = xgb_steps[-1][1]
+    assert isinstance(xgb_estimator, xgboost.XGBRegressor)
+    assert xgb_estimator.random_state == 0
+    assert xgb_estimator.n_jobs == 1
+    assert xgb_estimator.objective == "reg:squarederror"
+    assert xgb_estimator.eval_metric == "rmse"
+    assert xgb_estimator.n_estimators == 200
+    assert xgb_estimator.max_depth == 6
+    assert xgb_estimator.learning_rate == 0.03
+    assert xgb_estimator.subsample == 0.8
 
 
 @pytest.mark.parametrize(
@@ -239,6 +294,132 @@ def test_valid_proposal_round_trips_and_model_recipes_build_expected_estimators(
             },
             "learning_rate",
         ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][2], "parameters": {"n_estimators": 100, "max_depth": 8, "min_samples_leaf": 2, "bootstrap": False}}
+                ],
+            },
+            "unknown parameters",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][2], "parameters": {"n_estimators": 100, "max_depth": 8}}
+                ],
+            },
+            "missing parameters",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][2], "parameters": {"n_estimators": 300, "max_depth": 8, "min_samples_leaf": 2}}
+                ],
+            },
+            "n_estimators",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][2], "parameters": {"n_estimators": True, "max_depth": 8, "min_samples_leaf": 2}}
+                ],
+            },
+            "n_estimators",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][2], "parameters": {"n_estimators": 100, "max_depth": 10, "min_samples_leaf": 2}}
+                ],
+            },
+            "max_depth",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][2], "parameters": {"n_estimators": 100, "max_depth": True, "min_samples_leaf": 2}}
+                ],
+            },
+            "max_depth",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][2], "parameters": {"n_estimators": 100, "max_depth": None, "min_samples_leaf": 3}}
+                ],
+            },
+            "min_samples_leaf",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][3], "parameters": {"n_estimators": 200, "max_depth": 6, "learning_rate": 0.03, "subsample": 0.8, "booster": "gbtree"}}
+                ],
+            },
+            "unknown parameters",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][3], "parameters": {"n_estimators": 200, "max_depth": 6, "learning_rate": 0.03}}
+                ],
+            },
+            "missing parameters",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][3], "parameters": {"n_estimators": 500, "max_depth": 6, "learning_rate": 0.03, "subsample": 0.8}}
+                ],
+            },
+            "n_estimators",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][3], "parameters": {"n_estimators": 200, "max_depth": False, "learning_rate": 0.03, "subsample": 0.8}}
+                ],
+            },
+            "max_depth",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][3], "parameters": {"n_estimators": 200, "max_depth": 6, "learning_rate": math.nan, "subsample": 0.8}}
+                ],
+            },
+            "finite",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][3], "parameters": {"n_estimators": 200, "max_depth": 6, "learning_rate": True, "subsample": 0.8}}
+                ],
+            },
+            "learning_rate",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {**p["model_recipes"][3], "parameters": {"n_estimators": 200, "max_depth": 6, "learning_rate": 0.03, "subsample": 0.9}}
+                ],
+            },
+            "subsample",
+        ),
         (lambda p: {**p, "budget": {"max_evaluations": 0, "top_feature_groups": 1}}, "max_evaluations"),
         (lambda p: {**p, "budget": {"max_evaluations": 1, "top_feature_groups": 11}}, "top_feature_groups"),
     ],
@@ -282,3 +463,43 @@ def test_candidate_identity_collision_shapes_are_rejected():
 
     with pytest.raises(ProposalValidationError, match="name"):
         load_proposal(colliding)
+
+
+def test_xgboost_recipe_reports_clear_message_when_optional_dependency_is_missing(monkeypatch):
+    proposal = load_proposal(
+        _proposal(
+            model_recipes=[
+                {
+                    "name": "xgb_small",
+                    "recipe": "xgboost",
+                    "parameters": {
+                        "n_estimators": 200,
+                        "max_depth": 6,
+                        "learning_rate": 0.03,
+                        "subsample": 0.8,
+                    },
+                    "rationale": "Bounded deterministic boosted tree model.",
+                }
+            ]
+        )
+    )
+    original_import = __import__
+
+    def fail_xgboost_import(name, *args, **kwargs):
+        if name == "xgboost":
+            raise ModuleNotFoundError("No module named 'xgboost'")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fail_xgboost_import)
+    definition = model_definition_from_recipe(proposal.model_recipes[0])
+
+    with pytest.raises(ValueError, match="uv sync --extra model-search"):
+        definition.estimator_factory()
+
+
+def _import_xgboost_or_skip():
+    try:
+        import xgboost
+    except Exception as exc:
+        pytest.skip(f"xgboost import failed in this environment: {exc}")
+    return xgboost
