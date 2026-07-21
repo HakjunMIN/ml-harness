@@ -487,7 +487,7 @@ def test_xgboost_recipe_reports_clear_message_when_optional_dependency_is_missin
 
     def fail_xgboost_import(name, *args, **kwargs):
         if name == "xgboost":
-            raise ModuleNotFoundError("No module named 'xgboost'")
+            raise ModuleNotFoundError("No module named 'xgboost'", name="xgboost")
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr("builtins.__import__", fail_xgboost_import)
@@ -495,6 +495,45 @@ def test_xgboost_recipe_reports_clear_message_when_optional_dependency_is_missin
 
     with pytest.raises(ValueError, match="uv sync --extra model-search"):
         definition.estimator_factory()
+
+
+def test_xgboost_recipe_preserves_native_runtime_import_failures(monkeypatch):
+    proposal = load_proposal(
+        _proposal(
+            model_recipes=[
+                {
+                    "name": "xgb_small",
+                    "recipe": "xgboost",
+                    "parameters": {
+                        "n_estimators": 200,
+                        "max_depth": 6,
+                        "learning_rate": 0.03,
+                        "subsample": 0.8,
+                    },
+                    "rationale": "Bounded deterministic boosted tree model.",
+                }
+            ]
+        )
+    )
+    original_import = __import__
+    runtime_message = "dlopen(libxgboost.dylib): Library not loaded: libomp.dylib"
+
+    def fail_xgboost_runtime_import(name, *args, **kwargs):
+        if name == "xgboost":
+            raise ImportError(runtime_message)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fail_xgboost_runtime_import)
+    definition = model_definition_from_recipe(proposal.model_recipes[0])
+
+    with pytest.raises(ValueError) as excinfo:
+        definition.estimator_factory()
+
+    message = str(excinfo.value)
+    assert "XGBoost initialization/native runtime failure" in message
+    assert runtime_message in message
+    assert "uv sync --extra model-search" not in message
+    assert isinstance(excinfo.value.__cause__, ImportError)
 
 
 def _import_xgboost_or_skip():

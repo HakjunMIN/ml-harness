@@ -134,9 +134,17 @@ def _recipe_random_forest_pipeline(parameters: dict[str, Any]) -> Any:
 def _recipe_xgboost_pipeline(parameters: dict[str, Any]) -> Any:
     try:
         from xgboost import XGBRegressor
-    except Exception as exc:
+    except ModuleNotFoundError as exc:
+        if exc.name == "xgboost":
+            raise ValueError(
+                "requested xgboost recipe requires `uv sync --extra model-search`"
+            ) from exc
         raise ValueError(
-            "requested xgboost recipe requires `uv sync --extra model-search`"
+            f"XGBoost initialization/native runtime failure: {exc}"
+        ) from exc
+    except ImportError as exc:
+        raise ValueError(
+            f"XGBoost initialization/native runtime failure: {exc}"
         ) from exc
     return make_pipeline(
         SimpleImputer(strategy="median"),
