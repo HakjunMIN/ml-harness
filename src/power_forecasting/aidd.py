@@ -515,6 +515,64 @@ def _canonical_model_recipe(recipe: Mapping[str, Any]) -> dict[str, Any]:
             "n_estimators": n_estimators,
             "num_leaves": num_leaves,
         }
+    elif recipe_name == "random_forest":
+        _require_exact_keys(
+            parameters,
+            {"n_estimators", "max_depth", "min_samples_leaf"},
+            "selected_model_recipe.parameters",
+        )
+        n_estimators = _strict_int(
+            "selected_model_recipe.parameters.n_estimators", parameters["n_estimators"]
+        )
+        max_depth = _strict_int_or_none(
+            "selected_model_recipe.parameters.max_depth", parameters["max_depth"]
+        )
+        min_samples_leaf = _strict_int(
+            "selected_model_recipe.parameters.min_samples_leaf", parameters["min_samples_leaf"]
+        )
+        if n_estimators not in {100, 200, 400}:
+            raise PromotionManifestError("selected_model_recipe.parameters.n_estimators outside allowed set")
+        if max_depth not in {8, 12, None}:
+            raise PromotionManifestError("selected_model_recipe.parameters.max_depth outside allowed set")
+        if min_samples_leaf not in {1, 2, 4}:
+            raise PromotionManifestError("selected_model_recipe.parameters.min_samples_leaf outside allowed set")
+        canonical_params = {
+            "max_depth": max_depth,
+            "min_samples_leaf": min_samples_leaf,
+            "n_estimators": n_estimators,
+        }
+    elif recipe_name == "xgboost":
+        _require_exact_keys(
+            parameters,
+            {"n_estimators", "max_depth", "learning_rate", "subsample"},
+            "selected_model_recipe.parameters",
+        )
+        n_estimators = _strict_int(
+            "selected_model_recipe.parameters.n_estimators", parameters["n_estimators"]
+        )
+        max_depth = _strict_int(
+            "selected_model_recipe.parameters.max_depth", parameters["max_depth"]
+        )
+        learning_rate = _finite_number(
+            "selected_model_recipe.parameters.learning_rate", parameters["learning_rate"]
+        )
+        subsample = _finite_number(
+            "selected_model_recipe.parameters.subsample", parameters["subsample"]
+        )
+        if n_estimators not in {100, 200, 400}:
+            raise PromotionManifestError("selected_model_recipe.parameters.n_estimators outside allowed set")
+        if max_depth not in {4, 6, 8}:
+            raise PromotionManifestError("selected_model_recipe.parameters.max_depth outside allowed set")
+        if learning_rate not in {0.03, 0.1}:
+            raise PromotionManifestError("selected_model_recipe.parameters.learning_rate outside allowed set")
+        if subsample not in {0.8, 1.0}:
+            raise PromotionManifestError("selected_model_recipe.parameters.subsample outside allowed set")
+        canonical_params = {
+            "learning_rate": learning_rate,
+            "max_depth": max_depth,
+            "n_estimators": n_estimators,
+            "subsample": subsample,
+        }
     else:
         raise PromotionManifestError("selected_model_recipe.recipe unsupported")
     canonical = {
@@ -690,6 +748,12 @@ def _strict_int(label: str, value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise PromotionManifestError(f"{label} must be an integer")
     return int(value)
+
+
+def _strict_int_or_none(label: str, value: Any) -> int | None:
+    if value is None:
+        return None
+    return _strict_int(label, value)
 
 
 def _contains_sensitive_key(value: Any) -> bool:
