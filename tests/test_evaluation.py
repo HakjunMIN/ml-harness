@@ -385,6 +385,60 @@ class RecordingRegressor(BaseEstimator, RegressorMixin):
         return np.full(len(X), self.prediction_)
 
 
+class FeatureMatrixRecordingRegressor(BaseEstimator, RegressorMixin):
+    validation_matrices = []
+
+    def fit(self, X, y):
+        self.prediction_ = float(np.mean(y))
+        return self
+
+    def predict(self, X):
+        self.__class__.validation_matrices.append(X.copy())
+        return np.full(len(X), self.prediction_)
+
+
+def test_validation_history_features_include_prior_train_rows_without_cross_plant_leakage():
+    frame = generate_synthetic_data(days=1, plants=2, seed=33).iloc[:8].copy()
+    frame["capacity_mw"] = 100.0
+    frame["generation_mw"] = np.arange(1.0, len(frame) + 1.0)
+    frame["forecast_irradiance"] = [
+        11.0,
+        21.0,
+        12.0,
+        22.0,
+        13.0,
+        23.0,
+        14.0,
+        24.0,
+    ]
+    FeatureMatrixRecordingRegressor.validation_matrices = []
+    definition = ModelDefinition(
+        name="FeatureMatrixRecording",
+        base_features=("plant_id", "timestamp", "forecast_irradiance"),
+        estimator_factory=FeatureMatrixRecordingRegressor,
+    )
+
+    evaluate_model(
+        frame,
+        definition,
+        [
+            FeatureSpec(
+                "prior_forecast_irradiance",
+                "lag",
+                ("forecast_irradiance",),
+                {"periods": 1},
+            )
+        ],
+        folds=1,
+    )
+
+    validation_matrix = FeatureMatrixRecordingRegressor.validation_matrices[0]
+    first_validation_rows = validation_matrix.iloc[:2]
+    assert first_validation_rows["plant_id"].tolist() == ["plant_01", "plant_02"]
+    assert first_validation_rows["forecast_irradiance"].tolist() == [13.0, 23.0]
+    assert first_validation_rows["prior_forecast_irradiance"].tolist() == [12.0, 22.0]
+
+
 def test_feature_specs_append_to_base_features_without_mutating_or_duplicating_columns():
     frame = generate_synthetic_data(days=4, plants=2, seed=13)
     original = frame.copy(deep=True)

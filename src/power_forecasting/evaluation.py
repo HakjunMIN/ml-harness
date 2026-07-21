@@ -112,8 +112,12 @@ def evaluate_model(
     ):
         train = frame.iloc[train_index]
         validation = frame.iloc[validation_index]
-        x_train = _feature_matrix(train, definition.base_features, specs)
-        x_validation = _feature_matrix(validation, definition.base_features, specs)
+        fold_positions = np.concatenate([train_index, validation_index])
+        fold_features = _feature_matrix(
+            frame.iloc[fold_positions], definition.base_features, specs
+        )
+        x_train = fold_features.iloc[: len(train_index)]
+        x_validation = fold_features.iloc[len(train_index) :]
         y_train = train["generation_mw"].to_numpy(dtype=float)
 
         estimator = clone(definition.estimator_factory())
