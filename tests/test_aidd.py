@@ -163,6 +163,19 @@ def test_prediction_contract_allows_forecast_history_specs_but_render_rejects_st
         aidd.render_promoted_module(manifest, aidd_run_dir / "promoted.py")
 
 
+def test_prediction_contract_rejects_zero_input_history_specs_before_stateful_special_case():
+    spec = FeatureSpec(
+        "prior_irradiance",
+        "lag",
+        (),
+        {"periods": 1},
+        rationale="Invalid lag missing its source input.",
+    )
+
+    with pytest.raises(aidd.PromotionManifestError, match="lag expects 1 inputs"):
+        aidd.validate_prediction_time_feature_spec(spec)
+
+
 @pytest.mark.parametrize(
     ("spec", "message"),
     [

@@ -175,8 +175,6 @@ def _lag(frame: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:
         window=periods,
         reducer=lambda history: history[-periods],
     )
-    if insufficient.any():
-        raise ValueError(f"feature {spec.name}: insufficient history for lag periods={periods}")
     return values
 
 
@@ -188,8 +186,6 @@ def _rolling_mean(frame: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:
         window=window,
         reducer=lambda history: float(np.mean(history[-window:])),
     )
-    if insufficient.any():
-        raise ValueError(f"feature {spec.name}: insufficient history for rolling_mean window={window}")
     return values
 
 
@@ -345,7 +341,11 @@ def apply_feature_specs(frame: pd.DataFrame, specs: list[FeatureSpec]) -> pd.Dat
     output = pd.DataFrame(index=frame.index)
     for spec in specs:
         values = TRANSFORMS[spec.transform](frame, spec)
-        if not np.isfinite(values).all():
+        if spec.transform in {"lag", "rolling_mean"}:
+            invalid = np.isinf(values).any()
+        else:
+            invalid = not np.isfinite(values).all()
+        if invalid:
             raise ValueError(f"feature {spec.name}: non-finite output")
         output[spec.name] = values
     return output

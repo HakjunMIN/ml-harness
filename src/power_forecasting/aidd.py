@@ -10,7 +10,12 @@ from typing import Any
 import pandas as pd
 
 from power_forecasting.data import REQUIRED_COLUMNS
-from power_forecasting.features import FeatureSpec, TRANSFORMS, apply_feature_specs
+from power_forecasting.features import (
+    FeatureSpec,
+    TRANSFORMS,
+    _TRANSFORM_ARITY,
+    apply_feature_specs,
+)
 
 
 class PromotionManifestError(ValueError):
@@ -64,10 +69,9 @@ def validate_prediction_time_feature_spec(
 ) -> None:
     try:
         _validate_spec_primitives(spec)
-        if spec.transform not in TRANSFORMS:
-            raise PromotionManifestError(
-                f"feature {spec.name}: unknown transform {spec.transform}"
-            )
+        _validate_transform_and_arity(spec)
+        if spec.transform in _HISTORY_TRANSFORMS:
+            _validate_history_parameters(spec)
         _reject_unavailable_inputs(spec)
         _validate_prediction_time_inputs(spec)
         _validate_spec_without_source_existence(spec)
@@ -132,6 +136,18 @@ def _validate_primitive_value(label: str, value: Any) -> None:
     raise PromotionManifestError(
         f"{label} must contain primitive literal values, got {type(value).__name__}"
     )
+
+
+def _validate_transform_and_arity(spec: FeatureSpec) -> None:
+    if spec.transform not in TRANSFORMS:
+        raise PromotionManifestError(
+            f"feature {spec.name}: unknown transform {spec.transform}"
+        )
+    expected_arity = _TRANSFORM_ARITY[spec.transform]
+    if len(spec.inputs) != expected_arity:
+        raise PromotionManifestError(
+            f"feature {spec.name}: {spec.transform} expects {expected_arity} inputs"
+        )
 
 
 def _reject_unavailable_inputs(spec: FeatureSpec) -> None:

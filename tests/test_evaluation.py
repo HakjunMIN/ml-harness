@@ -404,6 +404,29 @@ def test_feature_specs_append_to_base_features_without_mutating_or_duplicating_c
     pd.testing.assert_frame_equal(frame, original)
 
 
+def test_evaluate_model_imputes_history_warmup_nan_with_existing_forecast_estimator():
+    frame = generate_synthetic_data(days=4, plants=2, seed=31)
+    definition = model_definition("ForecastWeather")
+    estimator = definition.estimator_factory()
+    specs = [
+        FeatureSpec(
+            "prior_irradiance",
+            "lag",
+            ("forecast_irradiance",),
+            {"periods": 1},
+        )
+    ]
+
+    assert isinstance(estimator, Pipeline)
+    assert isinstance(estimator.named_steps["simpleimputer"], SimpleImputer)
+
+    result = evaluate_model(frame, definition, specs, folds=2)
+
+    assert len(result.predictions) > 0
+    assert np.isfinite(result.predictions["prediction"]).all()
+    assert np.isfinite(list(result.metrics.values())).all()
+
+
 class StateIsolationRegressor(BaseEstimator, RegressorMixin):
     fit_instances = []
 

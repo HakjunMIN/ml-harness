@@ -125,39 +125,54 @@ def test_ratio_divides_numeric_inputs():
     np.testing.assert_allclose(features["irradiance_per_cloud"].to_numpy(), [5.0, -0.75])
 
 
-def test_lag_rejects_same_timestamp_peers_instead_of_leaking_future_or_other_plants():
+def test_history_transforms_emit_warmup_nan_then_strict_prior_values_in_original_order():
     frame = pd.DataFrame(
         {
-            "plant_id": ["b", "a", "a", "b", "a", "b", "a", "b"],
+            "plant_id": ["a", "b", "a", "a", "b", "a"],
             "timestamp": pd.to_datetime(
                 [
+                    "2024-01-01 03:00",
+                    "2024-01-01 02:00",
+                    "2024-01-01 00:00",
                     "2024-01-01 01:00",
                     "2024-01-01 01:00",
                     "2024-01-01 02:00",
-                    "2024-01-01 03:00",
-                    "2024-01-01 01:00",
-                    "2024-01-01 02:00",
-                    "2024-01-01 03:00",
-                    "2024-01-01 01:00",
                 ]
             ),
-            "forecast_irradiance": [10.0, 100.0, 200.0, 30.0, 999.0, 20.0, 300.0, 11.0],
+            "forecast_irradiance": [40.0, 200.0, 10.0, 20.0, 100.0, 30.0],
         },
-        index=list("hgfedcba"),
+        index=list("zyxwvu"),
     )
 
-    with pytest.raises(ValueError, match="prior_irradiance.*insufficient history"):
-        apply_feature_specs(
-            frame,
-            [
-                FeatureSpec(
-                    "prior_irradiance",
-                    "lag",
-                    ("forecast_irradiance",),
-                    {"periods": 1},
-                )
-            ],
-        )
+    features = apply_feature_specs(
+        frame,
+        [
+            FeatureSpec(
+                "prior_irradiance",
+                "lag",
+                ("forecast_irradiance",),
+                {"periods": 1},
+            ),
+            FeatureSpec(
+                "prior_irradiance_mean_3",
+                "rolling_mean",
+                ("forecast_irradiance",),
+                {"window": 3},
+            ),
+        ],
+    )
+
+    assert list(features.index) == list("zyxwvu")
+    np.testing.assert_allclose(
+        features["prior_irradiance"].to_numpy(),
+        [30.0, 100.0, np.nan, 10.0, np.nan, 20.0],
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        features["prior_irradiance_mean_3"].to_numpy(),
+        [20.0, np.nan, np.nan, np.nan, np.nan, np.nan],
+        equal_nan=True,
+    )
 
 
 def test_history_values_are_strict_prior_per_plant_stably_sorted_and_index_aligned():

@@ -37,8 +37,9 @@ preserving deterministic evidence, promotion gates, and human review.
 Feature transforms may use only forecast-time columns and historical values
 strictly earlier than the current timestamp. For a validation row, history is
 built from earlier timestamps only; ties at the same timestamp are excluded.
-The transform rejects missing or insufficient history rather than filling with
-the target. Any generated feature module remains stateless; history-dependent
+Warm-up rows with insufficient prior history emit NaN history features, which
+model pipelines impute from the training fold rather than filling from the
+target. Any generated feature module remains stateless; history-dependent
 features produce a human-review-only recipe patch and are not emitted as
 executable AIDD feature code.
 
