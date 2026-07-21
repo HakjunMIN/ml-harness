@@ -454,6 +454,7 @@ def _run_lightgbm_search(
         direction="minimize",
     )
     trials: list[CandidateResult] = []
+    evaluated_by_parameters: dict[str, CandidateResult] = {}
 
     def objective(trial: Any) -> float:
         parameters = {
@@ -461,6 +462,16 @@ def _run_lightgbm_search(
             for name in ("n_estimators", "learning_rate", "num_leaves", "min_child_samples")
         }
         trial_number = int(trial.number)
+        canonical_parameters = _canonical_lightgbm_parameters(parameters)
+        if canonical_parameters in evaluated_by_parameters:
+            source = evaluated_by_parameters[canonical_parameters]
+            _record_reused_search_trial(
+                store=store,
+                source=source,
+                trial_number=trial_number,
+            )
+            trials.append(source)
+            return _nmae(source)
         recipe = {
             "name": f"optuna_lightgbm_{trial_number}",
             "recipe": "lightgbm",
@@ -495,11 +506,47 @@ def _run_lightgbm_search(
             proposal=proposal_payload,
             search=recipe["search"],
         )
+        evaluated_by_parameters[canonical_parameters] = candidate
         trials.append(candidate)
         return _nmae(candidate)
 
     study.optimize(objective, n_trials=int(search["n_trials"]))
     return min(trials, key=_search_trial_sort_key)
+
+
+def _canonical_lightgbm_parameters(parameters: Mapping[str, Any]) -> str:
+    return json.dumps(
+        _json_safe_value(dict(parameters)),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _record_reused_search_trial(
+    *,
+    store: ExperimentStore,
+    source: CandidateResult,
+    trial_number: int,
+) -> None:
+    run = store.get_run(source.run_id)
+    artifacts = dict(run["artifacts"] or {})
+    reused_trials = list(artifacts.get("reused_trials", []))
+    source_trial_number = None
+    if source.model_recipe is not None:
+        search = source.model_recipe.get("search", {})
+        if isinstance(search, Mapping):
+            source_trial_number = search.get("trial_number")
+    reused_trials.append(
+        {
+            "trial_number": int(trial_number),
+            "source_trial_number": int(source_trial_number),
+            "source_run_id": source.run_id,
+            "source_candidate_name": source.name,
+        }
+    )
+    artifacts["reused_trials"] = reused_trials
+    store.update_artifacts(source.run_id, artifacts)
 
 
 def _search_trial_sort_key(candidate: CandidateResult) -> tuple[float, str, str]:

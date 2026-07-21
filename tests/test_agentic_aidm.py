@@ -221,6 +221,79 @@ def test_lightgbm_optuna_search_selects_best_trial_with_deterministic_provenance
     assert calls[2][0] == "Recipe:lightgbm:optuna_lightgbm_1"
 
 
+def test_lightgbm_optuna_search_reuses_duplicate_resolved_parameters(agentic_db_path, monkeypatch):
+    _install_fake_optuna(monkeypatch)
+    _install_fake_lightgbm(monkeypatch)
+    lightgbm_calls = []
+
+    def fake_evaluate(frame, definition, feature_specs, folds):
+        if not feature_specs:
+            return _evaluation(frame, 0.30)
+        if definition.name == "Recipe:ridge:ridge_low":
+            return _evaluation(frame, 0.20)
+        estimator = definition.estimator_factory().steps[-1][1]
+        lightgbm_calls.append((
+            definition.name,
+            estimator.parameters["n_estimators"],
+            estimator.parameters["learning_rate"],
+            estimator.parameters["num_leaves"],
+            estimator.parameters["min_child_samples"],
+            tuple(spec.name for spec in feature_specs),
+        ))
+        return _evaluation(frame, 0.08)
+
+    monkeypatch.setattr(aidm, "evaluate_model", fake_evaluate)
+    singleton_search = _lightgbm_search(n_trials=2)
+    singleton_search["spaces"]["lightgbm"] = {
+        "n_estimators": [100],
+        "learning_rate": [0.03],
+        "num_leaves": [15],
+        "min_child_samples": [10],
+    }
+    proposal = _proposal(
+        model_recipes=[_proposal()["model_recipes"][0]],
+        search=singleton_search,
+        budget={"max_evaluations": 3, "top_feature_groups": 1},
+    )
+
+    result = aidm.run_aidm(
+        generate_synthetic_data(days=4, plants=2, seed=16),
+        agentic_db_path,
+        aidm.AIDMConfig(folds=1, minimum_improvement=0.0, max_plant_regression=1.0),
+        proposal=proposal,
+    )
+
+    assert lightgbm_calls == [
+        (
+            "Recipe:lightgbm:optuna_lightgbm_0",
+            100,
+            0.03,
+            15,
+            10,
+            ("effective_irradiance",),
+        )
+    ]
+    assert result.winner.name == "optuna_lightgbm_0:safe_solar"
+
+    store = ExperimentStore(agentic_db_path)
+    trial_runs = [
+        run
+        for run in store.list_runs()
+        if run["name"].startswith("aidm-optuna-lightgbm")
+    ]
+    assert len(trial_runs) == 1
+    actual_run = trial_runs[0]
+    assert result.winner.run_id == actual_run["id"]
+    assert actual_run["artifacts"]["reused_trials"] == [
+        {
+            "trial_number": 1,
+            "source_trial_number": 0,
+            "source_run_id": actual_run["id"],
+            "source_candidate_name": "optuna_lightgbm_0:safe_solar",
+        }
+    ]
+
+
 def test_search_budget_fails_before_baseline_or_store_creation(agentic_db_path, monkeypatch):
     calls = []
     monkeypatch.setattr(aidm, "evaluate_model", lambda *args, **kwargs: calls.append(args))

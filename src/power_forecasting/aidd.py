@@ -269,6 +269,14 @@ def _validate_provenance(
     _require_nonempty_string(winner, "name", "winner.name")
     _require_nonempty_string(winner, "run_id", "winner.run_id")
     selected_recipe = manifest.get("selected_model_recipe")
+    if isinstance(selected_recipe, Mapping):
+        proposal = _validated_embedded_proposal(_require_mapping(manifest, "proposal"))
+        _validate_agentic_model_recipe_binding(
+            proposal,
+            winner,
+            _canonical_model_recipe(selected_recipe),
+            specs,
+        )
     expected_winner_name = (
         _require_nonblank_string(winner, "name", "winner.name")
         if isinstance(selected_recipe, Mapping)
@@ -385,29 +393,44 @@ def _validate_agentic_model_recipe_binding(
     feature_sets = _require_list(proposal, "feature_sets", "proposal.feature_sets")
     model_recipes = _require_list(proposal, "model_recipes", "proposal.model_recipes")
 
-    if selected_recipe not in model_recipes:
-        raise PromotionManifestError("selected_model_recipe does not match proposal.model_recipes")
-
     winner_name = _safe_nonblank_string(winner, "name", "winner.name")
-    recipe_prefix = f"{selected_recipe['name']}:"
-    if not winner_name.startswith(recipe_prefix):
-        raise PromotionManifestError("winner.name does not match selected_model_recipe")
-    feature_set_name = winner_name[len(recipe_prefix) :]
-    if not feature_set_name:
-        raise PromotionManifestError("winner.name missing feature set name")
-
-    expected_winner_name = f"{selected_recipe['name']}:{feature_set_name}"
-    if winner_name != expected_winner_name:
-        raise PromotionManifestError("winner.name does not bind recipe and feature set")
-
-    matching_feature_sets = [feature_set for feature_set in feature_sets if feature_set["name"] == feature_set_name]
-    if len(matching_feature_sets) != 1:
-        raise PromotionManifestError("winner.name feature set not found in proposal.feature_sets")
 
     selected_specs_payload = _spec_payloads_by_name([spec.to_dict() for spec in selected_specs])
-    feature_set_specs_payload = _spec_payloads_by_name(matching_feature_sets[0]["specs"])
-    if selected_specs_payload != feature_set_specs_payload:
-        raise PromotionManifestError("selected_specs do not match proposal feature set")
+    matching_feature_sets = [
+        feature_set
+        for feature_set in feature_sets
+        if selected_specs_payload == _spec_payloads_by_name(feature_set["specs"])
+    ]
+    if len(matching_feature_sets) != 1:
+        raise PromotionManifestError("selected_specs must match exactly one proposal feature set")
+    feature_set_name = _require_nonblank_string(
+        matching_feature_sets[0], "name", "proposal.feature_sets.name"
+    )
+    expected_suffix = f":{feature_set_name}"
+    if not winner_name.endswith(expected_suffix):
+        raise PromotionManifestError("winner.name does not match selected_specs feature set")
+
+    if _is_optuna_lightgbm_recipe(selected_recipe):
+        if winner_name != f"{selected_recipe['name']}:{feature_set_name}":
+            raise PromotionManifestError("winner.name does not match selected_model_recipe")
+        search = _require_mapping(selected_recipe, "search")
+        if search.get("feature_set") != feature_set_name:
+            raise PromotionManifestError("selected_model_recipe search feature_set does not match selected_specs")
+        _validate_optuna_search_provenance(
+            proposal=proposal,
+            feature_sets=feature_sets,
+            feature_set_name=feature_set_name,
+            selected_recipe=selected_recipe,
+        )
+        expected_name = f"optuna_lightgbm_{search.get('trial_number')}"
+        if selected_recipe["name"] != expected_name:
+            raise PromotionManifestError("selected_model_recipe search trial_number does not match name")
+        return
+
+    if selected_recipe not in model_recipes:
+        raise PromotionManifestError("selected_model_recipe does not match proposal.model_recipes")
+    if winner_name != f"{selected_recipe['name']}:{feature_set_name}":
+        raise PromotionManifestError("winner.name does not match selected_model_recipe")
 
 
 def _spec_payloads_by_name(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -415,9 +438,9 @@ def _spec_payloads_by_name(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _canonical_model_recipe(recipe: Mapping[str, Any]) -> dict[str, Any]:
-    allowed_top = {"name", "recipe", "parameters", "rationale"}
+    allowed_top = {"name", "recipe", "parameters", "rationale", "search"}
     extra = set(recipe) - allowed_top
-    missing = allowed_top - set(recipe)
+    missing = (allowed_top - {"search"}) - set(recipe)
     if extra:
         raise PromotionManifestError(f"selected_model_recipe unknown keys: {sorted(extra)}")
     if missing:
@@ -459,14 +482,193 @@ def _canonical_model_recipe(recipe: Mapping[str, Any]) -> dict[str, Any]:
             "max_iter": max_iter,
             "max_leaf_nodes": max_leaf_nodes,
         }
+    elif recipe_name == "lightgbm":
+        _require_exact_keys(
+            parameters,
+            {"n_estimators", "learning_rate", "num_leaves", "min_child_samples"},
+            "selected_model_recipe.parameters",
+        )
+        n_estimators = _strict_int(
+            "selected_model_recipe.parameters.n_estimators", parameters["n_estimators"]
+        )
+        learning_rate = _finite_number(
+            "selected_model_recipe.parameters.learning_rate", parameters["learning_rate"]
+        )
+        num_leaves = _strict_int(
+            "selected_model_recipe.parameters.num_leaves", parameters["num_leaves"]
+        )
+        min_child_samples = _strict_int(
+            "selected_model_recipe.parameters.min_child_samples",
+            parameters["min_child_samples"],
+        )
+        if n_estimators not in {100, 300}:
+            raise PromotionManifestError("selected_model_recipe.parameters.n_estimators outside allowed set")
+        if learning_rate not in {0.03, 0.1}:
+            raise PromotionManifestError("selected_model_recipe.parameters.learning_rate outside allowed set")
+        if num_leaves not in {15, 31}:
+            raise PromotionManifestError("selected_model_recipe.parameters.num_leaves outside allowed set")
+        if min_child_samples not in {10, 20}:
+            raise PromotionManifestError("selected_model_recipe.parameters.min_child_samples outside allowed set")
+        canonical_params = {
+            "learning_rate": learning_rate,
+            "min_child_samples": min_child_samples,
+            "n_estimators": n_estimators,
+            "num_leaves": num_leaves,
+        }
     else:
         raise PromotionManifestError("selected_model_recipe.recipe unsupported")
-    return {
+    canonical = {
         "name": name,
         "parameters": canonical_params,
         "rationale": rationale,
         "recipe": recipe_name,
     }
+    if "search" in recipe:
+        if not _is_optuna_lightgbm_name(name) or recipe_name != "lightgbm":
+            raise PromotionManifestError("selected_model_recipe.search requires optuna LightGBM recipe")
+        canonical["search"] = _canonical_optuna_lightgbm_search(_require_mapping(recipe, "search"))
+    elif _is_optuna_lightgbm_name(name):
+        raise PromotionManifestError("selected_model_recipe.search missing for optuna LightGBM recipe")
+    return canonical
+
+
+def _validate_optuna_search_provenance(
+    *,
+    proposal: Mapping[str, Any],
+    feature_sets: list[Any],
+    feature_set_name: str,
+    selected_recipe: Mapping[str, Any],
+) -> None:
+    proposal_search = _require_mapping(proposal, "search")
+    selected_search = _require_mapping(selected_recipe, "search")
+    proposal_spaces = _require_mapping(proposal_search, "spaces")
+    proposal_lightgbm_space = _canonical_lightgbm_search_space(
+        _require_mapping(proposal_spaces, "lightgbm")
+    )
+    selected_space = _canonical_lightgbm_search_space(_require_mapping(selected_search, "space"))
+
+    feature_set_index = next(
+        index
+        for index, feature_set in enumerate(feature_sets)
+        if feature_set.get("name") == feature_set_name
+    )
+    expected_search = {
+        "feature_set": feature_set_name,
+        "n_trials": _strict_int("proposal.search.n_trials", proposal_search["n_trials"]),
+        "sampler": _require_nonblank_string(proposal_search, "sampler", "proposal.search.sampler"),
+        "seed": _strict_int("proposal.search.seed", proposal_search["seed"]) + feature_set_index,
+        "space": proposal_lightgbm_space,
+        "trial_number": selected_search["trial_number"],
+    }
+    if selected_space != proposal_lightgbm_space:
+        raise PromotionManifestError("selected_model_recipe search space does not match proposal.search")
+    if dict(selected_search) != expected_search:
+        raise PromotionManifestError("selected_model_recipe search does not match proposal.search")
+
+    parameters = _require_mapping(selected_recipe, "parameters")
+    for name, value in parameters.items():
+        if value not in selected_space[name]:
+            raise PromotionManifestError("selected_model_recipe parameters do not match search space")
+
+
+def _is_optuna_lightgbm_recipe(recipe: Mapping[str, Any]) -> bool:
+    return (
+        recipe.get("recipe") == "lightgbm"
+        and _is_optuna_lightgbm_name(recipe.get("name"))
+        and isinstance(recipe.get("search"), Mapping)
+    )
+
+
+def _is_optuna_lightgbm_name(name: Any) -> bool:
+    if type(name) is not str or not name.startswith("optuna_lightgbm_"):
+        return False
+    suffix = name.removeprefix("optuna_lightgbm_")
+    return suffix.isdecimal()
+
+
+def _canonical_optuna_lightgbm_search(search: Mapping[str, Any]) -> dict[str, Any]:
+    _require_exact_keys(
+        search,
+        {"sampler", "seed", "n_trials", "space", "trial_number", "feature_set"},
+        "selected_model_recipe.search",
+    )
+    sampler = _require_nonblank_string(search, "sampler", "selected_model_recipe.search.sampler")
+    if sampler != "tpe":
+        raise PromotionManifestError("selected_model_recipe.search.sampler must be exactly 'tpe'")
+    seed = _strict_int("selected_model_recipe.search.seed", search["seed"])
+    n_trials = _strict_int("selected_model_recipe.search.n_trials", search["n_trials"])
+    trial_number = _strict_int("selected_model_recipe.search.trial_number", search["trial_number"])
+    if seed < 0:
+        raise PromotionManifestError("selected_model_recipe.search.seed must be >= 0")
+    if not 1 <= n_trials <= 50:
+        raise PromotionManifestError("selected_model_recipe.search.n_trials must be 1..50")
+    if not 0 <= trial_number < n_trials:
+        raise PromotionManifestError("selected_model_recipe.search.trial_number outside n_trials")
+    feature_set = _require_nonblank_string(
+        search, "feature_set", "selected_model_recipe.search.feature_set"
+    )
+    _reject_unsafe_string("selected_model_recipe.search.feature_set", feature_set)
+    return {
+        "feature_set": feature_set,
+        "n_trials": n_trials,
+        "sampler": sampler,
+        "seed": seed,
+        "space": _canonical_lightgbm_search_space(_require_mapping(search, "space")),
+        "trial_number": trial_number,
+    }
+
+
+def _canonical_lightgbm_search_space(space: Mapping[str, Any]) -> dict[str, Any]:
+    _require_exact_keys(
+        space,
+        {"n_estimators", "learning_rate", "num_leaves", "min_child_samples"},
+        "selected_model_recipe.search.space",
+    )
+    return {
+        "learning_rate": _canonical_search_values(
+            "selected_model_recipe.search.space.learning_rate",
+            space["learning_rate"],
+            {0.03, 0.1},
+            numeric=True,
+        ),
+        "min_child_samples": _canonical_search_values(
+            "selected_model_recipe.search.space.min_child_samples",
+            space["min_child_samples"],
+            {10, 20},
+        ),
+        "n_estimators": _canonical_search_values(
+            "selected_model_recipe.search.space.n_estimators",
+            space["n_estimators"],
+            {100, 300},
+        ),
+        "num_leaves": _canonical_search_values(
+            "selected_model_recipe.search.space.num_leaves",
+            space["num_leaves"],
+            {15, 31},
+        ),
+    }
+
+
+def _canonical_search_values(
+    label: str,
+    value: Any,
+    allowed: set[int | float],
+    *,
+    numeric: bool = False,
+) -> list[int | float]:
+    if not isinstance(value, list) or not value:
+        raise PromotionManifestError(f"{label} must be a non-empty list")
+    canonical: list[int | float] = []
+    seen: set[int | float] = set()
+    for item in value:
+        normalized = _finite_number(label, item) if numeric else _strict_int(label, item)
+        if normalized not in allowed:
+            raise PromotionManifestError(f"{label} contains value outside allowed set")
+        if normalized in seen:
+            raise PromotionManifestError(f"{label} contains duplicate values")
+        seen.add(normalized)
+        canonical.append(normalized)
+    return canonical
 
 
 def _require_exact_keys(mapping: Mapping[str, Any], keys: set[str], label: str) -> None:
