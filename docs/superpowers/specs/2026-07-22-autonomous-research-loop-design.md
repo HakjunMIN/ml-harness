@@ -138,6 +138,11 @@ The input `research-loop.json` has exact keys:
 - `minimum_improvement` and `max_plant_regression`: finite values validated by
   the existing AIDM configuration contract
 
+Relative paths resolve against the configuration file's directory. The run
+directory must not overlap source, tests, documentation, fixtures, skills,
+scripts, or harness code. Repository-local `.agents/runs` and `.agents/output`
+are the only allowed `.agents` destinations.
+
 The loop may use less than the configured budget but never more. It must not
 modify the configuration after `initialized`.
 
