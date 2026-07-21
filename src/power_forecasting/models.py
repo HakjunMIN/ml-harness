@@ -158,6 +158,32 @@ def _recipe_xgboost_pipeline(parameters: dict[str, Any]) -> Any:
     )
 
 
+def _recipe_lightgbm_pipeline(parameters: dict[str, Any]) -> Any:
+    try:
+        from lightgbm import LGBMRegressor
+    except ModuleNotFoundError as exc:
+        if exc.name == "lightgbm":
+            raise ValueError(
+                "requested lightgbm recipe requires `uv sync --extra model-search`"
+            ) from exc
+        raise ValueError(
+            f"LightGBM initialization/native runtime failure: {exc}"
+        ) from exc
+    except ImportError as exc:
+        raise ValueError(
+            f"LightGBM initialization/native runtime failure: {exc}"
+        ) from exc
+    return make_pipeline(
+        SimpleImputer(strategy="median"),
+        LGBMRegressor(
+            random_state=0,
+            n_jobs=1,
+            verbosity=-1,
+            **parameters,
+        ),
+    )
+
+
 WEATHER_ORACLE_LEGACY_FEATURES = (
     "actual_irradiance",
     "actual_temperature",
@@ -269,6 +295,13 @@ def model_definition_from_recipe(model_recipe: "ModelRecipe") -> ModelDefinition
             f"Recipe:xgboost:{name}",
             SPOT_FEATURES,
             lambda: _recipe_xgboost_pipeline(dict(parameters)),
+            data_availability="forecast",
+        )
+    if recipe == "lightgbm":
+        return ModelDefinition(
+            f"Recipe:lightgbm:{name}",
+            SPOT_FEATURES,
+            lambda: _recipe_lightgbm_pipeline(dict(parameters)),
             data_availability="forecast",
         )
     raise ValueError(f"unsupported recipe: {recipe}")

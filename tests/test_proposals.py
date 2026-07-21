@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import sys
+from types import ModuleType
 
 import pytest
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
@@ -70,6 +72,17 @@ def _proposal(**overrides):
                 },
                 "rationale": "Bounded deterministic boosted tree model.",
             },
+            {
+                "name": "lgbm_small",
+                "recipe": "lightgbm",
+                "parameters": {
+                    "n_estimators": 100,
+                    "learning_rate": 0.03,
+                    "num_leaves": 15,
+                    "min_child_samples": 10,
+                },
+                "rationale": "Bounded deterministic LightGBM model.",
+            },
         ],
         "budget": {"max_evaluations": 10, "top_feature_groups": 3},
     }
@@ -132,6 +145,53 @@ def test_valid_proposal_round_trips_and_model_recipes_build_expected_estimators(
     assert xgb_estimator.max_depth == 6
     assert xgb_estimator.learning_rate == 0.03
     assert xgb_estimator.subsample == 0.8
+
+    lightgbm = _import_lightgbm_or_skip()
+    lgbm = model_definition_from_recipe(proposal.model_recipes[4])
+    assert lgbm.name == "Recipe:lightgbm:lgbm_small"
+    assert lgbm.base_features == SPOT_FEATURES
+    assert lgbm.data_availability == "forecast"
+    lgbm_steps = lgbm.estimator_factory().steps
+    assert list(name for name, _ in lgbm_steps) == ["simpleimputer", "lgbmregressor"]
+    assert lgbm_steps[0][1].strategy == "median"
+    lgbm_estimator = lgbm_steps[-1][1]
+    assert isinstance(lgbm_estimator, lightgbm.LGBMRegressor)
+    assert lgbm_estimator.random_state == 0
+    assert lgbm_estimator.n_jobs == 1
+    assert lgbm_estimator.verbosity == -1
+    assert lgbm_estimator.n_estimators == 100
+    assert lgbm_estimator.learning_rate == 0.03
+    assert lgbm_estimator.num_leaves == 15
+    assert lgbm_estimator.min_child_samples == 10
+
+
+def test_search_proposal_round_trips_without_breaking_legacy_proposals():
+    legacy = load_proposal(_proposal(model_recipes=[_proposal()["model_recipes"][0]]))
+    assert proposal_to_dict(legacy) == _proposal(model_recipes=[_proposal()["model_recipes"][0]])
+    assert legacy.search is None
+
+    proposal = _proposal(
+        model_recipes=[_proposal()["model_recipes"][0]],
+        search=_lightgbm_search(n_trials=3),
+        budget={"max_evaluations": 4, "top_feature_groups": 1},
+    )
+
+    loaded = load_proposal(proposal)
+
+    assert loaded.search == {
+        "sampler": "tpe",
+        "seed": 7,
+        "n_trials": 3,
+        "spaces": {
+            "lightgbm": {
+                "n_estimators": [100, 300],
+                "learning_rate": [0.03, 0.1],
+                "num_leaves": [15, 31],
+                "min_child_samples": [10, 20],
+            }
+        },
+    }
+    assert proposal_to_dict(loaded) == proposal
 
 
 def test_proposal_validation_accepts_forecast_history_feature_specs():
@@ -446,8 +506,180 @@ def test_proposal_validation_accepts_forecast_history_feature_specs():
             },
             "subsample",
         ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {
+                        **p["model_recipes"][4],
+                        "parameters": {
+                            "n_estimators": 200,
+                            "learning_rate": 0.03,
+                            "num_leaves": 15,
+                            "min_child_samples": 10,
+                        },
+                    }
+                ],
+            },
+            "n_estimators",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {
+                        **p["model_recipes"][4],
+                        "parameters": {
+                            "n_estimators": 100,
+                            "learning_rate": 0.2,
+                            "num_leaves": 15,
+                            "min_child_samples": 10,
+                        },
+                    }
+                ],
+            },
+            "learning_rate",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {
+                        **p["model_recipes"][4],
+                        "parameters": {
+                            "n_estimators": 100,
+                            "learning_rate": 0.03,
+                            "num_leaves": 63,
+                            "min_child_samples": 10,
+                        },
+                    }
+                ],
+            },
+            "num_leaves",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {
+                        **p["model_recipes"][4],
+                        "parameters": {
+                            "n_estimators": 100,
+                            "learning_rate": 0.03,
+                            "num_leaves": 15,
+                            "min_child_samples": 30,
+                        },
+                    }
+                ],
+            },
+            "min_child_samples",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {
+                        **p["model_recipes"][4],
+                        "parameters": {
+                            "n_estimators": 100,
+                            "learning_rate": 0.03,
+                            "num_leaves": 15,
+                        },
+                    }
+                ],
+            },
+            "missing parameters",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [
+                    {
+                        **p["model_recipes"][4],
+                        "parameters": {
+                            "n_estimators": 100,
+                            "learning_rate": 0.03,
+                            "num_leaves": 15,
+                            "min_child_samples": 10,
+                            "feature_fraction": 0.8,
+                        },
+                    }
+                ],
+            },
+            "unknown parameters",
+        ),
         (lambda p: {**p, "budget": {"max_evaluations": 0, "top_feature_groups": 1}}, "max_evaluations"),
         (lambda p: {**p, "budget": {"max_evaluations": 1, "top_feature_groups": 11}}, "top_feature_groups"),
+        (lambda p: {**p, "search": {**_lightgbm_search(), "sampler": "random"}}, "sampler"),
+        (lambda p: {**p, "search": {k: v for k, v in _lightgbm_search().items() if k != "seed"}}, "missing keys"),
+        (lambda p: {**p, "search": {**_lightgbm_search(), "seed": -1}}, "seed"),
+        (lambda p: {**p, "search": {**_lightgbm_search(), "seed": True}}, "seed"),
+        (lambda p: {**p, "search": {**_lightgbm_search(), "n_trials": 0}}, "n_trials"),
+        (lambda p: {**p, "search": {**_lightgbm_search(), "n_trials": 51}}, "n_trials"),
+        (
+            lambda p: {
+                **p,
+                "search": {
+                    **_lightgbm_search(),
+                    "spaces": {**_lightgbm_search()["spaces"], "xgboost": {}},
+                },
+            },
+            "spaces",
+        ),
+        (
+            lambda p: {
+                **p,
+                "search": {
+                    **_lightgbm_search(),
+                    "spaces": {
+                        "lightgbm": {
+                            **_lightgbm_search()["spaces"]["lightgbm"],
+                            "max_depth": [4],
+                        }
+                    },
+                },
+            },
+            "unknown keys",
+        ),
+        (
+            lambda p: {
+                **p,
+                "search": {
+                    **_lightgbm_search(),
+                    "spaces": {
+                        "lightgbm": {
+                            **_lightgbm_search()["spaces"]["lightgbm"],
+                            "learning_rate": [0.05],
+                        }
+                    },
+                },
+            },
+            "learning_rate",
+        ),
+        (
+            lambda p: {
+                **p,
+                "search": {
+                    **_lightgbm_search(),
+                    "spaces": {
+                        "lightgbm": {
+                            **_lightgbm_search()["spaces"]["lightgbm"],
+                            "n_estimators": [],
+                        }
+                    },
+                },
+            },
+            "nonempty",
+        ),
+        (
+            lambda p: {
+                **p,
+                "model_recipes": [p["model_recipes"][0]],
+                "search": _lightgbm_search(n_trials=10),
+                "budget": {"max_evaluations": 10, "top_feature_groups": 1},
+            },
+            "max_evaluations",
+        ),
     ],
 )
 def test_strict_proposal_rejections(mutate, message):
@@ -465,6 +697,10 @@ def test_strict_proposal_rejections(mutate, message):
         lambda p: {
             **p,
             "model_recipes": [{**p["model_recipes"][0], "name": "ridge:low"}],
+        },
+        lambda p: {
+            **p,
+            "model_recipes": [{**p["model_recipes"][0], "name": "optuna_lightgbm_0"}],
         },
     ],
 )
@@ -562,9 +798,143 @@ def test_xgboost_recipe_preserves_native_runtime_import_failures(monkeypatch):
     assert isinstance(excinfo.value.__cause__, ImportError)
 
 
+def test_lightgbm_recipe_reports_clear_message_when_optional_dependency_is_missing(monkeypatch):
+    proposal = load_proposal(
+        _proposal(
+            model_recipes=[
+                {
+                    "name": "lgbm_small",
+                    "recipe": "lightgbm",
+                    "parameters": {
+                        "n_estimators": 100,
+                        "learning_rate": 0.03,
+                        "num_leaves": 15,
+                        "min_child_samples": 10,
+                    },
+                    "rationale": "Bounded deterministic LightGBM model.",
+                }
+            ]
+        )
+    )
+    original_import = __import__
+
+    def fail_lightgbm_import(name, *args, **kwargs):
+        if name == "lightgbm":
+            raise ModuleNotFoundError("No module named 'lightgbm'", name="lightgbm")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fail_lightgbm_import)
+    definition = model_definition_from_recipe(proposal.model_recipes[0])
+
+    with pytest.raises(ValueError, match="uv sync --extra model-search"):
+        definition.estimator_factory()
+
+
+def test_lightgbm_recipe_preserves_native_runtime_import_failures(monkeypatch):
+    proposal = load_proposal(
+        _proposal(
+            model_recipes=[
+                {
+                    "name": "lgbm_small",
+                    "recipe": "lightgbm",
+                    "parameters": {
+                        "n_estimators": 100,
+                        "learning_rate": 0.03,
+                        "num_leaves": 15,
+                        "min_child_samples": 10,
+                    },
+                    "rationale": "Bounded deterministic LightGBM model.",
+                }
+            ]
+        )
+    )
+    original_import = __import__
+    runtime_message = "dlopen(lib_lightgbm.dylib): Library not loaded: libomp.dylib"
+
+    def fail_lightgbm_runtime_import(name, *args, **kwargs):
+        if name == "lightgbm":
+            raise ImportError(runtime_message)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fail_lightgbm_runtime_import)
+    definition = model_definition_from_recipe(proposal.model_recipes[0])
+
+    with pytest.raises(ValueError) as excinfo:
+        definition.estimator_factory()
+
+    message = str(excinfo.value)
+    assert "LightGBM initialization/native runtime failure" in message
+    assert runtime_message in message
+    assert "uv sync --extra model-search" not in message
+    assert isinstance(excinfo.value.__cause__, ImportError)
+
+
+def test_lightgbm_factory_configuration_can_be_verified_with_mocked_import(monkeypatch):
+    module = ModuleType("lightgbm")
+
+    class FakeLGBMRegressor:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    module.LGBMRegressor = FakeLGBMRegressor
+    monkeypatch.setitem(sys.modules, "lightgbm", module)
+    proposal = load_proposal(
+        _proposal(
+            model_recipes=[
+                {
+                    "name": "lgbm_large",
+                    "recipe": "lightgbm",
+                    "parameters": {
+                        "n_estimators": 300,
+                        "learning_rate": 0.1,
+                        "num_leaves": 31,
+                        "min_child_samples": 20,
+                    },
+                    "rationale": "Bounded deterministic LightGBM model.",
+                }
+            ]
+        )
+    )
+
+    estimator = model_definition_from_recipe(proposal.model_recipes[0]).estimator_factory().steps[-1][1]
+
+    assert isinstance(estimator, FakeLGBMRegressor)
+    assert estimator.random_state == 0
+    assert estimator.n_jobs == 1
+    assert estimator.verbosity == -1
+    assert estimator.n_estimators == 300
+    assert estimator.learning_rate == 0.1
+    assert estimator.num_leaves == 31
+    assert estimator.min_child_samples == 20
+
+
 def _import_xgboost_or_skip():
     try:
         import xgboost
     except Exception as exc:
         pytest.skip(f"xgboost import failed in this environment: {exc}")
     return xgboost
+
+
+def _import_lightgbm_or_skip():
+    try:
+        import lightgbm
+    except Exception as exc:
+        pytest.skip(f"lightgbm import failed in this environment: {exc}")
+    return lightgbm
+
+
+def _lightgbm_search(n_trials=2):
+    return {
+        "sampler": "tpe",
+        "seed": 7,
+        "n_trials": n_trials,
+        "spaces": {
+            "lightgbm": {
+                "n_estimators": [100, 300],
+                "learning_rate": [0.03, 0.1],
+                "num_leaves": [15, 31],
+                "min_child_samples": [10, 20],
+            }
+        },
+    }

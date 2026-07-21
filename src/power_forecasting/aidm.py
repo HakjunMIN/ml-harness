@@ -6,6 +6,7 @@ import math
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -332,6 +333,19 @@ def _run_proposal_aidm(
                     proposal=proposal_payload,
                 )
             )
+    if proposal.search is not None:
+        for feature_index, feature_set in enumerate(proposal.feature_sets):
+            candidates.append(
+                _run_lightgbm_search(
+                    store=store,
+                    frame=frame,
+                    feature_set=feature_set,
+                    feature_index=feature_index,
+                    proposal=proposal,
+                    proposal_payload=proposal_payload,
+                    config=config,
+                )
+            )
 
     ranked = tuple(sorted(candidates, key=_proposal_sort_key))
     ranking = tuple(candidate.name for candidate in ranked)
@@ -420,6 +434,102 @@ def _proposal_sort_key(candidate: CandidateResult) -> tuple[float, str, str]:
     return (_nmae(candidate), recipe_name, feature_set_name)
 
 
+def _run_lightgbm_search(
+    *,
+    store: ExperimentStore,
+    frame: pd.DataFrame,
+    feature_set: Any,
+    feature_index: int,
+    proposal: ResearchProposal,
+    proposal_payload: Mapping[str, Any],
+    config: AIDMConfig,
+) -> CandidateResult:
+    optuna = _import_optuna()
+    search = dict(proposal.search or {})
+    seed = int(search["seed"]) + feature_index
+    space = dict(search["spaces"]["lightgbm"])
+    study = optuna.create_study(
+        sampler=optuna.samplers.TPESampler(seed=seed),
+        pruner=optuna.pruners.NopPruner(),
+        direction="minimize",
+    )
+    trials: list[CandidateResult] = []
+
+    def objective(trial: Any) -> float:
+        parameters = {
+            name: trial.suggest_categorical(name, list(space[name]))
+            for name in ("n_estimators", "learning_rate", "num_leaves", "min_child_samples")
+        }
+        trial_number = int(trial.number)
+        recipe = {
+            "name": f"optuna_lightgbm_{trial_number}",
+            "recipe": "lightgbm",
+            "parameters": parameters,
+            "rationale": f"Optuna TPE trial {trial_number} for bounded LightGBM search.",
+            "search": {
+                "sampler": "tpe",
+                "seed": seed,
+                "n_trials": int(search["n_trials"]),
+                "space": space,
+                "trial_number": trial_number,
+                "feature_set": feature_set.name,
+            },
+        }
+        definition = model_definition_from_recipe(
+            SimpleNamespace(
+                name=recipe["name"],
+                recipe=recipe["recipe"],
+                parameters=recipe["parameters"],
+            )
+        )
+        candidate = _evaluate_and_record(
+            store=store,
+            frame=frame,
+            definition=definition,
+            specs=feature_set.specs,
+            candidate_name=f"{recipe['name']}:{feature_set.name}",
+            run_name=f"aidm-optuna-lightgbm-{feature_set.name}-trial-{trial_number}",
+            config=config,
+            model_recipe=recipe,
+            proposal_id=proposal.proposal_id,
+            proposal=proposal_payload,
+            search=recipe["search"],
+        )
+        trials.append(candidate)
+        return _nmae(candidate)
+
+    study.optimize(objective, n_trials=int(search["n_trials"]))
+    return min(trials, key=_search_trial_sort_key)
+
+
+def _search_trial_sort_key(candidate: CandidateResult) -> tuple[float, str, str]:
+    parameters = {}
+    if candidate.model_recipe is not None:
+        parameters = dict(candidate.model_recipe.get("parameters", {}))
+    canonical_parameters = json.dumps(
+        _json_safe_value(parameters),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    feature_set_name = candidate.name.split(":", 1)[1] if ":" in candidate.name else candidate.name
+    return (_nmae(candidate), canonical_parameters, feature_set_name)
+
+
+def _import_optuna() -> Any:
+    try:
+        import optuna
+    except ModuleNotFoundError as exc:
+        if exc.name == "optuna":
+            raise ValueError(
+                "requested optuna search requires `uv sync --extra model-search`"
+            ) from exc
+        raise ValueError(f"Optuna initialization/runtime failure: {exc}") from exc
+    except ImportError as exc:
+        raise ValueError(f"Optuna initialization/runtime failure: {exc}") from exc
+    return optuna
+
+
 def _legacy_baseline_candidate(
     legacy_predictions: pd.DataFrame | Path,
     baseline: CandidateResult,
@@ -490,6 +600,7 @@ def _evaluate_and_record(
     model_recipe: Mapping[str, Any] | None = None,
     proposal_id: str | None = None,
     proposal: Mapping[str, Any] | None = None,
+    search: Mapping[str, Any] | None = None,
 ) -> CandidateResult:
     specs = tuple(sorted(tuple(specs), key=lambda spec: spec.name))
     params = {
@@ -506,6 +617,8 @@ def _evaluate_and_record(
         params["proposal_id"] = proposal_id
     if proposal is not None:
         params["proposal"] = _json_safe_value(dict(proposal))
+    if search is not None:
+        params["search"] = _json_safe_value(dict(search))
     run_id = store.start_run(run_name, params)
 
     try:
