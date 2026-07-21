@@ -165,6 +165,128 @@ def test_render_model_recipe_patch_accepts_aidm_sorted_feature_specs(aidd_patch_
     assert payload["selected_feature_specs_sha256"] == _sha_json(selected_specs)
 
 
+def test_render_model_recipe_patch_accepts_valid_optuna_search_manifest(aidd_patch_dir):
+    manifest = _optuna_search_manifest()
+    target = aidd_patch_dir / "model-recipe-patch.json"
+
+    aidd.render_model_recipe_patch(manifest, target)
+
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["evidence"]["winner_name"] == "selected_lightgbm:safe_solar"
+    assert payload["selected_model_recipe"] == manifest["selected_model_recipe"]
+
+
+def test_render_model_recipe_patch_rejects_optuna_parameters_that_do_not_match_selected_trial(
+    aidd_patch_dir,
+):
+    manifest = _optuna_search_manifest()
+    search = manifest["selected_model_recipe"]["search"]
+    multi_value_space = {
+        "n_estimators": [100, 300],
+        "learning_rate": [0.03, 0.1],
+        "num_leaves": [15, 31],
+        "min_child_samples": [10, 20],
+    }
+    manifest["proposal"]["search"]["spaces"]["lightgbm"] = multi_value_space
+    search["space"] = multi_value_space
+    search["selected_trial_parameters"] = {
+        "n_estimators": 100,
+        "learning_rate": 0.03,
+        "num_leaves": 15,
+        "min_child_samples": 10,
+    }
+    manifest["selected_model_recipe"]["parameters"] = {
+        "n_estimators": 300,
+        "learning_rate": 0.1,
+        "num_leaves": 31,
+        "min_child_samples": 20,
+    }
+    target = aidd_patch_dir / "model-recipe-patch.json"
+
+    with pytest.raises(aidd.PromotionManifestError, match="selected trial parameters"):
+        aidd.render_model_recipe_patch(manifest, target)
+    assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "recipe",
+    [
+        {
+            "name": "forest_direct",
+            "recipe": "random_forest",
+            "parameters": {"n_estimators": 200, "max_depth": None, "min_samples_leaf": 2},
+            "rationale": "Bounded direct random forest candidate.",
+        },
+        {
+            "name": "xgb_direct",
+            "recipe": "xgboost",
+            "parameters": {"n_estimators": 200, "max_depth": 6, "learning_rate": 0.03, "subsample": 0.8},
+            "rationale": "Bounded direct XGBoost candidate.",
+        },
+    ],
+)
+def test_render_model_recipe_patch_accepts_valid_direct_tree_recipe_manifest(
+    aidd_patch_dir, recipe
+):
+    manifest = _direct_recipe_manifest(recipe)
+    target = aidd_patch_dir / "model-recipe-patch.json"
+
+    aidd.validate_promotion_manifest(manifest)
+    aidd.render_model_recipe_patch(manifest, target)
+
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["evidence"]["winner_name"] == f"{recipe['name']}:safe_solar"
+    assert payload["selected_model_recipe"] == recipe
+
+
+def test_render_model_recipe_patch_rejects_optuna_winner_feature_set_mismatch(aidd_patch_dir):
+    manifest = _optuna_search_manifest()
+    manifest["winner"] = {
+        **manifest["winner"],
+        "name": "selected_lightgbm:alternative_solar",
+    }
+    target = aidd_patch_dir / "model-recipe-patch.json"
+
+    with pytest.raises(aidd.PromotionManifestError, match="selected_specs|feature set"):
+        aidd.validate_promotion_manifest(manifest)
+    with pytest.raises(aidd.PromotionManifestError, match="selected_specs|feature set"):
+        aidd.render_model_recipe_patch(manifest, target)
+    assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda m: {
+            **m,
+            "proposal": {
+                **m["proposal"],
+                "search": {**m["proposal"]["search"], "seed": 99},
+            },
+        },
+        lambda m: {
+            **m,
+            "selected_model_recipe": {
+                **m["selected_model_recipe"],
+                "parameters": {
+                    **m["selected_model_recipe"]["parameters"],
+                    "n_estimators": 300,
+                },
+            },
+        },
+    ],
+)
+def test_render_model_recipe_patch_rejects_optuna_search_provenance_mismatch(
+    aidd_patch_dir, mutate
+):
+    manifest = mutate(_optuna_search_manifest())
+    target = aidd_patch_dir / "model-recipe-patch.json"
+
+    with pytest.raises(aidd.PromotionManifestError, match="search|space|selected trial parameters"):
+        aidd.render_model_recipe_patch(manifest, target)
+    assert not target.exists()
+
+
 def _agentic_manifest():
     selected_spec = _safe_feature_spec()
     return {
@@ -221,6 +343,76 @@ def _agentic_manifest():
         "improvement_ratio": 0.5,
         "decision": "promote",
         "failed_gates": [],
+    }
+
+
+def _direct_recipe_manifest(recipe):
+    manifest = _agentic_manifest()
+    return {
+        **manifest,
+        "proposal": {
+            **manifest["proposal"],
+            "model_recipes": [manifest["proposal"]["model_recipes"][0], recipe],
+        },
+        "winner": {
+            **manifest["winner"],
+            "name": f"{recipe['name']}:safe_solar",
+        },
+        "selected_model_recipe": recipe,
+    }
+
+
+def _optuna_search_manifest():
+    manifest = _agentic_manifest()
+    search = {
+        "sampler": "tpe",
+        "seed": 7,
+        "n_trials": 2,
+        "space": {
+            "n_estimators": [100],
+            "learning_rate": [0.03],
+            "num_leaves": [15],
+            "min_child_samples": [10],
+        },
+        "selected_trial_number": 0,
+        "selected_trial_candidate_name": "optuna_lightgbm_0:safe_solar",
+        "selected_trial_parameters": {
+            "n_estimators": 100,
+            "learning_rate": 0.03,
+            "num_leaves": 15,
+            "min_child_samples": 10,
+        },
+        "feature_set": "safe_solar",
+    }
+    return {
+        **manifest,
+        "proposal": {
+            **manifest["proposal"],
+            "model_recipes": [manifest["proposal"]["model_recipes"][0]],
+            "budget": {"max_evaluations": 8, "top_feature_groups": 1},
+            "search": {
+                "sampler": "tpe",
+                "seed": 7,
+                "n_trials": 2,
+                "spaces": {"lightgbm": search["space"]},
+            },
+        },
+        "winner": {
+            **manifest["winner"],
+            "name": "selected_lightgbm:safe_solar",
+        },
+        "selected_model_recipe": {
+            "name": "selected_lightgbm",
+            "recipe": "lightgbm",
+            "parameters": {
+                "n_estimators": 100,
+                "learning_rate": 0.03,
+                "num_leaves": 15,
+                "min_child_samples": 10,
+            },
+            "rationale": "Selected bounded LightGBM parameters from Optuna TPE trial 0.",
+            "search": search,
+        },
     }
 
 

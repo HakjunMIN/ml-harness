@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
 from sklearn.pipeline import make_pipeline
@@ -124,6 +124,66 @@ def _recipe_hgb_pipeline(parameters: dict[str, Any]) -> Any:
     )
 
 
+def _recipe_random_forest_pipeline(parameters: dict[str, Any]) -> Any:
+    return make_pipeline(
+        SimpleImputer(strategy="median"),
+        RandomForestRegressor(random_state=0, n_jobs=1, **parameters),
+    )
+
+
+def _recipe_xgboost_pipeline(parameters: dict[str, Any]) -> Any:
+    try:
+        from xgboost import XGBRegressor
+    except ModuleNotFoundError as exc:
+        if exc.name == "xgboost":
+            raise ValueError(
+                "requested xgboost recipe requires `uv sync --extra model-search`"
+            ) from exc
+        raise ValueError(
+            f"XGBoost initialization/native runtime failure: {exc}"
+        ) from exc
+    except ImportError as exc:
+        raise ValueError(
+            f"XGBoost initialization/native runtime failure: {exc}"
+        ) from exc
+    return make_pipeline(
+        SimpleImputer(strategy="median"),
+        XGBRegressor(
+            random_state=0,
+            n_jobs=1,
+            objective="reg:squarederror",
+            eval_metric="rmse",
+            **parameters,
+        ),
+    )
+
+
+def _recipe_lightgbm_pipeline(parameters: dict[str, Any]) -> Any:
+    try:
+        from lightgbm import LGBMRegressor
+    except ModuleNotFoundError as exc:
+        if exc.name == "lightgbm":
+            raise ValueError(
+                "requested lightgbm recipe requires `uv sync --extra model-search`"
+            ) from exc
+        raise ValueError(
+            f"LightGBM initialization/native runtime failure: {exc}"
+        ) from exc
+    except ImportError as exc:
+        raise ValueError(
+            f"LightGBM initialization/native runtime failure: {exc}"
+        ) from exc
+    return make_pipeline(
+        SimpleImputer(strategy="median"),
+        LGBMRegressor(
+            random_state=0,
+            n_jobs=1,
+            verbosity=-1,
+            **parameters,
+        ),
+    )
+
+
 WEATHER_ORACLE_LEGACY_FEATURES = (
     "actual_irradiance",
     "actual_temperature",
@@ -221,6 +281,27 @@ def model_definition_from_recipe(model_recipe: "ModelRecipe") -> ModelDefinition
             f"Recipe:hist_gradient_boosting:{name}",
             SPOT_FEATURES,
             lambda: _recipe_hgb_pipeline(dict(parameters)),
+            data_availability="forecast",
+        )
+    if recipe == "random_forest":
+        return ModelDefinition(
+            f"Recipe:random_forest:{name}",
+            SPOT_FEATURES,
+            lambda: _recipe_random_forest_pipeline(dict(parameters)),
+            data_availability="forecast",
+        )
+    if recipe == "xgboost":
+        return ModelDefinition(
+            f"Recipe:xgboost:{name}",
+            SPOT_FEATURES,
+            lambda: _recipe_xgboost_pipeline(dict(parameters)),
+            data_availability="forecast",
+        )
+    if recipe == "lightgbm":
+        return ModelDefinition(
+            f"Recipe:lightgbm:{name}",
+            SPOT_FEATURES,
+            lambda: _recipe_lightgbm_pipeline(dict(parameters)),
             data_availability="forecast",
         )
     raise ValueError(f"unsupported recipe: {recipe}")

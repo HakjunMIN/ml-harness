@@ -104,7 +104,8 @@ git commit -m "feat: add bounded forest and xgboost recipes"
 Create tests for a per-plant `lag` and `rolling_mean` transform. For a row at
 timestamp `t`, assert output uses only source values at timestamps `< t`;
 assert same-timestamp rows and future rows do not influence it; assert the
-first insufficient-history row raises a clear error.
+first insufficient-history warm-up rows emit `NaN` so the estimator pipeline can
+impute them from training-fold data.
 
 ```python
 def test_lag_uses_only_strictly_prior_plant_timestamp():

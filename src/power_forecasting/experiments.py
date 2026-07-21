@@ -109,6 +109,20 @@ class ExperimentStore:
             raise KeyError(run_id)
         return _decode_run(row)
 
+    def update_artifacts(self, run_id, artifacts: Mapping) -> None:
+        artifacts_json = _json_dumps(artifacts, "artifacts")
+        with _open_connection(self.path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runs
+                SET artifacts_json = ?
+                WHERE id = ? AND status = 'completed'
+                """,
+                (artifacts_json, run_id),
+            )
+            if cursor.rowcount != 1:
+                _raise_transition_error(connection, run_id)
+
     def list_runs(self, status: str = None) -> list[dict]:
         if status is not None and status not in self._STATUSES:
             raise ValueError("status must be one of running, completed, failed")

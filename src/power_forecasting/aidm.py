@@ -6,6 +6,7 @@ import math
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -332,6 +333,19 @@ def _run_proposal_aidm(
                     proposal=proposal_payload,
                 )
             )
+    if proposal.search is not None:
+        for feature_index, feature_set in enumerate(proposal.feature_sets):
+            candidates.append(
+                _run_lightgbm_search(
+                    store=store,
+                    frame=frame,
+                    feature_set=feature_set,
+                    feature_index=feature_index,
+                    proposal=proposal,
+                    proposal_payload=proposal_payload,
+                    config=config,
+                )
+            )
 
     ranked = tuple(sorted(candidates, key=_proposal_sort_key))
     ranking = tuple(candidate.name for candidate in ranked)
@@ -420,6 +434,250 @@ def _proposal_sort_key(candidate: CandidateResult) -> tuple[float, str, str]:
     return (_nmae(candidate), recipe_name, feature_set_name)
 
 
+def _run_lightgbm_search(
+    *,
+    store: ExperimentStore,
+    frame: pd.DataFrame,
+    feature_set: Any,
+    feature_index: int,
+    proposal: ResearchProposal,
+    proposal_payload: Mapping[str, Any],
+    config: AIDMConfig,
+) -> CandidateResult:
+    optuna = _import_optuna()
+    search = dict(proposal.search or {})
+    seed = int(search["seed"]) + feature_index
+    space = dict(search["spaces"]["lightgbm"])
+    study = optuna.create_study(
+        sampler=optuna.samplers.TPESampler(seed=seed),
+        pruner=optuna.pruners.NopPruner(),
+        direction="minimize",
+    )
+    unique_trials: list[CandidateResult] = []
+    evaluated_by_parameters: dict[str, CandidateResult] = {}
+
+    def objective(trial: Any) -> float:
+        parameters = {
+            name: trial.suggest_categorical(name, list(space[name]))
+            for name in ("n_estimators", "learning_rate", "num_leaves", "min_child_samples")
+        }
+        trial_number = int(trial.number)
+        canonical_parameters = _canonical_lightgbm_parameters(parameters)
+        if canonical_parameters in evaluated_by_parameters:
+            source = evaluated_by_parameters[canonical_parameters]
+            _record_reused_search_trial(
+                store=store,
+                source=source,
+                feature_set_name=feature_set.name,
+                config=config,
+                proposal_id=proposal.proposal_id,
+                proposal=proposal_payload,
+                search_template={
+                    "sampler": "tpe",
+                    "seed": seed,
+                    "n_trials": int(search["n_trials"]),
+                    "space": space,
+                    "feature_set": feature_set.name,
+                },
+                trial_number=trial_number,
+            )
+            return _nmae(source)
+        recipe = {
+            "name": f"optuna_lightgbm_{trial_number}",
+            "recipe": "lightgbm",
+            "parameters": parameters,
+            "rationale": f"Optuna TPE trial {trial_number} for bounded LightGBM search.",
+            "search": {
+                "sampler": "tpe",
+                "seed": seed,
+                "n_trials": int(search["n_trials"]),
+                "space": space,
+                "trial_number": trial_number,
+                "feature_set": feature_set.name,
+            },
+        }
+        definition = model_definition_from_recipe(
+            SimpleNamespace(
+                name=recipe["name"],
+                recipe=recipe["recipe"],
+                parameters=recipe["parameters"],
+            )
+        )
+        candidate = _evaluate_and_record(
+            store=store,
+            frame=frame,
+            definition=definition,
+            specs=feature_set.specs,
+            candidate_name=f"{recipe['name']}:{feature_set.name}",
+            run_name=f"aidm-optuna-lightgbm-{feature_set.name}-trial-{trial_number}",
+            config=config,
+            model_recipe=recipe,
+            proposal_id=proposal.proposal_id,
+            proposal=proposal_payload,
+            search=recipe["search"],
+        )
+        evaluated_by_parameters[canonical_parameters] = candidate
+        unique_trials.append(candidate)
+        return _nmae(candidate)
+
+    study.optimize(objective, n_trials=int(search["n_trials"]))
+    selected_trial = min(unique_trials, key=_search_trial_sort_key)
+    selected_recipe = _selected_lightgbm_recipe(selected_trial)
+    selected_definition = model_definition_from_recipe(
+        SimpleNamespace(
+            name=selected_recipe["name"],
+            recipe=selected_recipe["recipe"],
+            parameters=selected_recipe["parameters"],
+        )
+    )
+    selected = _evaluate_and_record(
+        store=store,
+        frame=frame,
+        definition=selected_definition,
+        specs=feature_set.specs,
+        candidate_name=f"selected_lightgbm:{feature_set.name}",
+        run_name=f"aidm-selected-lightgbm-{feature_set.name}",
+        config=config,
+        model_recipe=selected_recipe,
+        proposal_id=proposal.proposal_id,
+        proposal=proposal_payload,
+        search=selected_recipe["search"],
+    )
+    selected_run = store.get_run(selected.run_id)
+    artifacts = dict(selected_run["artifacts"] or {})
+    artifacts["selected_from_trial"] = {
+        "trial_number": int(selected_recipe["search"]["selected_trial_number"]),
+        "candidate_name": selected_recipe["search"]["selected_trial_candidate_name"],
+        "run_id": selected_trial.run_id,
+    }
+    store.update_artifacts(selected.run_id, artifacts)
+    return selected
+
+
+def _canonical_lightgbm_parameters(parameters: Mapping[str, Any]) -> str:
+    return json.dumps(
+        _json_safe_value(dict(parameters)),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _record_reused_search_trial(
+    *,
+    store: ExperimentStore,
+    source: CandidateResult,
+    feature_set_name: str,
+    config: AIDMConfig,
+    proposal_id: str,
+    proposal: Mapping[str, Any],
+    search_template: Mapping[str, Any],
+    trial_number: int,
+) -> None:
+    source_trial_number = 0
+    if source.model_recipe is not None:
+        search = source.model_recipe.get("search", {})
+        if isinstance(search, Mapping):
+            source_trial_number = search.get("trial_number")
+    search = dict(search_template)
+    search["trial_number"] = int(trial_number)
+    source_parameters = dict(source.model_recipe.get("parameters", {})) if source.model_recipe else {}
+    recipe = {
+        "name": f"optuna_lightgbm_{trial_number}",
+        "recipe": "lightgbm",
+        "parameters": source_parameters,
+        "rationale": f"Optuna TPE trial {trial_number} for bounded LightGBM search.",
+        "search": search,
+    }
+    candidate_name = f"{recipe['name']}:{feature_set_name}"
+    params = {
+        "schema_version": "1",
+        "candidate_name": candidate_name,
+        "model": f"Recipe:lightgbm:{recipe['name']}",
+        "folds": config.folds,
+        "seed": config.seed,
+        "specs": [spec.to_dict() for spec in source.specs],
+        "model_recipe": _json_safe_value(recipe),
+        "proposal_id": proposal_id,
+        "proposal": _json_safe_value(dict(proposal)),
+        "search": _json_safe_value(search),
+    }
+    run_id = store.start_run(
+        f"aidm-optuna-lightgbm-{feature_set_name}-trial-{trial_number}",
+        params,
+    )
+    artifacts = {
+        "summary": {
+            "name": candidate_name,
+            "specs": [spec.to_dict() for spec in source.specs],
+            "metrics": _copy_metrics(source.metrics),
+            "per_plant": _copy_per_plant(source.per_plant),
+            "run_id": run_id,
+            "model_recipe": _json_safe_value(recipe),
+        },
+        "reused_from_run_id": source.run_id,
+        "reused_from_trial_number": int(source_trial_number),
+        "reused_from_candidate_name": source.name,
+    }
+    source_artifacts = store.get_run(source.run_id)["artifacts"] or {}
+    if "fold_metrics" in source_artifacts:
+        artifacts["fold_metrics"] = _json_safe_value(source_artifacts["fold_metrics"])
+    store.complete_run(run_id, source.metrics, artifacts)
+
+
+def _selected_lightgbm_recipe(source: CandidateResult) -> dict[str, Any]:
+    if source.model_recipe is None:
+        raise ValueError("selected LightGBM trial must include model_recipe")
+    source_recipe = dict(source.model_recipe)
+    source_search = dict(source_recipe.get("search", {}))
+    selected_trial_number = int(source_search["trial_number"])
+    search = {
+        "sampler": source_search["sampler"],
+        "seed": source_search["seed"],
+        "n_trials": source_search["n_trials"],
+        "space": source_search["space"],
+        "selected_trial_number": selected_trial_number,
+        "selected_trial_candidate_name": source.name,
+        "selected_trial_parameters": _json_safe_value(dict(source_recipe.get("parameters", {}))),
+        "feature_set": source_search["feature_set"],
+    }
+    return {
+        "name": "selected_lightgbm",
+        "recipe": "lightgbm",
+        "parameters": dict(source_recipe.get("parameters", {})),
+        "rationale": f"Selected bounded LightGBM parameters from Optuna TPE trial {selected_trial_number}.",
+        "search": search,
+    }
+
+
+def _search_trial_sort_key(candidate: CandidateResult) -> tuple[float, str, str]:
+    parameters = {}
+    if candidate.model_recipe is not None:
+        parameters = dict(candidate.model_recipe.get("parameters", {}))
+    canonical_parameters = json.dumps(
+        _json_safe_value(parameters),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    feature_set_name = candidate.name.split(":", 1)[1] if ":" in candidate.name else candidate.name
+    return (_nmae(candidate), canonical_parameters, feature_set_name)
+
+
+def _import_optuna() -> Any:
+    try:
+        import optuna
+    except ModuleNotFoundError as exc:
+        if exc.name == "optuna":
+            raise ValueError(
+                "requested optuna search requires `uv sync --extra model-search`"
+            ) from exc
+        raise ValueError(f"Optuna initialization/runtime failure: {exc}") from exc
+    except ImportError as exc:
+        raise ValueError(f"Optuna initialization/runtime failure: {exc}") from exc
+    return optuna
+
+
 def _legacy_baseline_candidate(
     legacy_predictions: pd.DataFrame | Path,
     baseline: CandidateResult,
@@ -448,9 +706,14 @@ def _legacy_baseline_candidate(
         raise ValueError("legacy predictions must be finite")
     capacity = merged["capacity_mw"].to_numpy(dtype=float)
     clipped = np.clip(raw_predictions, 0.0, capacity)
-    metrics = compute_metrics(merged["actual"], clipped, capacity)
+    metrics = compute_metrics(merged["actual"], clipped, capacity, undefined_r2="omit")
     per_plant = {
-        str(plant_id): compute_metrics(group["actual"], group["legacy_prediction"], group["capacity_mw"])
+        str(plant_id): compute_metrics(
+            group["actual"],
+            group["legacy_prediction"],
+            group["capacity_mw"],
+            undefined_r2="omit",
+        )
         for plant_id, group in pd.DataFrame(
             {
                 "plant_id": merged["plant_id"].to_numpy(),
@@ -490,6 +753,7 @@ def _evaluate_and_record(
     model_recipe: Mapping[str, Any] | None = None,
     proposal_id: str | None = None,
     proposal: Mapping[str, Any] | None = None,
+    search: Mapping[str, Any] | None = None,
 ) -> CandidateResult:
     specs = tuple(sorted(tuple(specs), key=lambda spec: spec.name))
     params = {
@@ -506,6 +770,8 @@ def _evaluate_and_record(
         params["proposal_id"] = proposal_id
     if proposal is not None:
         params["proposal"] = _json_safe_value(dict(proposal))
+    if search is not None:
+        params["search"] = _json_safe_value(dict(search))
     run_id = store.start_run(run_name, params)
 
     try:

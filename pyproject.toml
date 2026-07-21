@@ -20,6 +20,11 @@ dev = [
 dashboard = [
     "streamlit>=1.36,<2",
 ]
+model-search = [
+    "xgboost>=2.0,<3",
+    "lightgbm>=4.0,<5",
+    "optuna>=3.0,<5",
+]
 
 [dependency-groups]
 dev = [

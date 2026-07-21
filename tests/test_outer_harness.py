@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from harness.contract import AdapterConfig, AdapterContractError, load_adapter, run_adapter, sha256_file
+from power_forecasting.proposals import load_proposal, proposal_to_dict
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -278,6 +279,49 @@ def test_run_aidm_script_forwards_agentic_proposal_and_legacy_predictions(tmp_pa
     assert manifest["proposal"]["proposal_id"] == "fixture-agentic-proposal"
     assert "legacy_baseline" in manifest
     assert "selected_model_recipe" in manifest
+
+
+def test_model_search_fixture_is_valid_bounded_and_leakage_free() -> None:
+    proposal_path = FIXTURES / "model-search-proposal.json"
+
+    proposal = load_proposal(proposal_path)
+    payload = proposal_to_dict(proposal)
+
+    assert payload["proposal_id"] == "fixture-model-search-proposal"
+    assert [feature_set["name"] for feature_set in payload["feature_sets"]] == [
+        "safe_temporal",
+        "safe_weather",
+        "safe_history",
+    ]
+    assert [recipe["recipe"] for recipe in payload["model_recipes"]] == [
+        "random_forest",
+        "xgboost",
+        "lightgbm",
+    ]
+    assert payload["search"]["sampler"] == "tpe"
+    assert payload["search"]["n_trials"] == 2
+    evaluation_count = len(payload["feature_sets"]) * (
+        len(payload["model_recipes"]) + payload["search"]["n_trials"] + 1
+    )
+    assert evaluation_count == 18
+    assert evaluation_count <= payload["budget"]["max_evaluations"]
+    all_inputs = [
+        source
+        for feature_set in payload["feature_sets"]
+        for spec in feature_set["specs"]
+        for source in spec["inputs"]
+    ]
+    assert "generation_mw" not in all_inputs
+    assert not any(source.startswith("actual_") for source in all_inputs)
+    assert json.loads(json.dumps(payload, sort_keys=True, allow_nan=False)) == payload
+
+
+def test_run_aidm_script_already_forwards_fixture_proposal_without_extra_options() -> None:
+    content = (SCRIPTS / "run-aidm.sh").read_text(encoding="utf-8")
+
+    assert "--proposal|--legacy-predictions)" in content
+    assert 'args+=("$1" "$2")' in content
+    assert "model-search" not in content
 
 
 def test_verify_promotion_script_writes_evidence_only_after_success(tmp_path: Path) -> None:

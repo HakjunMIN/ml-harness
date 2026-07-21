@@ -15,6 +15,13 @@ from power_forecasting.features import FeatureSpec
 
 _BASELINE_KEYS = {"model"}
 _FEATURE_SPEC_KEYS = {"name", "transform", "inputs", "parameters", "version", "rationale"}
+_LIGHTGBM_PARAMETER_VALUES = {
+    "n_estimators": {100, 300},
+    "learning_rate": {0.03, 0.1},
+    "num_leaves": {15, 31},
+    "min_child_samples": {10, 20},
+}
+_LIGHTGBM_SEARCH_KEYS = set(_LIGHTGBM_PARAMETER_VALUES)
 
 
 class ProposalValidationError(ValueError):
@@ -60,6 +67,8 @@ class ModelRecipe:
 
     def __post_init__(self) -> None:
         _identifier_name(self.name, "model recipe name")
+        if self.name.startswith("optuna_lightgbm_") or self.name == "selected_lightgbm":
+            raise ProposalValidationError(f"model recipe name {self.name} uses reserved search name")
         _nonblank(self.recipe, f"model recipe {self.name}: recipe")
         _nonblank(self.rationale, f"model recipe {self.name}: rationale")
         if not isinstance(self.parameters, Mapping):
@@ -85,6 +94,7 @@ class ResearchProposal:
     feature_sets: tuple[FeatureSet, ...]
     model_recipes: tuple[ModelRecipe, ...]
     budget: Mapping[str, int]
+    search: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != "1":
@@ -100,15 +110,17 @@ class ResearchProposal:
             raise ProposalValidationError("model_recipes must be nonempty")
         _unique_names(feature_sets, "feature set")
         _unique_names(model_recipes, "model recipe")
+        search = _validate_search(self.search)
         budget = _validate_budget(self.budget)
-        _validate_evaluation_budget(feature_sets, model_recipes, budget)
+        _validate_evaluation_budget(feature_sets, model_recipes, budget, search)
         object.__setattr__(self, "baseline", MappingProxyType(baseline))
         object.__setattr__(self, "feature_sets", feature_sets)
         object.__setattr__(self, "model_recipes", model_recipes)
         object.__setattr__(self, "budget", MappingProxyType(budget))
+        object.__setattr__(self, "search", MappingProxyType(search) if search is not None else None)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "proposal_id": self.proposal_id,
             "rationale": self.rationale,
@@ -117,6 +129,9 @@ class ResearchProposal:
             "model_recipes": [recipe.to_dict() for recipe in self.model_recipes],
             "budget": dict(self.budget),
         }
+        if self.search is not None:
+            payload["search"] = _json_value(self.search)
+        return payload
 
 
 def load_proposal(value: Mapping[str, Any] | Path) -> ResearchProposal:
@@ -127,11 +142,7 @@ def load_proposal(value: Mapping[str, Any] | Path) -> ResearchProposal:
         payload = value
     if not isinstance(payload, Mapping):
         raise ProposalValidationError("proposal must be a mapping")
-    _exact_keys(
-        payload,
-        {"schema_version", "proposal_id", "rationale", "baseline", "feature_sets", "model_recipes", "budget"},
-        "proposal",
-    )
+    _exact_top_level_proposal_keys(payload)
     try:
         feature_sets = tuple(_parse_feature_set(raw) for raw in _require_list(payload, "feature_sets"))
         model_recipes = tuple(_parse_model_recipe(raw) for raw in _require_list(payload, "model_recipes"))
@@ -143,6 +154,7 @@ def load_proposal(value: Mapping[str, Any] | Path) -> ResearchProposal:
             feature_sets=feature_sets,
             model_recipes=model_recipes,
             budget=payload["budget"],
+            search=payload.get("search"),
         )
     except ProposalValidationError:
         raise
@@ -203,6 +215,73 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
             "learning_rate": learning_rate,
             "max_leaf_nodes": max_leaf_nodes,
         }
+    if recipe == "random_forest":
+        _exact_parameter_keys(
+            parameters,
+            {"n_estimators", "max_depth", "min_samples_leaf"},
+            name,
+        )
+        n_estimators = _integer(parameters["n_estimators"], f"model recipe {name}: n_estimators")
+        max_depth = _integer_or_none(parameters["max_depth"], f"model recipe {name}: max_depth")
+        min_samples_leaf = _integer(parameters["min_samples_leaf"], f"model recipe {name}: min_samples_leaf")
+        if n_estimators not in {100, 200, 400}:
+            raise ProposalValidationError(f"model recipe {name}: n_estimators outside allowed set")
+        if max_depth not in {8, 12, None}:
+            raise ProposalValidationError(f"model recipe {name}: max_depth outside allowed set")
+        if min_samples_leaf not in {1, 2, 4}:
+            raise ProposalValidationError(f"model recipe {name}: min_samples_leaf outside allowed set")
+        return {
+            "n_estimators": n_estimators,
+            "max_depth": max_depth,
+            "min_samples_leaf": min_samples_leaf,
+        }
+    if recipe == "xgboost":
+        _exact_parameter_keys(
+            parameters,
+            {"n_estimators", "max_depth", "learning_rate", "subsample"},
+            name,
+        )
+        n_estimators = _integer(parameters["n_estimators"], f"model recipe {name}: n_estimators")
+        max_depth = _integer(parameters["max_depth"], f"model recipe {name}: max_depth")
+        learning_rate = _number(parameters["learning_rate"], f"model recipe {name}: learning_rate")
+        subsample = _number(parameters["subsample"], f"model recipe {name}: subsample")
+        if n_estimators not in {100, 200, 400}:
+            raise ProposalValidationError(f"model recipe {name}: n_estimators outside allowed set")
+        if max_depth not in {4, 6, 8}:
+            raise ProposalValidationError(f"model recipe {name}: max_depth outside allowed set")
+        if learning_rate not in {0.03, 0.1}:
+            raise ProposalValidationError(f"model recipe {name}: learning_rate outside allowed set")
+        if subsample not in {0.8, 1.0}:
+            raise ProposalValidationError(f"model recipe {name}: subsample outside allowed set")
+        return {
+            "n_estimators": n_estimators,
+            "max_depth": max_depth,
+            "learning_rate": learning_rate,
+            "subsample": subsample,
+        }
+    if recipe == "lightgbm":
+        _exact_parameter_keys(
+            parameters,
+            _LIGHTGBM_SEARCH_KEYS,
+            name,
+        )
+        n_estimators = _integer(parameters["n_estimators"], f"model recipe {name}: n_estimators")
+        learning_rate = _number(parameters["learning_rate"], f"model recipe {name}: learning_rate")
+        num_leaves = _integer(parameters["num_leaves"], f"model recipe {name}: num_leaves")
+        min_child_samples = _integer(
+            parameters["min_child_samples"],
+            f"model recipe {name}: min_child_samples",
+        )
+        normalized = {
+            "n_estimators": n_estimators,
+            "learning_rate": learning_rate,
+            "num_leaves": num_leaves,
+            "min_child_samples": min_child_samples,
+        }
+        for parameter, value in normalized.items():
+            if value not in _LIGHTGBM_PARAMETER_VALUES[parameter]:
+                raise ProposalValidationError(f"model recipe {name}: {parameter} outside allowed set")
+        return normalized
     raise ProposalValidationError(f"model recipe {name}: unsupported recipe {recipe}")
 
 
@@ -223,8 +302,10 @@ def _validate_evaluation_budget(
     feature_sets: tuple[FeatureSet, ...],
     model_recipes: tuple[ModelRecipe, ...],
     budget: Mapping[str, int],
+    search: Mapping[str, Any] | None = None,
 ) -> None:
-    combination_count = len(feature_sets) * len(model_recipes)
+    search_evaluations = int(search["n_trials"]) + 1 if search is not None else 0
+    combination_count = len(feature_sets) * (len(model_recipes) + search_evaluations)
     max_evaluations = int(budget["max_evaluations"])
     if combination_count > max_evaluations:
         raise ProposalValidationError(
@@ -240,6 +321,88 @@ def _validate_baseline(raw: Any) -> dict[str, str]:
     if raw["model"] != "SPOT":
         raise ProposalValidationError("baseline.model must be exactly 'SPOT'")
     return {"model": "SPOT"}
+
+
+def _exact_top_level_proposal_keys(payload: Mapping[str, Any]) -> None:
+    required = {"schema_version", "proposal_id", "rationale", "baseline", "feature_sets", "model_recipes", "budget"}
+    allowed = required | {"search"}
+    actual = set(payload)
+    extra = sorted(actual - allowed)
+    missing = sorted(required - actual)
+    if extra:
+        raise ProposalValidationError(f"proposal unknown keys: {extra}")
+    if missing:
+        raise ProposalValidationError(f"proposal missing keys: {missing}")
+
+
+def _validate_search(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ProposalValidationError("search must be a mapping")
+    _exact_keys(raw, {"sampler", "seed", "n_trials", "spaces"}, "search")
+    if raw["sampler"] != "tpe":
+        raise ProposalValidationError("search.sampler must be exactly 'tpe'")
+    seed = _integer(raw["seed"], "search.seed")
+    if seed < 0:
+        raise ProposalValidationError("search.seed must be nonnegative")
+    n_trials = _integer(raw["n_trials"], "search.n_trials")
+    if not 1 <= n_trials <= 50:
+        raise ProposalValidationError("search.n_trials must be 1..50")
+    spaces = _validate_search_spaces(raw["spaces"])
+    return {
+        "sampler": "tpe",
+        "seed": seed,
+        "n_trials": n_trials,
+        "spaces": spaces,
+    }
+
+
+def _validate_search_spaces(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise ProposalValidationError("search.spaces must be a mapping")
+    _exact_keys(raw, {"lightgbm"}, "search.spaces")
+    lightgbm = raw["lightgbm"]
+    if not isinstance(lightgbm, Mapping):
+        raise ProposalValidationError("search.spaces.lightgbm must be a mapping")
+    _exact_keys(lightgbm, _LIGHTGBM_SEARCH_KEYS, "search.spaces.lightgbm")
+    return {
+        "lightgbm": {
+            parameter: _validate_discrete_search_values(
+                parameter,
+                lightgbm[parameter],
+                _LIGHTGBM_PARAMETER_VALUES[parameter],
+            )
+            for parameter in sorted(_LIGHTGBM_SEARCH_KEYS)
+        }
+    }
+
+
+def _validate_discrete_search_values(
+    parameter: str,
+    raw: Any,
+    allowed: set[int | float],
+) -> list[int | float]:
+    if not isinstance(raw, list):
+        raise ProposalValidationError(f"search.spaces.lightgbm.{parameter} must be a list")
+    if not raw:
+        raise ProposalValidationError(f"search.spaces.lightgbm.{parameter} must be nonempty")
+    values: list[int | float] = []
+    seen: set[int | float] = set()
+    for value in raw:
+        if parameter == "learning_rate":
+            normalized: int | float = _number(value, f"search.spaces.lightgbm.{parameter}")
+        else:
+            normalized = _integer(value, f"search.spaces.lightgbm.{parameter}")
+        if normalized not in allowed:
+            raise ProposalValidationError(
+                f"search.spaces.lightgbm.{parameter} contains value outside allowed set"
+            )
+        if normalized in seen:
+            raise ProposalValidationError(f"search.spaces.lightgbm.{parameter} contains duplicate values")
+        seen.add(normalized)
+        values.append(normalized)
+    return values
 
 
 def _exact_keys(mapping: Mapping[str, Any], expected: set[str], label: str) -> None:
@@ -294,6 +457,12 @@ def _integer(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ProposalValidationError(f"{label} must be an integer")
     return int(value)
+
+
+def _integer_or_none(value: Any, label: str) -> int | None:
+    if value is None:
+        return None
+    return _integer(value, label)
 
 
 def _number(value: Any, label: str) -> float:

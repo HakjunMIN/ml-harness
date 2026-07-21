@@ -52,6 +52,18 @@ def compute_metrics(
     actual: Sequence[float],
     prediction: Sequence[float],
     capacity_mw: Sequence[float],
+    *,
+    undefined_r2: str = "raise",
+) -> dict[str, float]:
+    return _compute_metrics(actual, prediction, capacity_mw, undefined_r2=undefined_r2)
+
+
+def _compute_metrics(
+    actual: Sequence[float],
+    prediction: Sequence[float],
+    capacity_mw: Sequence[float],
+    *,
+    undefined_r2: str,
 ) -> dict[str, float]:
     actual_values = _finite_1d("actual", actual)
     prediction_values = _finite_1d("prediction", prediction)
@@ -67,11 +79,21 @@ def compute_metrics(
 
     error = prediction_values - actual_values
     absolute_error = np.abs(error)
-    return {
+    total_sum_squares = float(np.sum(np.square(actual_values - np.mean(actual_values))))
+    residual_sum_squares = float(np.sum(np.square(error)))
+    metrics = {
         "MAE": float(np.mean(absolute_error)),
         "RMSE": float(np.sqrt(np.mean(np.square(error)))),
         "NMAE": float(np.sum(absolute_error) / denominator),
     }
+    if total_sum_squares == 0.0:
+        if undefined_r2 == "raise":
+            raise ValueError("R2 is undefined for constant actual targets")
+        if undefined_r2 == "omit":
+            return metrics
+        raise ValueError("undefined_r2 must be 'raise' or 'omit'")
+    metrics["R2"] = float(1.0 - residual_sum_squares / total_sum_squares)
+    return metrics
 
 
 def evaluate_model(
@@ -90,8 +112,12 @@ def evaluate_model(
     ):
         train = frame.iloc[train_index]
         validation = frame.iloc[validation_index]
-        x_train = _feature_matrix(train, definition.base_features, specs)
-        x_validation = _feature_matrix(validation, definition.base_features, specs)
+        fold_positions = np.concatenate([train_index, validation_index])
+        fold_features = _feature_matrix(
+            frame.iloc[fold_positions], definition.base_features, specs
+        )
+        x_train = fold_features.iloc[: len(train_index)]
+        x_validation = fold_features.iloc[len(train_index) :]
         y_train = train["generation_mw"].to_numpy(dtype=float)
 
         estimator = clone(definition.estimator_factory())
@@ -125,8 +151,8 @@ def evaluate_model(
         predictions["actual"], predictions["prediction"], predictions["capacity_mw"]
     )
     per_plant = {
-        str(plant_id): compute_metrics(
-            group["actual"], group["prediction"], group["capacity_mw"]
+        str(plant_id): _compute_metrics(
+            group["actual"], group["prediction"], group["capacity_mw"], undefined_r2="omit"
         )
         for plant_id, group in predictions.groupby("plant_id", sort=True)
     }

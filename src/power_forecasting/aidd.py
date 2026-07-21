@@ -10,7 +10,12 @@ from typing import Any
 import pandas as pd
 
 from power_forecasting.data import REQUIRED_COLUMNS
-from power_forecasting.features import FeatureSpec, TRANSFORMS, apply_feature_specs
+from power_forecasting.features import (
+    FeatureSpec,
+    TRANSFORMS,
+    _TRANSFORM_ARITY,
+    apply_feature_specs,
+)
 
 
 class PromotionManifestError(ValueError):
@@ -18,6 +23,7 @@ class PromotionManifestError(ValueError):
 
 
 _DATETIME_TRANSFORMS = frozenset({"cyclic_hour", "cyclic_day_of_year"})
+_HISTORY_TRANSFORMS = frozenset({"lag", "rolling_mean"})
 _NUMERIC_TRANSFORMS = frozenset(TRANSFORMS) - _DATETIME_TRANSFORMS
 _PREDICTION_TIME_PREFIXES = ("forecast_", "ldaps_")
 _NUMERIC_METADATA_INPUTS = frozenset({"capacity_mw", "latitude", "longitude"})
@@ -45,6 +51,7 @@ def validate_promotion_manifest(manifest) -> tuple[FeatureSpec, ...]:
 
 def render_promoted_module(manifest, target: Path) -> Path:
     specs = validate_promotion_manifest(manifest)
+    _reject_stateful_history_features_for_rendering(specs)
     target = Path(target)
     content = _render_module(
         specs=specs,
@@ -62,10 +69,9 @@ def validate_prediction_time_feature_spec(
 ) -> None:
     try:
         _validate_spec_primitives(spec)
-        if spec.transform not in TRANSFORMS:
-            raise PromotionManifestError(
-                f"feature {spec.name}: unknown transform {spec.transform}"
-            )
+        _validate_transform_and_arity(spec)
+        if spec.transform in _HISTORY_TRANSFORMS:
+            _validate_history_parameters(spec)
         _reject_unavailable_inputs(spec)
         _validate_prediction_time_inputs(spec)
         _validate_spec_without_source_existence(spec)
@@ -132,6 +138,18 @@ def _validate_primitive_value(label: str, value: Any) -> None:
     )
 
 
+def _validate_transform_and_arity(spec: FeatureSpec) -> None:
+    if spec.transform not in TRANSFORMS:
+        raise PromotionManifestError(
+            f"feature {spec.name}: unknown transform {spec.transform}"
+        )
+    expected_arity = _TRANSFORM_ARITY[spec.transform]
+    if len(spec.inputs) != expected_arity:
+        raise PromotionManifestError(
+            f"feature {spec.name}: {spec.transform} expects {expected_arity} inputs"
+        )
+
+
 def _reject_unavailable_inputs(spec: FeatureSpec) -> None:
     for source in spec.inputs:
         if source == "generation_mw":
@@ -168,6 +186,9 @@ def _prediction_time_inputs_for_transform(transform: str) -> frozenset[str]:
 
 
 def _validate_spec_without_source_existence(spec: FeatureSpec) -> None:
+    if spec.transform in _HISTORY_TRANSFORMS:
+        _validate_history_parameters(spec)
+        return
     row = {
         source: _dummy_value_for_transform(spec, position)
         for position, source in enumerate(spec.inputs)
@@ -196,6 +217,36 @@ def _dummy_value_for_transform(spec: FeatureSpec, position: int) -> Any:
     return 1.0
 
 
+def _validate_history_parameters(spec: FeatureSpec) -> None:
+    if spec.transform == "lag":
+        _validate_exact_integer_parameter(spec, "periods", {1, 2, 3, 6, 12, 24})
+    elif spec.transform == "rolling_mean":
+        _validate_exact_integer_parameter(spec, "window", {3, 6, 12, 24})
+
+
+def _validate_exact_integer_parameter(
+    spec: FeatureSpec, key: str, allowed: set[int]
+) -> None:
+    unexpected = sorted(set(spec.parameters) - {key})
+    if unexpected:
+        raise PromotionManifestError(f"feature {spec.name}: unexpected parameters: {unexpected}")
+    if key not in spec.parameters:
+        raise PromotionManifestError(f"feature {spec.name}: missing parameter {key}")
+    value = spec.parameters[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PromotionManifestError(f"feature {spec.name}: parameter {key} must be an integer")
+    if value not in allowed:
+        raise PromotionManifestError(f"feature {spec.name}: parameter {key} outside allowed set")
+
+
+def _reject_stateful_history_features_for_rendering(specs: tuple[FeatureSpec, ...]) -> None:
+    for spec in specs:
+        if spec.transform in _HISTORY_TRANSFORMS:
+            raise PromotionManifestError(
+                f"feature {spec.name}: stateful history feature cannot be rendered"
+            )
+
+
 def _validate_provenance(
     manifest: Mapping[str, Any], specs: tuple[FeatureSpec, ...]
 ) -> None:
@@ -218,6 +269,14 @@ def _validate_provenance(
     _require_nonempty_string(winner, "name", "winner.name")
     _require_nonempty_string(winner, "run_id", "winner.run_id")
     selected_recipe = manifest.get("selected_model_recipe")
+    if isinstance(selected_recipe, Mapping):
+        proposal = _validated_embedded_proposal(_require_mapping(manifest, "proposal"))
+        _validate_agentic_model_recipe_binding(
+            proposal,
+            winner,
+            _canonical_model_recipe(selected_recipe),
+            specs,
+        )
     expected_winner_name = (
         _require_nonblank_string(winner, "name", "winner.name")
         if isinstance(selected_recipe, Mapping)
@@ -334,29 +393,49 @@ def _validate_agentic_model_recipe_binding(
     feature_sets = _require_list(proposal, "feature_sets", "proposal.feature_sets")
     model_recipes = _require_list(proposal, "model_recipes", "proposal.model_recipes")
 
-    if selected_recipe not in model_recipes:
-        raise PromotionManifestError("selected_model_recipe does not match proposal.model_recipes")
-
     winner_name = _safe_nonblank_string(winner, "name", "winner.name")
-    recipe_prefix = f"{selected_recipe['name']}:"
-    if not winner_name.startswith(recipe_prefix):
-        raise PromotionManifestError("winner.name does not match selected_model_recipe")
-    feature_set_name = winner_name[len(recipe_prefix) :]
-    if not feature_set_name:
-        raise PromotionManifestError("winner.name missing feature set name")
-
-    expected_winner_name = f"{selected_recipe['name']}:{feature_set_name}"
-    if winner_name != expected_winner_name:
-        raise PromotionManifestError("winner.name does not bind recipe and feature set")
-
-    matching_feature_sets = [feature_set for feature_set in feature_sets if feature_set["name"] == feature_set_name]
-    if len(matching_feature_sets) != 1:
-        raise PromotionManifestError("winner.name feature set not found in proposal.feature_sets")
 
     selected_specs_payload = _spec_payloads_by_name([spec.to_dict() for spec in selected_specs])
-    feature_set_specs_payload = _spec_payloads_by_name(matching_feature_sets[0]["specs"])
-    if selected_specs_payload != feature_set_specs_payload:
-        raise PromotionManifestError("selected_specs do not match proposal feature set")
+    matching_feature_sets = [
+        feature_set
+        for feature_set in feature_sets
+        if selected_specs_payload == _spec_payloads_by_name(feature_set["specs"])
+    ]
+    if len(matching_feature_sets) != 1:
+        raise PromotionManifestError("selected_specs must match exactly one proposal feature set")
+    feature_set_name = _require_nonblank_string(
+        matching_feature_sets[0], "name", "proposal.feature_sets.name"
+    )
+    expected_suffix = f":{feature_set_name}"
+    if not winner_name.endswith(expected_suffix):
+        raise PromotionManifestError("winner.name does not match selected_specs feature set")
+
+    if _is_optuna_lightgbm_recipe(selected_recipe):
+        if winner_name != f"{selected_recipe['name']}:{feature_set_name}":
+            raise PromotionManifestError("winner.name does not match selected_model_recipe")
+        search = _require_mapping(selected_recipe, "search")
+        if search.get("feature_set") != feature_set_name:
+            raise PromotionManifestError("selected_model_recipe search feature_set does not match selected_specs")
+        _validate_optuna_search_provenance(
+            proposal=proposal,
+            feature_sets=feature_sets,
+            feature_set_name=feature_set_name,
+            selected_recipe=selected_recipe,
+        )
+        if _is_selected_lightgbm_name(selected_recipe["name"]):
+            expected_candidate = f"optuna_lightgbm_{search.get('selected_trial_number')}:{feature_set_name}"
+            if search.get("selected_trial_candidate_name") != expected_candidate:
+                raise PromotionManifestError("selected_model_recipe search selected trial does not match feature set")
+        else:
+            expected_name = f"optuna_lightgbm_{search.get('trial_number')}"
+            if selected_recipe["name"] != expected_name:
+                raise PromotionManifestError("selected_model_recipe search trial_number does not match name")
+        return
+
+    if selected_recipe not in model_recipes:
+        raise PromotionManifestError("selected_model_recipe does not match proposal.model_recipes")
+    if winner_name != f"{selected_recipe['name']}:{feature_set_name}":
+        raise PromotionManifestError("winner.name does not match selected_model_recipe")
 
 
 def _spec_payloads_by_name(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -364,9 +443,9 @@ def _spec_payloads_by_name(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _canonical_model_recipe(recipe: Mapping[str, Any]) -> dict[str, Any]:
-    allowed_top = {"name", "recipe", "parameters", "rationale"}
+    allowed_top = {"name", "recipe", "parameters", "rationale", "search"}
     extra = set(recipe) - allowed_top
-    missing = allowed_top - set(recipe)
+    missing = (allowed_top - {"search"}) - set(recipe)
     if extra:
         raise PromotionManifestError(f"selected_model_recipe unknown keys: {sorted(extra)}")
     if missing:
@@ -408,14 +487,319 @@ def _canonical_model_recipe(recipe: Mapping[str, Any]) -> dict[str, Any]:
             "max_iter": max_iter,
             "max_leaf_nodes": max_leaf_nodes,
         }
+    elif recipe_name == "lightgbm":
+        _require_exact_keys(
+            parameters,
+            {"n_estimators", "learning_rate", "num_leaves", "min_child_samples"},
+            "selected_model_recipe.parameters",
+        )
+        n_estimators = _strict_int(
+            "selected_model_recipe.parameters.n_estimators", parameters["n_estimators"]
+        )
+        learning_rate = _finite_number(
+            "selected_model_recipe.parameters.learning_rate", parameters["learning_rate"]
+        )
+        num_leaves = _strict_int(
+            "selected_model_recipe.parameters.num_leaves", parameters["num_leaves"]
+        )
+        min_child_samples = _strict_int(
+            "selected_model_recipe.parameters.min_child_samples",
+            parameters["min_child_samples"],
+        )
+        if n_estimators not in {100, 300}:
+            raise PromotionManifestError("selected_model_recipe.parameters.n_estimators outside allowed set")
+        if learning_rate not in {0.03, 0.1}:
+            raise PromotionManifestError("selected_model_recipe.parameters.learning_rate outside allowed set")
+        if num_leaves not in {15, 31}:
+            raise PromotionManifestError("selected_model_recipe.parameters.num_leaves outside allowed set")
+        if min_child_samples not in {10, 20}:
+            raise PromotionManifestError("selected_model_recipe.parameters.min_child_samples outside allowed set")
+        canonical_params = {
+            "learning_rate": learning_rate,
+            "min_child_samples": min_child_samples,
+            "n_estimators": n_estimators,
+            "num_leaves": num_leaves,
+        }
+    elif recipe_name == "random_forest":
+        _require_exact_keys(
+            parameters,
+            {"n_estimators", "max_depth", "min_samples_leaf"},
+            "selected_model_recipe.parameters",
+        )
+        n_estimators = _strict_int(
+            "selected_model_recipe.parameters.n_estimators", parameters["n_estimators"]
+        )
+        max_depth = _strict_int_or_none(
+            "selected_model_recipe.parameters.max_depth", parameters["max_depth"]
+        )
+        min_samples_leaf = _strict_int(
+            "selected_model_recipe.parameters.min_samples_leaf", parameters["min_samples_leaf"]
+        )
+        if n_estimators not in {100, 200, 400}:
+            raise PromotionManifestError("selected_model_recipe.parameters.n_estimators outside allowed set")
+        if max_depth not in {8, 12, None}:
+            raise PromotionManifestError("selected_model_recipe.parameters.max_depth outside allowed set")
+        if min_samples_leaf not in {1, 2, 4}:
+            raise PromotionManifestError("selected_model_recipe.parameters.min_samples_leaf outside allowed set")
+        canonical_params = {
+            "max_depth": max_depth,
+            "min_samples_leaf": min_samples_leaf,
+            "n_estimators": n_estimators,
+        }
+    elif recipe_name == "xgboost":
+        _require_exact_keys(
+            parameters,
+            {"n_estimators", "max_depth", "learning_rate", "subsample"},
+            "selected_model_recipe.parameters",
+        )
+        n_estimators = _strict_int(
+            "selected_model_recipe.parameters.n_estimators", parameters["n_estimators"]
+        )
+        max_depth = _strict_int(
+            "selected_model_recipe.parameters.max_depth", parameters["max_depth"]
+        )
+        learning_rate = _finite_number(
+            "selected_model_recipe.parameters.learning_rate", parameters["learning_rate"]
+        )
+        subsample = _finite_number(
+            "selected_model_recipe.parameters.subsample", parameters["subsample"]
+        )
+        if n_estimators not in {100, 200, 400}:
+            raise PromotionManifestError("selected_model_recipe.parameters.n_estimators outside allowed set")
+        if max_depth not in {4, 6, 8}:
+            raise PromotionManifestError("selected_model_recipe.parameters.max_depth outside allowed set")
+        if learning_rate not in {0.03, 0.1}:
+            raise PromotionManifestError("selected_model_recipe.parameters.learning_rate outside allowed set")
+        if subsample not in {0.8, 1.0}:
+            raise PromotionManifestError("selected_model_recipe.parameters.subsample outside allowed set")
+        canonical_params = {
+            "learning_rate": learning_rate,
+            "max_depth": max_depth,
+            "n_estimators": n_estimators,
+            "subsample": subsample,
+        }
     else:
         raise PromotionManifestError("selected_model_recipe.recipe unsupported")
-    return {
+    canonical = {
         "name": name,
         "parameters": canonical_params,
         "rationale": rationale,
         "recipe": recipe_name,
     }
+    if "search" in recipe:
+        if not _is_optuna_lightgbm_name(name) or recipe_name != "lightgbm":
+            raise PromotionManifestError("selected_model_recipe.search requires optuna LightGBM recipe")
+        canonical["search"] = _canonical_optuna_lightgbm_search(_require_mapping(recipe, "search"))
+    elif _is_optuna_lightgbm_name(name):
+        raise PromotionManifestError("selected_model_recipe.search missing for optuna LightGBM recipe")
+    return canonical
+
+
+def _validate_optuna_search_provenance(
+    *,
+    proposal: Mapping[str, Any],
+    feature_sets: list[Any],
+    feature_set_name: str,
+    selected_recipe: Mapping[str, Any],
+) -> None:
+    proposal_search = _require_mapping(proposal, "search")
+    selected_search = _require_mapping(selected_recipe, "search")
+    proposal_spaces = _require_mapping(proposal_search, "spaces")
+    proposal_lightgbm_space = _canonical_lightgbm_search_space(
+        _require_mapping(proposal_spaces, "lightgbm")
+    )
+    selected_space = _canonical_lightgbm_search_space(_require_mapping(selected_search, "space"))
+
+    feature_set_index = next(
+        index
+        for index, feature_set in enumerate(feature_sets)
+        if feature_set.get("name") == feature_set_name
+    )
+    expected_search = {
+        "feature_set": feature_set_name,
+        "n_trials": _strict_int("proposal.search.n_trials", proposal_search["n_trials"]),
+        "sampler": _require_nonblank_string(proposal_search, "sampler", "proposal.search.sampler"),
+        "seed": _strict_int("proposal.search.seed", proposal_search["seed"]) + feature_set_index,
+        "space": proposal_lightgbm_space,
+        "selected_trial_candidate_name": selected_search["selected_trial_candidate_name"],
+        "selected_trial_number": selected_search["selected_trial_number"],
+        "selected_trial_parameters": selected_search["selected_trial_parameters"],
+    }
+    if selected_space != proposal_lightgbm_space:
+        raise PromotionManifestError("selected_model_recipe search space does not match proposal.search")
+    if dict(selected_search) != expected_search:
+        raise PromotionManifestError("selected_model_recipe search does not match proposal.search")
+
+    parameters = _require_mapping(selected_recipe, "parameters")
+    for name, value in parameters.items():
+        if value not in selected_space[name]:
+            raise PromotionManifestError("selected_model_recipe parameters do not match search space")
+    selected_trial_parameters = _require_mapping(selected_search, "selected_trial_parameters")
+    for name, value in selected_trial_parameters.items():
+        if value not in selected_space[name]:
+            raise PromotionManifestError("selected trial parameters do not match search space")
+    if dict(parameters) != dict(selected_trial_parameters):
+        raise PromotionManifestError("selected_model_recipe parameters do not match selected trial parameters")
+
+
+def _is_optuna_lightgbm_recipe(recipe: Mapping[str, Any]) -> bool:
+    return (
+        recipe.get("recipe") == "lightgbm"
+        and _is_optuna_lightgbm_name(recipe.get("name"))
+        and isinstance(recipe.get("search"), Mapping)
+    )
+
+
+def _is_optuna_lightgbm_name(name: Any) -> bool:
+    if _is_selected_lightgbm_name(name):
+        return True
+    if type(name) is not str or not name.startswith("optuna_lightgbm_"):
+        return False
+    suffix = name.removeprefix("optuna_lightgbm_")
+    return suffix.isdecimal()
+
+
+def _is_selected_lightgbm_name(name: Any) -> bool:
+    return name == "selected_lightgbm"
+
+
+def _canonical_optuna_lightgbm_search(search: Mapping[str, Any]) -> dict[str, Any]:
+    _require_exact_keys(
+        search,
+        {
+            "sampler",
+            "seed",
+            "n_trials",
+            "space",
+            "selected_trial_number",
+            "selected_trial_candidate_name",
+            "selected_trial_parameters",
+            "feature_set",
+        },
+        "selected_model_recipe.search",
+    )
+    sampler = _require_nonblank_string(search, "sampler", "selected_model_recipe.search.sampler")
+    if sampler != "tpe":
+        raise PromotionManifestError("selected_model_recipe.search.sampler must be exactly 'tpe'")
+    seed = _strict_int("selected_model_recipe.search.seed", search["seed"])
+    n_trials = _strict_int("selected_model_recipe.search.n_trials", search["n_trials"])
+    selected_trial_number = _strict_int(
+        "selected_model_recipe.search.selected_trial_number",
+        search["selected_trial_number"],
+    )
+    if seed < 0:
+        raise PromotionManifestError("selected_model_recipe.search.seed must be >= 0")
+    if not 1 <= n_trials <= 50:
+        raise PromotionManifestError("selected_model_recipe.search.n_trials must be 1..50")
+    if not 0 <= selected_trial_number < n_trials:
+        raise PromotionManifestError("selected_model_recipe.search.selected_trial_number outside n_trials")
+    selected_trial_candidate_name = _require_nonblank_string(
+        search,
+        "selected_trial_candidate_name",
+        "selected_model_recipe.search.selected_trial_candidate_name",
+    )
+    _reject_unsafe_string(
+        "selected_model_recipe.search.selected_trial_candidate_name",
+        selected_trial_candidate_name,
+    )
+    feature_set = _require_nonblank_string(
+        search, "feature_set", "selected_model_recipe.search.feature_set"
+    )
+    _reject_unsafe_string("selected_model_recipe.search.feature_set", feature_set)
+    return {
+        "feature_set": feature_set,
+        "n_trials": n_trials,
+        "sampler": sampler,
+        "seed": seed,
+        "space": _canonical_lightgbm_search_space(_require_mapping(search, "space")),
+        "selected_trial_candidate_name": selected_trial_candidate_name,
+        "selected_trial_number": selected_trial_number,
+        "selected_trial_parameters": _canonical_lightgbm_parameter_values(
+            "selected_model_recipe.search.selected_trial_parameters",
+            _require_mapping(search, "selected_trial_parameters"),
+        ),
+    }
+
+
+def _canonical_lightgbm_search_space(space: Mapping[str, Any]) -> dict[str, Any]:
+    _require_exact_keys(
+        space,
+        {"n_estimators", "learning_rate", "num_leaves", "min_child_samples"},
+        "selected_model_recipe.search.space",
+    )
+    return {
+        "learning_rate": _canonical_search_values(
+            "selected_model_recipe.search.space.learning_rate",
+            space["learning_rate"],
+            {0.03, 0.1},
+            numeric=True,
+        ),
+        "min_child_samples": _canonical_search_values(
+            "selected_model_recipe.search.space.min_child_samples",
+            space["min_child_samples"],
+            {10, 20},
+        ),
+        "n_estimators": _canonical_search_values(
+            "selected_model_recipe.search.space.n_estimators",
+            space["n_estimators"],
+            {100, 300},
+        ),
+        "num_leaves": _canonical_search_values(
+            "selected_model_recipe.search.space.num_leaves",
+            space["num_leaves"],
+            {15, 31},
+        ),
+    }
+
+
+def _canonical_lightgbm_parameter_values(
+    label: str, parameters: Mapping[str, Any]
+) -> dict[str, int | float]:
+    _require_exact_keys(
+        parameters,
+        {"n_estimators", "learning_rate", "num_leaves", "min_child_samples"},
+        label,
+    )
+    n_estimators = _strict_int(f"{label}.n_estimators", parameters["n_estimators"])
+    learning_rate = _finite_number(f"{label}.learning_rate", parameters["learning_rate"])
+    num_leaves = _strict_int(f"{label}.num_leaves", parameters["num_leaves"])
+    min_child_samples = _strict_int(f"{label}.min_child_samples", parameters["min_child_samples"])
+    if n_estimators not in {100, 300}:
+        raise PromotionManifestError(f"{label}.n_estimators outside allowed set")
+    if learning_rate not in {0.03, 0.1}:
+        raise PromotionManifestError(f"{label}.learning_rate outside allowed set")
+    if num_leaves not in {15, 31}:
+        raise PromotionManifestError(f"{label}.num_leaves outside allowed set")
+    if min_child_samples not in {10, 20}:
+        raise PromotionManifestError(f"{label}.min_child_samples outside allowed set")
+    return {
+        "learning_rate": learning_rate,
+        "min_child_samples": min_child_samples,
+        "n_estimators": n_estimators,
+        "num_leaves": num_leaves,
+    }
+
+
+def _canonical_search_values(
+    label: str,
+    value: Any,
+    allowed: set[int | float],
+    *,
+    numeric: bool = False,
+) -> list[int | float]:
+    if not isinstance(value, list) or not value:
+        raise PromotionManifestError(f"{label} must be a non-empty list")
+    canonical: list[int | float] = []
+    seen: set[int | float] = set()
+    for item in value:
+        normalized = _finite_number(label, item) if numeric else _strict_int(label, item)
+        if normalized not in allowed:
+            raise PromotionManifestError(f"{label} contains value outside allowed set")
+        if normalized in seen:
+            raise PromotionManifestError(f"{label} contains duplicate values")
+        seen.add(normalized)
+        canonical.append(normalized)
+    return canonical
 
 
 def _require_exact_keys(mapping: Mapping[str, Any], keys: set[str], label: str) -> None:
@@ -437,6 +821,12 @@ def _strict_int(label: str, value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise PromotionManifestError(f"{label} must be an integer")
     return int(value)
+
+
+def _strict_int_or_none(label: str, value: Any) -> int | None:
+    if value is None:
+        return None
+    return _strict_int(label, value)
 
 
 def _contains_sensitive_key(value: Any) -> bool:

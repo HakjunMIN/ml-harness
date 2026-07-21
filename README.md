@@ -19,6 +19,7 @@ uv run pytest -q
 ```
 
 커밋된 `uv.lock` 덕분에 `uv sync --all-extras`는 개발 환경을 재현합니다.
+기본 설치는 scikit-learn 기반 흐름을 대상으로 합니다. XGBoost, LightGBM, Optuna 기반 모델 탐색을 실행하려면 별도로 `uv sync --extra model-search`(또는 개발 시 `--all-extras`)를 사용해야 합니다.
 
 전체 데모 실행:
 
@@ -58,6 +59,21 @@ uv run python -m power_forecasting.cli aidm \
   --legacy-predictions .agents/fixtures/legacy-predictions.csv \
   --folds 1
 ```
+
+모델 탐색 제안(`random_forest`, `xgboost`, `lightgbm`, LightGBM Optuna 탐색)을 실행할 때는 선택 extra를 먼저 설치합니다.
+
+```bash
+uv sync --extra model-search
+uv run python -m power_forecasting.cli aidm \
+  --output artifacts/model-search \
+  --dataset .agents/fixtures/valid-dataset.csv \
+  --proposal .agents/fixtures/model-search-proposal.json \
+  --folds 1 \
+  --minimum-improvement 0 \
+  --max-plant-regression 1
+```
+
+`.agents/fixtures/valid-dataset.csv`는 작은 재사용 fixture이므로 `--folds 1` 예시에만 적합합니다. 실제 증거 생성은 시간순 5-fold를 기본으로 사용하고, 선택 extra 없이 `xgboost`, `lightgbm`, Optuna 탐색이 동작한다고 주장하지 않습니다.
 
 승격된 매니페스트에서 피처 모듈 생성:
 
@@ -183,14 +199,17 @@ AIDM은 SPOT을 예측 시점 기준 모델로 사용합니다. 다음과 같은
 
 ### 에이전트 제안 스키마와 모델 레시피
 
-에이전트는 코드를 생성하지 않고 `schema_version: "1"`인 선언적 JSON 제안만 제출할 수 있습니다. 최상위 키는 `proposal_id`, `rationale`, `baseline`, `feature_sets`, `model_recipes`, `budget`으로 고정됩니다. `feature_sets`에는 기존 `FeatureSpec` 사전만 들어가며, AIDD와 동일한 예측 시점 입력 검증으로 `generation_mw`, `actual_*`, 계약 밖 입력을 거부합니다. `budget.max_evaluations`는 1~50, `budget.top_feature_groups`는 1~10입니다.
+에이전트는 코드를 생성하지 않고 `schema_version: "1"`인 선언적 JSON 제안만 제출할 수 있습니다. 최상위 키는 `proposal_id`, `rationale`, `baseline`, `feature_sets`, `model_recipes`, `budget`, 선택적 `search`로 제한됩니다. `feature_sets`에는 기존 `FeatureSpec` 사전만 들어가며, AIDD와 동일한 예측 시점 입력 검증으로 `generation_mw`, `actual_*`, 계약 밖 입력을 거부합니다. 시간 피처는 `timestamp`만, 날씨 피처는 예측/LDAPS/메타데이터 입력만, history 피처는 발전소별 엄격한 과거 값만 사용할 수 있습니다. history warmup 결측은 각 fold 안에서 학습 통계로 impute되며 미래·현재 행을 보지 않습니다. `budget.max_evaluations`는 1~50, `budget.top_feature_groups`는 1~10입니다.
 
-지원 모델 레시피는 두 가지뿐입니다.
+지원 모델 레시피는 고정된 허용 파라미터 집합만 사용할 수 있습니다.
 
 - `ridge`: `alpha`가 `0.1`, `1.0`, `10.0` 중 하나인 `SimpleImputer` + `StandardScaler` + `Ridge`
 - `hist_gradient_boosting`: `max_iter` `50/100/200`, `learning_rate` `0.03/0.1`, `max_leaf_nodes` `15/31/63` 중 하나인 결정론적 `HistGradientBoostingRegressor(random_state=0)`
+- `random_forest`: `n_estimators` `100/200/400`, `max_depth` `8/12/null`, `min_samples_leaf` `1/2/4` 중 하나인 결정론적 `RandomForestRegressor(random_state=0, n_jobs=1)`
+- `xgboost`: `n_estimators` `100/200/400`, `max_depth` `4/6/8`, `learning_rate` `0.03/0.1`, `subsample` `0.8/1.0` 중 하나인 `XGBRegressor`. 실행에는 `uv sync --extra model-search`가 필요하며, macOS OpenMP 등 native runtime import 오류는 원인 문자열을 보존해 표시합니다.
+- `lightgbm`: `n_estimators` `100/300`, `learning_rate` `0.03/0.1`, `num_leaves` `15/31`, `min_child_samples` `10/20` 중 하나인 `LGBMRegressor`. 실행에는 `uv sync --extra model-search`가 필요합니다.
 
-AIDM은 모든 `model_recipe × feature_set` 조합을 평가하며 예산을 초과하면 어떤 평가도 실행하지 않고 실패합니다. 기본 SPOT 기준선은 항상 유지됩니다. `--legacy-predictions`를 제공하면 `plant_id,timestamp,prediction_mw`가 평가 행과 정확히 1:1로 일치해야 하며, 예측값은 용량으로 clipping된 뒤 NMAE를 계산합니다. 우승 후보가 레거시 예측 NMAE보다 나쁘면 기존 SPOT 게이트를 통과해도 `legacy_regression` 게이트로 거부됩니다.
+선택적 `search`는 LightGBM에 대한 bounded Optuna TPE만 지원합니다. 각 trial은 허용된 discrete space 값만 선택하고, 최적 trial은 `selected_lightgbm`으로 한 번 더 재평가됩니다. 예산은 `len(feature_sets) * (len(model_recipes) + search.n_trials + 1 selected 재평가)`로 계산되며, 검색이 없으면 `len(feature_sets) * len(model_recipes)`입니다. 예산을 초과하면 어떤 평가도 실행하지 않고 실패합니다. 기본 SPOT 기준선은 항상 유지됩니다. `--legacy-predictions`를 제공하면 `plant_id,timestamp,prediction_mw`가 평가 행과 정확히 1:1로 일치해야 하며, 예측값은 용량으로 clipping된 뒤 NMAE를 계산합니다. 우승 후보가 레거시 예측 NMAE보다 나쁘면 기존 SPOT 게이트를 통과해도 `legacy_regression` 게이트로 거부됩니다.
 
 ## AIDD의 제한된 결정론적 안전성
 
@@ -205,7 +224,7 @@ AIDD는 승격 매니페스트만 읽고 `generated/promoted_features.py`를 생
 - 개선율 및 발전소별 변화량이 매니페스트 임계값 충족
 - 우승 모델 이름과 선택 피처 명세의 일치
 
-생성 모듈에는 `PROMOTED_FEATURE_SPECS`와 `build_promoted_features(frame)`이 포함됩니다. 런타임 피처 엔진과 동일한 결정론적 변환을 적용하며, 학습·배포·네트워크 접근·자율 동작을 포함하지 않습니다.
+생성 모듈에는 `PROMOTED_FEATURE_SPECS`와 `build_promoted_features(frame)`이 포함됩니다. 런타임 피처 엔진과 동일한 결정론적 변환을 적용하며, 학습·배포·네트워크 접근·자율 동작을 포함하지 않습니다. history 피처(`lag`, `rolling_mean`)는 검증은 가능하지만 AIDD 실행 모듈로 렌더링하지 않으며, 사람이 검토할 patch 요청으로만 다룹니다.
 
 에이전트 레시피가 승격된 경우 AIDD는 추가로 `model-recipe-patch.json`을 생성합니다. 이 파일은 `status: "requires_human_review"`인 UTF-8 LF JSON 요청이며, 선택 모델 레시피, 선택 피처 명세 해시, 우승 지표, 매니페스트 해시만 담습니다. 실행 가능한 코드, 고객 경로, 임의 필드 전달은 포함하지 않으며, 사람이 검토하기 전에는 고객 저장소나 운영 설정을 직접 수정하지 않습니다.
 

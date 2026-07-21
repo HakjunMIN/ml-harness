@@ -6,6 +6,7 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
+from types import ModuleType
 
 import pandas as pd
 import pytest
@@ -467,6 +468,76 @@ def test_cli_aidm_rejected_decision_exits_two_after_manifest_and_report(tmp_path
     assert (output / "performance_report.md").exists()
 
 
+def test_cli_aidm_model_search_fixture_runs_with_mocked_optional_model_imports(
+    tmp_path, monkeypatch
+):
+    _install_fake_model_search_modules(monkeypatch)
+
+    def fake_evaluate(frame, definition, feature_specs, folds):
+        definition.estimator_factory()
+        score = 0.30 if not feature_specs else 0.10
+        validation = frame.tail(4).copy()
+        prediction = (
+            validation["generation_mw"] + score * validation["capacity_mw"]
+        ).clip(0, validation["capacity_mw"])
+        return EvaluationResult(
+            metrics={"MAE": score * 100.0, "RMSE": score * 120.0, "NMAE": score},
+            per_plant={
+                str(plant_id): {
+                    "MAE": score * 100.0,
+                    "RMSE": score * 120.0,
+                    "NMAE": score,
+                }
+                for plant_id in sorted(frame["plant_id"].unique())
+            },
+            fold_metrics=[
+                {"MAE": score * 100.0, "RMSE": score * 120.0, "NMAE": score}
+            ],
+            predictions=pd.DataFrame(
+                {
+                    "timestamp": validation["timestamp"].to_numpy(),
+                    "plant_id": validation["plant_id"].to_numpy(),
+                    "actual": validation["generation_mw"].to_numpy(),
+                    "prediction": prediction.to_numpy(),
+                    "capacity_mw": validation["capacity_mw"].to_numpy(),
+                    "fold": 1,
+                }
+            ),
+        )
+
+    monkeypatch.setattr(aidm, "evaluate_model", fake_evaluate)
+    output = tmp_path / "model-search"
+    status = cli.main(
+        [
+            "aidm",
+            "--output",
+            str(output),
+            "--dataset",
+            str(ROOT / ".agents" / "fixtures" / "valid-dataset.csv"),
+            "--proposal",
+            str(ROOT / ".agents" / "fixtures" / "model-search-proposal.json"),
+            "--folds",
+            "1",
+            "--minimum-improvement",
+            "0",
+            "--max-plant-regression",
+            "1",
+            "--seed",
+            "7",
+        ]
+    )
+
+    assert status == 0
+    manifest = json.loads((output / "promotion_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["proposal"]["proposal_id"] == "fixture-model-search-proposal"
+    assert manifest["selected_model_recipe"]["recipe"] in {
+        "random_forest",
+        "xgboost",
+        "lightgbm",
+    }
+    assert (output / "performance_report.md").exists()
+
+
 def _run_module(*args):
     env = os.environ.copy()
     env["PYTHONPATH"] = (
@@ -482,6 +553,70 @@ def _run_module(*args):
         capture_output=True,
         timeout=180,
     )
+
+
+def _install_fake_model_search_modules(monkeypatch):
+    xgboost = ModuleType("xgboost")
+
+    class FakeXGBRegressor:
+        def __init__(self, **parameters):
+            self.parameters = dict(parameters)
+
+    lightgbm = ModuleType("lightgbm")
+
+    class FakeLGBMRegressor:
+        def __init__(self, **parameters):
+            self.parameters = dict(parameters)
+
+    optuna = ModuleType("optuna")
+    samplers = ModuleType("optuna.samplers")
+    pruners = ModuleType("optuna.pruners")
+
+    class TPESampler:
+        def __init__(self, *, seed):
+            self.seed = seed
+
+    class NopPruner:
+        pass
+
+    class Trial:
+        def __init__(self, number):
+            self.number = number
+            self.params = {}
+
+        def suggest_categorical(self, name, choices):
+            value = choices[self.number % len(choices)]
+            self.params[name] = value
+            return value
+
+    class Study:
+        def __init__(self, *, sampler, pruner, direction):
+            self.sampler = sampler
+            self.pruner = pruner
+            self.direction = direction
+            self.trials = []
+
+        def optimize(self, objective, n_trials):
+            for number in range(n_trials):
+                trial = Trial(number)
+                trial.value = objective(trial)
+                self.trials.append(trial)
+
+    def create_study(*, sampler, pruner, direction):
+        return Study(sampler=sampler, pruner=pruner, direction=direction)
+
+    xgboost.XGBRegressor = FakeXGBRegressor
+    lightgbm.LGBMRegressor = FakeLGBMRegressor
+    samplers.TPESampler = TPESampler
+    pruners.NopPruner = NopPruner
+    optuna.samplers = samplers
+    optuna.pruners = pruners
+    optuna.create_study = create_study
+    monkeypatch.setitem(sys.modules, "xgboost", xgboost)
+    monkeypatch.setitem(sys.modules, "lightgbm", lightgbm)
+    monkeypatch.setitem(sys.modules, "optuna", optuna)
+    monkeypatch.setitem(sys.modules, "optuna.samplers", samplers)
+    monkeypatch.setitem(sys.modules, "optuna.pruners", pruners)
 
 
 def _legacy_results():

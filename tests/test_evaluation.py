@@ -133,7 +133,42 @@ def test_compute_metrics_matches_hand_calculated_values():
         "MAE": pytest.approx(10.0 / 3.0),
         "RMSE": pytest.approx(math.sqrt((4.0 + 25.0 + 9.0) / 3.0)),
         "NMAE": pytest.approx(10.0 / 200.0),
+        "R2": pytest.approx(1.0 - 38.0 / (1400.0 / 3.0)),
     }
+
+
+def test_compute_metrics_reports_r2_and_rejects_constant_actuals():
+    perfect = compute_metrics(
+        actual=[1.0, 2.0, 3.0],
+        prediction=[1.0, 2.0, 3.0],
+        capacity_mw=[10.0, 10.0, 10.0],
+    )
+    bad = compute_metrics(
+        actual=[1.0, 2.0, 3.0],
+        prediction=[3.0, 2.0, 1.0],
+        capacity_mw=[10.0, 10.0, 10.0],
+    )
+    assert perfect["R2"] == pytest.approx(1.0)
+    assert bad["R2"] == pytest.approx(-3.0)
+    with pytest.raises(ValueError, match="R2 is undefined for constant actual targets"):
+        compute_metrics(
+            actual=[5.0, 5.0, 5.0],
+            prediction=[5.0, 4.0, 6.0],
+            capacity_mw=[10.0, 10.0, 10.0],
+        )
+
+
+def test_evaluate_model_omits_per_plant_r2_when_only_plant_targets_are_constant():
+    frame = generate_synthetic_data(days=4, plants=2, seed=31)
+    frame.loc[frame["plant_id"] == "plant_01", "generation_mw"] = 5.0
+    frame.loc[frame["plant_id"] == "plant_02", "generation_mw"] = 15.0
+
+    result = evaluate_model(frame, model_definition("Mean"), feature_specs=[], folds=2)
+
+    assert set(result.metrics) == {"MAE", "RMSE", "NMAE", "R2"}
+    assert set(result.per_plant) == {"plant_01", "plant_02"}
+    assert set(result.per_plant["plant_01"]) == {"MAE", "RMSE", "NMAE"}
+    assert set(result.per_plant["plant_02"]) == {"MAE", "RMSE", "NMAE"}
 
 
 @pytest.mark.parametrize(
@@ -157,7 +192,7 @@ def test_mean_model_evaluation_returns_finite_metrics_and_bounded_predictions():
     result = evaluate_model(frame, model_definition("Mean"), feature_specs=[], folds=3)
 
     assert isinstance(result, EvaluationResult)
-    assert set(result.metrics) == {"MAE", "RMSE", "NMAE"}
+    assert set(result.metrics) == {"MAE", "RMSE", "NMAE", "R2"}
     assert np.isfinite(list(result.metrics.values())).all()
     assert set(result.per_plant) == set(frame["plant_id"].unique())
     assert len(result.fold_metrics) == 3
@@ -258,7 +293,7 @@ def test_all_legacy_model_names_evaluate_successfully(name):
 
     result = evaluate_model(frame, model_definition(name), feature_specs=[], folds=3)
 
-    assert set(result.metrics) == {"MAE", "RMSE", "NMAE"}
+    assert set(result.metrics) == {"MAE", "RMSE", "NMAE", "R2"}
     assert np.isfinite(list(result.metrics.values())).all()
     assert len(result.predictions) > 0
 
@@ -350,6 +385,60 @@ class RecordingRegressor(BaseEstimator, RegressorMixin):
         return np.full(len(X), self.prediction_)
 
 
+class FeatureMatrixRecordingRegressor(BaseEstimator, RegressorMixin):
+    validation_matrices = []
+
+    def fit(self, X, y):
+        self.prediction_ = float(np.mean(y))
+        return self
+
+    def predict(self, X):
+        self.__class__.validation_matrices.append(X.copy())
+        return np.full(len(X), self.prediction_)
+
+
+def test_validation_history_features_include_prior_train_rows_without_cross_plant_leakage():
+    frame = generate_synthetic_data(days=1, plants=2, seed=33).iloc[:8].copy()
+    frame["capacity_mw"] = 100.0
+    frame["generation_mw"] = np.arange(1.0, len(frame) + 1.0)
+    frame["forecast_irradiance"] = [
+        11.0,
+        21.0,
+        12.0,
+        22.0,
+        13.0,
+        23.0,
+        14.0,
+        24.0,
+    ]
+    FeatureMatrixRecordingRegressor.validation_matrices = []
+    definition = ModelDefinition(
+        name="FeatureMatrixRecording",
+        base_features=("plant_id", "timestamp", "forecast_irradiance"),
+        estimator_factory=FeatureMatrixRecordingRegressor,
+    )
+
+    evaluate_model(
+        frame,
+        definition,
+        [
+            FeatureSpec(
+                "prior_forecast_irradiance",
+                "lag",
+                ("forecast_irradiance",),
+                {"periods": 1},
+            )
+        ],
+        folds=1,
+    )
+
+    validation_matrix = FeatureMatrixRecordingRegressor.validation_matrices[0]
+    first_validation_rows = validation_matrix.iloc[:2]
+    assert first_validation_rows["plant_id"].tolist() == ["plant_01", "plant_02"]
+    assert first_validation_rows["forecast_irradiance"].tolist() == [13.0, 23.0]
+    assert first_validation_rows["prior_forecast_irradiance"].tolist() == [12.0, 22.0]
+
+
 def test_feature_specs_append_to_base_features_without_mutating_or_duplicating_columns():
     frame = generate_synthetic_data(days=4, plants=2, seed=13)
     original = frame.copy(deep=True)
@@ -379,6 +468,29 @@ def test_feature_specs_append_to_base_features_without_mutating_or_duplicating_c
         ("forecast_irradiance", "cloud_factor")
     }
     pd.testing.assert_frame_equal(frame, original)
+
+
+def test_evaluate_model_imputes_history_warmup_nan_with_existing_forecast_estimator():
+    frame = generate_synthetic_data(days=4, plants=2, seed=31)
+    definition = model_definition("ForecastWeather")
+    estimator = definition.estimator_factory()
+    specs = [
+        FeatureSpec(
+            "prior_irradiance",
+            "lag",
+            ("forecast_irradiance",),
+            {"periods": 1},
+        )
+    ]
+
+    assert isinstance(estimator, Pipeline)
+    assert isinstance(estimator.named_steps["simpleimputer"], SimpleImputer)
+
+    result = evaluate_model(frame, definition, specs, folds=2)
+
+    assert len(result.predictions) > 0
+    assert np.isfinite(result.predictions["prediction"]).all()
+    assert np.isfinite(list(result.metrics.values())).all()
 
 
 class StateIsolationRegressor(BaseEstimator, RegressorMixin):
