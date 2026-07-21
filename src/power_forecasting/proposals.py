@@ -388,6 +388,7 @@ def _validate_discrete_search_values(
     if not raw:
         raise ProposalValidationError(f"search.spaces.lightgbm.{parameter} must be nonempty")
     values: list[int | float] = []
+    seen: set[int | float] = set()
     for value in raw:
         if parameter == "learning_rate":
             normalized: int | float = _number(value, f"search.spaces.lightgbm.{parameter}")
@@ -397,6 +398,9 @@ def _validate_discrete_search_values(
             raise ProposalValidationError(
                 f"search.spaces.lightgbm.{parameter} contains value outside allowed set"
             )
+        if normalized in seen:
+            raise ProposalValidationError(f"search.spaces.lightgbm.{parameter} contains duplicate values")
+        seen.add(normalized)
         values.append(normalized)
     return values
 

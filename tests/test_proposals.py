@@ -194,6 +194,18 @@ def test_search_proposal_round_trips_without_breaking_legacy_proposals():
     assert proposal_to_dict(loaded) == proposal
 
 
+def test_search_proposal_rejects_duplicate_lightgbm_choices():
+    proposal = _proposal(
+        model_recipes=[_proposal()["model_recipes"][0]],
+        search=_lightgbm_search(n_trials=3),
+        budget={"max_evaluations": 4, "top_feature_groups": 1},
+    )
+    proposal["search"]["spaces"]["lightgbm"]["n_estimators"] = [100, 100]
+
+    with pytest.raises(ProposalValidationError, match="duplicate"):
+        load_proposal(proposal)
+
+
 def test_proposal_validation_accepts_forecast_history_feature_specs():
     proposal = _proposal()
     proposal["feature_sets"][0]["specs"] = [
