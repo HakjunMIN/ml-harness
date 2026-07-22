@@ -28,7 +28,8 @@ which fixed profiles are feasible. Do not invent candidates or run AIDM.
 3. Write `diagnosis.json` and hand its bound checksum to the orchestrator.
 
 ## Output and Permissions
-- Write only `diagnosis.json` in the run directory and the orchestrator's state/journal transition.
+- On success, write only `diagnosis.json`; on a bounded diagnostic failure, write only
+  `diagnostic-failure.json` in the run directory and the orchestrator's state/journal transition.
 - `diagnosis.json` has `schema_version: "1"`, `dataset_sha256`, nonnegative `row_count` and
   `plant_count`, ISO `time_start`/`time_end`, aggregate `missingness`, `drift_summary`,
   `residual_summary`, boolean `leakage_checks`, and `recommended_profiles`.
@@ -40,8 +41,9 @@ which fixed profiles are feasible. Do not invent candidates or run AIDM.
   the effective configuration checksum and run ID.
 - Use only aggregate counts, ratios, timestamps, and safe reason codes. Never log a customer row,
   raw target, `actual_*`, `generation_mw`, secret, token, credential, or environment value.
-- A failed check writes a bounded `verification-failure.json` reason through the orchestrator;
-  never emit partial success evidence.
+- A failed diagnostic writes bounded privacy-safe `diagnostic-failure.json` with `schema_version:
+  "1"`, `status: "failed"`, `iteration`, and a safe `reason`; it never emits partial success
+  evidence.
 
 ## Bounded Iteration and Stop Conditions
 - Run once per loop, before proposal generation. The orchestrator caps total profile iterations
@@ -57,12 +59,13 @@ profiles, expose secrets, or log customer rows. A diagnosis is not release or de
 | Error | Action |
 | --- | --- |
 | Dataset or baseline missing | Fail closed; report a safe reason code only. |
-| Contract or leakage failure | Stop and write failure evidence; do not propose. |
+| Contract or leakage failure | Stop and write `diagnostic-failure.json`; do not propose. |
 | Checksum/config binding mismatch | Stop; require a new run. |
 
 ## Evidence Output Layout
-`diagnosis.json` is bound in `state.json` and `journal.jsonl`; the state records its path and
-checksum. No raw-data artifact is produced.
+`diagnosis.json` is bound in `state.json` and `journal.jsonl` on success. A failed diagnostic
+binds `diagnostic-failure.json` instead; both artifacts contain only safe checksums/reason codes
+and no raw-data sample.
 
 ## Post-Run Reflection
 Report only status, profile feasibility, aggregate warnings, and checksums. State whether the next

@@ -75,3 +75,16 @@ def test_research_runner_rejects_missing_config_without_creating_output(tmp_path
 
     assert result.returncode == 2
     assert "config not found" in result.stderr
+
+
+def test_research_skill_failure_artifacts_match_orchestrator_contract() -> None:
+    orchestrator = (
+        ROOT / ".agents" / "skills" / "research-orchestrator" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    diagnostic = (
+        ROOT / ".agents" / "skills" / "research-diagnostic" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "diagnostic-failure.json" in orchestrator
+    assert "diagnostic-failure.json" in diagnostic
+    assert "verification-failure.json" not in diagnostic

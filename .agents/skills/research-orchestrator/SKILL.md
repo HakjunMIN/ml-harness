@@ -27,7 +27,8 @@ research-loop`. Orchestration is opt-in and stops before AIDD/code/deploy.
 ## Output and Permissions
 - Write only under `.agents/runs` (or the explicitly allowed `.agents/output`) and only these
   names: `research-config.json`, `state.json`, `journal.jsonl`, `diagnosis.json`,
-  `research-summary.json`, `verification-failure.json`, `exhaustion.json`, plus per-iteration
+  `diagnostic-failure.json`, `research-summary.json`, `verification-failure.json`,
+  `exhaustion.json`, plus per-iteration
   `research-proposal.json`, `research-notes.json`, `promotion_manifest.json`, `experiments.db`,
   `performance_report.md`, `experiment-evidence.json`, and `verification.json`.
 - `state.json` schema version `1` records status, iteration, used/remaining profiles, artifact
