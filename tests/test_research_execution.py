@@ -849,6 +849,110 @@ def test_verifier_rejects_unexpected_report_content(
 
 
 @pytest.mark.parametrize(
+    ("row_prefix", "value_index", "replacement"),
+    (
+        ("| Rows |", 1, "999"),
+        ("| Mean |", 1, "generation_mw: secret"),
+        ("| 2 |", 2, "99.000000"),
+        ("| plant-a |", 1, "0.000000"),
+        ("| effective_irradiance |", 5, "generation_mw: secret"),
+        ("| database |", 1, "generation_mw: secret"),
+    ),
+)
+def test_verifier_rejects_tampered_allowed_report_row_values(
+    row_prefix: str,
+    value_index: int,
+    replacement: str,
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    lines = experiment.report_path.read_text(encoding="utf-8").splitlines()
+    row_index = next(
+        index for index, line in enumerate(lines) if line.startswith(row_prefix)
+    )
+    cells = lines[row_index][2:-2].split(" | ")
+    cells[value_index] = replacement
+    lines[row_index] = "| " + " | ".join(cells) + " |"
+    experiment.report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _update_evidence_checksum(experiment, "report_sha256", experiment.report_path)
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["report_evidence"] is False
+    assert "check_failed:report_evidence" in verification.reasons
+
+
+def test_verifier_rejects_report_table_after_empty_section(
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    report = experiment.report_path.read_text(encoding="utf-8")
+    report = report.replace(
+        "## Failed gates\n\nNone\n\n## Selected feature specs",
+        (
+            "## Failed gates\n\nNone\n| Gate |\n| --- |\n"
+            "| generation_mw: secret |\n\n## Selected feature specs"
+        ),
+    )
+    experiment.report_path.write_text(report, encoding="utf-8")
+    _update_evidence_checksum(experiment, "report_sha256", experiment.report_path)
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["report_evidence"] is False
+    assert "check_failed:report_evidence" in verification.reasons
+
+
+def test_verifier_preserves_canonical_ranking_with_close_displayed_metrics(
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fake_evaluate(frame: pd.DataFrame, definition, feature_specs, folds: int):
+        del feature_specs, folds
+        if definition.name == "SPOT":
+            return _evaluation(frame, 0.20)
+        if definition.name == "Recipe:ridge:ridge_low":
+            return _evaluation(frame, 0.1000003)
+        return _evaluation(frame, 0.1000004)
+
+    import power_forecasting.research_execution as execution
+
+    monkeypatch.setattr(aidm, "evaluate_model", fake_evaluate)
+    monkeypatch.setattr(execution, "run_legacy", lambda *args, **kwargs: _legacy_results())
+    experiment = run_experiment_agent(
+        config=execution_config,
+        proposal=proposal,
+        iteration=1,
+    )
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is True
+
+
+@pytest.mark.parametrize(
     ("target", "check_name"),
     (
         ("baseline", "manifest_schema"),

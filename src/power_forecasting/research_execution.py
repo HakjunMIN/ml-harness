@@ -395,7 +395,6 @@ def run_verifier_agent(
             and proposal_to_dict(embedded_proposal) == proposal_payload
             and _selection_is_bounded(manifest, embedded_proposal)
         )
-        checks["report_evidence"] = _report_matches_manifest(report_text, manifest)
         checks["promoted"] = decision == "promote"
 
         if decision == "promote":
@@ -425,6 +424,14 @@ def run_verifier_agent(
             proposal_payload=proposal_payload,
             config=config,
         )
+        if checks["manifest_schema"]:
+            checks["report_evidence"] = _report_matches_manifest(
+                report_text,
+                manifest,
+                config=config,
+                iteration_dir=iteration_dir,
+                experiment_runs=experiment_runs,
+            )
         if selected_rows is not None:
             baseline_row, candidate_row = selected_rows
             checks["metrics_provenance"] = _metrics_match_manifest(
@@ -926,61 +933,230 @@ def _selected_search_matches(
     )
 
 
-def _report_matches_manifest(report: str | None, manifest: Mapping[str, Any]) -> bool:
+def _report_matches_manifest(
+    report: str | None,
+    manifest: Mapping[str, Any],
+    *,
+    config: ResearchLoopConfig,
+    iteration_dir: Path,
+    experiment_runs: tuple[dict[str, Any], ...] | None,
+) -> bool:
     if report is None:
         return False
+    expected_rows = _expected_report_rows(
+        manifest,
+        config=config,
+        iteration_dir=iteration_dir,
+        experiment_runs=experiment_runs,
+    )
+    if expected_rows is None:
+        return False
+    return _report_has_only_allowed_content(report, manifest, expected_rows)
+
+
+def _expected_report_rows(
+    manifest: Mapping[str, Any],
+    *,
+    config: ResearchLoopConfig,
+    iteration_dir: Path,
+    experiment_runs: tuple[dict[str, Any], ...] | None,
+) -> dict[str, tuple[tuple[str, ...], ...]] | None:
+    proposal = _load_proposal_safely(manifest.get("proposal"))
+    dataset_summary = _safe_dataset_summary(Path(config.dataset_path))
+    candidate_rows = _expected_report_candidate_rows(experiment_runs, proposal)
+    spec_rows = _expected_report_spec_rows(manifest.get("selected_specs"))
+    if (
+        proposal is None
+        or dataset_summary is None
+        or candidate_rows is None
+        or spec_rows is None
+    ):
+        return None
     try:
         thresholds = manifest["thresholds"]
-        winner = manifest["winner"]
-        selected_specs = manifest["selected_specs"]
+        per_plant_deltas = manifest["per_plant_deltas"]
+        failed_gates = manifest["failed_gates"]
         if (
             not isinstance(thresholds, Mapping)
-            or not isinstance(winner, Mapping)
-            or not isinstance(selected_specs, list)
+            or not isinstance(per_plant_deltas, Mapping)
+            or not isinstance(failed_gates, list)
+            or not all(type(gate) is str for gate in failed_gates)
         ):
-            return False
-        winner_name = winner["name"]
-        if type(winner_name) is not str:
-            return False
-        metrics = _report_metrics(winner["metrics"])
-        threshold_markers = (
-            "| max_plant_regression | "
-            f"{_report_number(thresholds['max_plant_regression'])} |",
-            "| minimum_improvement | "
-            f"{_report_number(thresholds['minimum_improvement'])} |",
-        )
-        winner_marker = (
-            f"| 1 | {winner_name} | {_report_number(metrics['mae'])} | "
-            f"{_report_number(metrics['rmse'])} | {_report_number(metrics['nmae'])} |"
-        )
-        spec_markers = []
-        for spec in selected_specs:
-            if not isinstance(spec, Mapping):
-                return False
-            name = spec["name"]
-            transform = spec["transform"]
-            if type(name) is not str or type(transform) is not str:
-                return False
-            spec_markers.append(f"| {name} | {transform} |")
+            return None
+        return {
+            "## Data summary": (
+                ("Rows", _report_table_key(str(dataset_summary["rows"]))),
+                ("Plants", _report_table_key(str(dataset_summary["plants"]))),
+                (
+                    "Time range",
+                    _report_table_key(
+                        f"{dataset_summary['time_start']} to {dataset_summary['time_end']}"
+                    ),
+                ),
+            ),
+            "## Legacy model comparison": tuple(
+                (model_name,) for model_name in SUPPORTED_MODEL_NAMES
+            ),
+            "## Ranked AIDM candidates": candidate_rows,
+            "### Thresholds": tuple(
+                (
+                    _report_table_key(key),
+                    _report_table_key(_report_number(thresholds[key])),
+                )
+                for key in sorted(thresholds)
+            ),
+            "### Per-plant deltas": tuple(
+                (
+                    _report_table_key(plant_id),
+                    _report_table_key(_report_number(per_plant_deltas[plant_id])),
+                )
+                for plant_id in sorted(per_plant_deltas, key=str)
+            ),
+            "## Failed gates": tuple(
+                (_report_table_key(gate),) for gate in failed_gates
+            ),
+            "## Selected feature specs": spec_rows,
+            "## Artifact paths": (
+                (
+                    "database",
+                    _report_table_key(str(iteration_dir / _DATABASE_NAME)),
+                ),
+                (
+                    "manifest",
+                    _report_table_key(str(iteration_dir / _MANIFEST_NAME)),
+                ),
+                (
+                    "proposal",
+                    _report_table_key(str(iteration_dir / _PROPOSAL_NAME)),
+                ),
+            ),
+        }
     except (KeyError, TypeError, ValueError, OverflowError):
-        return False
-    return (
-        report.startswith("# Forecasting Performance Report\n")
-        and f"Promotion decision: {manifest['decision']}\n" in report
-        and f"Improvement ratio: {_report_number(manifest['improvement_ratio'])}\n"
-        in report
-        and "\n### Thresholds\n" in report
-        and all(marker in report for marker in threshold_markers)
-        and winner_marker in report
-        and "## Selected feature specs\n" in report
-        and all(marker in report for marker in spec_markers)
-        and _report_has_only_allowed_content(report, manifest)
+        return None
+
+
+def _safe_dataset_summary(dataset_path: Path) -> dict[str, object] | None:
+    try:
+        return _dataset_summary(dataset_path)
+    except (
+        DataContractError,
+        OSError,
+        UnicodeDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        OverflowError,
+    ):
+        return None
+
+
+def _expected_report_candidate_rows(
+    experiment_runs: tuple[dict[str, Any], ...] | None,
+    proposal: ResearchProposal | None,
+) -> tuple[tuple[str, ...], ...] | None:
+    if experiment_runs is None or proposal is None:
+        return None
+    expected = _expected_proposal_runs(proposal)
+    report_candidate_names = {
+        candidate_name
+        for candidate_name, expected_run in expected.items()
+        if expected_run["kind"] in {"direct", "selected"}
+    }
+    by_name: dict[str, dict[str, Any]] = {}
+    try:
+        for row in experiment_runs:
+            candidate_name = row["params"].get("candidate_name")
+            if candidate_name not in report_candidate_names:
+                continue
+            if type(candidate_name) is not str or candidate_name in by_name:
+                return None
+            by_name[candidate_name] = row
+        if set(by_name) != report_candidate_names:
+            return None
+
+        candidates: list[tuple[float, str, str, str, dict[str, object]]] = []
+        for candidate_name, row in by_name.items():
+            summary = row["artifacts"].get("summary")
+            metrics = row["metrics"]
+            if (
+                row["status"] != "completed"
+                or not _has_exact_keys(summary, _PROPOSAL_SUMMARY_KEYS)
+                or summary.get("name") != candidate_name
+                or summary.get("metrics") != metrics
+            ):
+                return None
+            report_metrics = _report_metrics(metrics)
+            recipe = summary.get("model_recipe")
+            recipe_name = recipe.get("name") if isinstance(recipe, Mapping) else None
+            if type(recipe_name) is not str:
+                return None
+            nmae = _finite_report_value(report_metrics["nmae"])
+            feature_set_name = candidate_name.partition(":")[2] or candidate_name
+            candidates.append(
+                (
+                    nmae,
+                    recipe_name,
+                    feature_set_name,
+                    candidate_name,
+                    report_metrics,
+                )
+            )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+    return tuple(
+        (
+            str(rank),
+            _report_table_key(candidate_name),
+            _report_table_key(_report_number(metrics["mae"])),
+            _report_table_key(_report_number(metrics["rmse"])),
+            _report_table_key(_report_number(metrics["nmae"])),
+        )
+        for rank, (_, _, _, candidate_name, metrics) in enumerate(
+            sorted(candidates, key=lambda candidate: candidate[:3]),
+            start=1,
+        )
     )
 
 
-def _report_has_only_allowed_content(report: str, manifest: Mapping[str, Any]) -> bool:
-    proposal = _load_proposal_safely(manifest.get("proposal"))
-    if proposal is None or not report.endswith("\n"):
+def _expected_report_spec_rows(
+    value: object,
+) -> tuple[tuple[str, ...], ...] | None:
+    if not isinstance(value, list):
+        return None
+    try:
+        specs = sorted(
+            (FeatureSpec.from_dict(spec).to_dict() for spec in value),
+            key=lambda spec: spec["name"],
+        )
+        return tuple(
+            (
+                _report_table_key(spec["name"]),
+                _report_table_key(spec["transform"]),
+                _report_table_key(", ".join(spec["inputs"])),
+                _report_table_key(
+                    json.dumps(
+                        spec["parameters"],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                ),
+                _report_table_key(spec["version"]),
+                _report_table_key(spec["rationale"]),
+            )
+            for spec in specs
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _report_has_only_allowed_content(
+    report: str,
+    manifest: Mapping[str, Any],
+    expected_rows: Mapping[str, tuple[tuple[str, ...], ...]],
+) -> bool:
+    if not report.endswith("\n"):
         return False
     try:
         headings = (
@@ -1012,36 +1188,12 @@ def _report_has_only_allowed_content(report: str, manifest: Mapping[str, Any]) -
             ),
             "## Artifact paths": ("Artifact", "Path"),
         }
-        expected_rows = {
-            "## Data summary": frozenset({"Rows", "Plants", "Time range"}),
-            "## Legacy model comparison": frozenset(SUPPORTED_MODEL_NAMES),
-            "## Ranked AIDM candidates": frozenset(
-                _report_table_key(candidate_name)
-                for candidate_name, expected in _expected_proposal_runs(
-                    proposal
-                ).items()
-                if expected["kind"] in {"direct", "selected"}
-            ),
-            "### Thresholds": frozenset(
-                _report_table_key(key) for key in manifest["thresholds"]
-            ),
-            "### Per-plant deltas": frozenset(
-                _report_table_key(plant_id)
-                for plant_id in manifest["per_plant_deltas"]
-            ),
-            "## Failed gates": frozenset(
-                _report_table_key(gate) for gate in manifest["failed_gates"]
-            ),
-            "## Selected feature specs": frozenset(
-                _report_table_key(spec["name"])
-                for spec in manifest["selected_specs"]
-            ),
-            "## Artifact paths": frozenset({"database", "manifest", "proposal"}),
-        }
-        decision_lines = {
+        if set(expected_rows) != set(table_headers):
+            return False
+        decision_lines = (
             f"Promotion decision: {manifest['decision']}",
             f"Improvement ratio: {_report_number(manifest['improvement_ratio'])}",
-        }
+        )
     except (KeyError, TypeError, ValueError, OverflowError):
         return False
     if not _report_blank_layout_is_valid(report, frozenset(headings)):
@@ -1050,9 +1202,9 @@ def _report_has_only_allowed_content(report: str, manifest: Mapping[str, Any]) -
     heading_index = -1
     active_heading: str | None = None
     table_phase: dict[str, int] = {}
-    seen_rows = {heading: set() for heading in table_headers}
+    observed_rows = {heading: [] for heading in table_headers}
     none_sections: set[str] = set()
-    seen_decision_lines: set[str] = set()
+    observed_decision_lines: list[str] = []
 
     for line in report.splitlines():
         if not line:
@@ -1067,9 +1219,12 @@ def _report_has_only_allowed_content(report: str, manifest: Mapping[str, Any]) -
             active_heading = line
             continue
         if active_heading == "## Promotion decision" and line in decision_lines:
-            if line in seen_decision_lines:
+            if (
+                len(observed_decision_lines) >= len(decision_lines)
+                or line != decision_lines[len(observed_decision_lines)]
+            ):
                 return False
-            seen_decision_lines.add(line)
+            observed_decision_lines.append(line)
             continue
         if (
             active_heading in expected_rows
@@ -1098,28 +1253,58 @@ def _report_has_only_allowed_content(report: str, manifest: Mapping[str, Any]) -
             continue
         if len(cells) != len(header):
             return False
-        key = (
-            cells[1]
-            if active_heading == "## Ranked AIDM candidates"
-            else cells[0]
-        )
-        if key not in expected_rows[active_heading] or key in seen_rows[active_heading]:
-            return False
-        if active_heading == "## Ranked AIDM candidates":
-            rank = cells[0]
-            if not rank.isdecimal() or int(rank) < 1:
-                return False
-        seen_rows[active_heading].add(key)
+        observed_rows[active_heading].append(cells)
 
-    if heading_index != len(headings) - 1 or seen_decision_lines != decision_lines:
+    if (
+        heading_index != len(headings) - 1
+        or tuple(observed_decision_lines) != decision_lines
+    ):
         return False
     for heading, expected in expected_rows.items():
-        if expected:
-            if table_phase.get(heading) != 2 or seen_rows[heading] != expected:
+        if not expected:
+            if (
+                heading not in none_sections
+                or heading in table_phase
+                or observed_rows[heading]
+            ):
                 return False
-        elif heading not in none_sections:
+        elif table_phase.get(heading) != 2:
+            return False
+        elif heading == "## Legacy model comparison":
+            if not _legacy_report_rows_are_canonical(observed_rows[heading], expected):
+                return False
+        elif tuple(observed_rows[heading]) != expected:
             return False
     return True
+
+
+def _legacy_report_rows_are_canonical(
+    rows: list[tuple[str, ...]],
+    expected: tuple[tuple[str, ...], ...],
+) -> bool:
+    return (
+        len(rows) == len(expected)
+        and all(
+            len(row) == 4
+            and row[0] == expected_row[0]
+            and all(_is_canonical_report_number(value) for value in row[1:])
+            for row, expected_row in zip(rows, expected)
+        )
+    )
+
+
+def _is_canonical_report_number(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    try:
+        return value == _report_number(float(value))
+    except (ValueError, OverflowError):
+        return False
+
+
+def _finite_report_value(value: object) -> float:
+    _report_number(value)
+    return float(value)
 
 
 def _report_table_cells(line: str) -> tuple[str, ...] | None:
