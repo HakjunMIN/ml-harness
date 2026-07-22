@@ -18,8 +18,8 @@ done
 [[ -n "$run_dir" ]] || { echo "--run-dir is required" >&2; usage; exit 2; }
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd "$script_dir/../.." && pwd -P)
-source "$script_dir/validate-output-dir.sh"
-validate_output_dir "$run_dir" "$repo_root"
+source "$script_dir/validate-legacy-output-dir.sh"
+validate_legacy_output_dir "$run_dir" "$repo_root"
 run_dir="$VALIDATED_OUTPUT_DIR"
 manifest="$run_dir/promotion_manifest.json"
 evidence="$run_dir/promotion-evidence.json"

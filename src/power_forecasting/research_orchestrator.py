@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Mapping
 from dataclasses import replace
@@ -18,6 +19,7 @@ from power_forecasting.research_contracts import (
     load_research_loop_config,
 )
 from power_forecasting.research_execution import (
+    CHECKSUM_UNAVAILABLE,
     ExperimentResult,
     ResearchExecutionError,
     VerificationResult,
@@ -145,7 +147,7 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
         run_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_json(config_snapshot_path, config_payload)
         state = initialize_state(config, config_sha256=config_sha256)
-        (run_dir / _JOURNAL_NAME).touch(exist_ok=True)
+        _ensure_journal_file(run_dir / _JOURNAL_NAME)
         _persist_state(run_dir, state)
         journal_count = 0
 
@@ -673,7 +675,7 @@ def _advance(
     state_path = run_dir / _STATE_NAME
     journal_path = run_dir / _JOURNAL_NAME
     previous_state = state_path.read_bytes() if state_path.exists() else None
-    previous_journal = journal_path.read_bytes() if journal_path.exists() else None
+    previous_journal = _read_regular_bytes(journal_path) if journal_path.exists() else None
     try:
         _append_journal(journal_path, events)
     except Exception:
@@ -691,11 +693,66 @@ def _advance(
 def _append_journal(path: Path, events: tuple[Mapping[str, object], ...]) -> None:
     if not events:
         return
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        for event in events:
-            handle.write(json.dumps(dict(event), sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    descriptor = _open_journal(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    try:
+        with os.fdopen(descriptor, "a", encoding="utf-8", newline="\n") as handle:
+            for event in events:
+                handle.write(json.dumps(dict(event), sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+
+
+def _ensure_journal_file(path: Path) -> None:
+    descriptor = _open_journal(path, os.O_WRONLY | os.O_CREAT)
+    os.close(descriptor)
+
+
+def _open_journal(path: Path, flags: int) -> int:
+    symlink = _first_journal_symlink(path)
+    if symlink is not None:
+        raise OSError(f"journal path must not contain a symlink: {symlink}")
+    descriptor = os.open(
+        path,
+        flags | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(f"journal path must be a regular file: {path}")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _first_journal_symlink(path: Path) -> Path | None:
+    current = Path(path.anchor) if path.anchor else Path(".")
+    for component in path.parts:
+        if component in {"", path.anchor}:
+            continue
+        current /= component
+        if current.is_symlink():
+            return current
+    return None
+
+
+def _read_regular_bytes(path: Path) -> bytes:
+    descriptor = _open_journal(path, os.O_RDONLY)
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            return handle.read()
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
 
 
 def _restore_file(path: Path, content: bytes | None) -> None:
@@ -726,8 +783,8 @@ def _restore_file(path: Path, content: bytes | None) -> None:
 def _reconcile_journal(run_dir: Path, state: ResearchState) -> ResearchState:
     journal_path = run_dir / _JOURNAL_NAME
     try:
-        lines = journal_path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
+        lines = _read_regular_bytes(journal_path).decode("utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
         raise ResearchStateError("journal is missing or unreadable") from exc
     try:
         events = [
@@ -1130,16 +1187,26 @@ def _validate_verification_report(
     provenance = payload["provenance"]
     if not isinstance(provenance, Mapping) or set(provenance) != _VERIFIER_PROVENANCE_KEYS:
         raise ResearchExecutionError("verification report provenance is invalid")
+    status = payload["status"]
+    if status not in {"pass", "reject", "invalid"}:
+        raise ResearchExecutionError("verification report status is invalid")
     if (
         "proposal_sha256" not in provenance
         or any(
-            type(value) is not str or not _SHA256_PATTERN.fullmatch(value)
+            type(value) is not str
+            or not _SHA256_PATTERN.fullmatch(value)
+            and not (status == "invalid" and value == CHECKSUM_UNAVAILABLE)
             for value in provenance.values()
         )
     ):
         raise ResearchExecutionError("verification report provenance is invalid")
+    proposal_artifact_sha256 = _bound_artifact_sha256(state, proposal_path)
     expected_provenance = {
-        "proposal_sha256": _proposal_sha256(proposal),
+        "proposal_sha256": (
+            _proposal_sha256(proposal)
+            if proposal_artifact_sha256 != CHECKSUM_UNAVAILABLE
+            else CHECKSUM_UNAVAILABLE
+        ),
         "manifest_sha256": _bound_artifact_sha256(state, Path(experiment.manifest_path)),
         "report_sha256": _bound_artifact_sha256(state, Path(experiment.report_path)),
         "database_sha256": _bound_artifact_sha256(
@@ -1147,7 +1214,6 @@ def _validate_verification_report(
             Path(experiment.manifest_path).parent / "experiments.db",
         ),
     }
-    _bound_artifact_sha256(state, proposal_path)
     if dict(provenance) != expected_provenance:
         raise ResearchExecutionError("verification report provenance is inconsistent")
     normal_rejection = (
@@ -1163,13 +1229,16 @@ def _validate_verification_report(
 
 
 def _bound_artifact_sha256(state: ResearchState, path: Path) -> str:
-    if path.is_symlink() or not path.is_file():
-        raise ResearchExecutionError("verification evidence is not a regular file")
     resolved = path.resolve()
     recorded = state.artifacts.get(str(resolved))
     if recorded is None:
         raise ResearchExecutionError("verification evidence is not recorded")
-    actual = _sha256_file(resolved)
+    if path.is_symlink() or not path.is_file():
+        return CHECKSUM_UNAVAILABLE
+    try:
+        actual = _sha256_file(resolved)
+    except OSError:
+        return CHECKSUM_UNAVAILABLE
     if actual != recorded:
         raise ResearchExecutionError("verification evidence checksum is inconsistent")
     return actual

@@ -42,7 +42,9 @@ research-loop`. Orchestration is opt-in and stops before AIDD/code/deploy.
 ## Evidence, Checksums, and Safety
 - Every recorded artifact is atomically written, hashed with lowercase SHA-256, and rebound on
   resume. The effective config includes input checksums; changed config, stale artifacts, malformed
-  JSON, incomplete journal groups, and terminal resume all fail closed.
+  JSON, incomplete journal groups, and terminal resume all fail closed. Invalid verifier reports
+  use the exact provenance keys with `unavailable` for any unavailable artifact checksum; only
+  invalid reports may use that representation.
 - State transitions are only `initialized -> diagnosed -> proposed -> experimenting -> verifying`
   and then `iterate`, `ready_for_human_review`, `exhausted`, or `failed`.
   A diagnostic failure traverses the required internal states without allocating a profile,

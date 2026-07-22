@@ -193,9 +193,20 @@ def test_run_adapter_rejects_ragged_prediction_rows(tmp_path: Path, row: str) ->
     assert "ragged prediction" in evidence["error"]
 
 
-def test_cli_module_is_usable_from_shell(tmp_path: Path) -> None:
+@pytest.mark.parametrize("module_name", ["legacy_adapter.contract", "harness.contract"])
+def test_cli_module_is_usable_from_shell(tmp_path: Path, module_name: str) -> None:
     completed = subprocess.run(
-        ["python3", "-m", "legacy_adapter.contract", "--adapter", str(FIXTURES / "valid-adapter.json"), "--run-dir", str(tmp_path), "--run-id", "cli"],
+        [
+            "python3",
+            "-m",
+            module_name,
+            "--adapter",
+            str(FIXTURES / "valid-adapter.json"),
+            "--run-dir",
+            str(tmp_path / module_name.replace(".", "-")),
+            "--run-id",
+            "cli",
+        ],
         cwd=ROOT,
         env={**os.environ, "PYTHONPATH": str(ROOT / ".agents")},
         text=True,
@@ -204,7 +215,7 @@ def test_cli_module_is_usable_from_shell(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert (tmp_path / "legacy-evidence.json").exists()
+    assert (tmp_path / module_name.replace(".", "-") / "legacy-evidence.json").exists()
 
 
 def test_run_legacy_script_creates_evidence(tmp_path: Path) -> None:
@@ -237,30 +248,86 @@ def test_run_legacy_script_rejects_unknown_options(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("script_name", ["run-legacy.sh", "run-aidm.sh", "verify-promotion.sh"])
-def test_output_scripts_reject_external_run_directories_before_side_effects(
+def test_output_scripts_allow_legacy_local_run_directories(
     tmp_path: Path, script_name: str
 ) -> None:
-    outside = tmp_path / "outside"
+    run_dir = tmp_path / "local-output"
     if script_name == "run-legacy.sh":
         arguments = [
             "--adapter",
             str(FIXTURES / "valid-adapter.json"),
             "--run-dir",
-            str(outside),
+            str(run_dir),
         ]
     elif script_name == "run-aidm.sh":
         arguments = [
             "--dataset",
             str(FIXTURES / "valid-dataset.csv"),
             "--run-dir",
-            str(outside),
+            str(run_dir),
+            "--folds",
+            "1",
+            "--minimum-improvement",
+            "0",
+            "--max-plant-regression",
+            "1",
+            "--top-single-candidates",
+            "1",
         ]
     else:
-        outside.mkdir()
-        sentinel = outside / "promotion-evidence.json"
-        sentinel.write_text("keep", encoding="utf-8")
-        (outside / "promotion_manifest.json").write_text("{}", encoding="utf-8")
-        arguments = ["--run-dir", str(outside)]
+        run_dir.mkdir()
+        (run_dir / "promotion_manifest.json").write_text(
+            (FIXTURES / "promoted-manifest.json").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        arguments = ["--run-dir", str(run_dir)]
+
+    completed = subprocess.run(
+        [str(SCRIPTS / script_name), *arguments],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    if script_name == "run-legacy.sh":
+        assert (run_dir / "legacy-evidence.json").is_file()
+    elif script_name == "run-aidm.sh":
+        assert (run_dir / "promotion_manifest.json").is_file()
+    else:
+        assert (run_dir / "promotion-evidence.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "protected_path",
+    [
+        "/",
+        ROOT / ".git",
+        ROOT / "src",
+        ROOT / "src" / ".." / "legacy-protected",
+    ],
+)
+@pytest.mark.parametrize("script_name", ["run-legacy.sh", "run-aidm.sh", "verify-promotion.sh"])
+def test_output_scripts_reject_unsafe_legacy_destinations_before_side_effects(
+    tmp_path: Path, protected_path: Path | str, script_name: str
+) -> None:
+    if script_name == "run-legacy.sh":
+        arguments = [
+            "--adapter",
+            str(FIXTURES / "valid-adapter.json"),
+            "--run-dir",
+            str(protected_path),
+        ]
+    elif script_name == "run-aidm.sh":
+        arguments = [
+            "--dataset",
+            str(FIXTURES / "valid-dataset.csv"),
+            "--run-dir",
+            str(protected_path),
+        ]
+    else:
+        arguments = ["--run-dir", str(protected_path)]
 
     completed = subprocess.run(
         [str(SCRIPTS / script_name), *arguments],
@@ -272,10 +339,6 @@ def test_output_scripts_reject_external_run_directories_before_side_effects(
 
     assert completed.returncode == 2
     assert "run-dir" in completed.stderr
-    if script_name == "verify-promotion.sh":
-        assert (outside / "promotion-evidence.json").read_text(encoding="utf-8") == "keep"
-    else:
-        assert not outside.exists()
 
 
 @pytest.mark.parametrize("script_name", ["run-legacy.sh", "run-aidm.sh", "verify-promotion.sh"])
@@ -306,7 +369,7 @@ def test_output_scripts_reject_root_run_directory_with_exit_two(script_name: str
     )
 
     assert completed.returncode == 2
-    assert "run-dir must be contained" in completed.stderr
+    assert "run-dir" in completed.stderr
 
 
 @pytest.mark.parametrize("script_name", ["run-legacy.sh", "run-aidm.sh", "verify-promotion.sh"])

@@ -51,6 +51,7 @@ _PROPOSAL_NAME = "research-proposal.json"
 _EVIDENCE_NAME = "experiment-evidence.json"
 _VERIFICATION_NAME = "verification.json"
 _SHA256_LENGTH = 64
+CHECKSUM_UNAVAILABLE = "unavailable"
 _PROPOSAL_RUN_PARAMS_KEYS = frozenset(
     {
         "schema_version",
@@ -412,14 +413,21 @@ def run_verifier_agent(
     )
 
     observed_checksums = {
-        name: value
-        for name, value in {
-            "manifest_sha256": manifest_sha256,
-            "report_sha256": report_sha256,
-            "database_sha256": database_sha256,
-        }.items()
-        if value is not None
+        "proposal_sha256": proposal_sha256
+        if _safe_file_sha256(proposal_path, iteration_dir) is not None
+        else CHECKSUM_UNAVAILABLE,
     }
+    observed_checksums.update(
+        {
+            name: value
+            for name, value in {
+                "manifest_sha256": manifest_sha256,
+                "report_sha256": report_sha256,
+                "database_sha256": database_sha256,
+            }.items()
+            if value is not None
+        }
+    )
 
     if checks["manifest_schema"] and isinstance(manifest, Mapping):
         checks["thresholds"] = _thresholds_match(manifest, config)
@@ -2131,8 +2139,18 @@ def _finish_verification(
         "checks": dict(checks),
         "reasons": list(reasons),
         "provenance": {
-            "proposal_sha256": proposal_sha256,
-            **dict(observed_checksums),
+            "proposal_sha256": observed_checksums.get(
+                "proposal_sha256", proposal_sha256
+            ),
+            "manifest_sha256": observed_checksums.get(
+                "manifest_sha256", CHECKSUM_UNAVAILABLE
+            ),
+            "report_sha256": observed_checksums.get(
+                "report_sha256", CHECKSUM_UNAVAILABLE
+            ),
+            "database_sha256": observed_checksums.get(
+                "database_sha256", CHECKSUM_UNAVAILABLE
+            ),
         },
     }
     try:
@@ -2188,6 +2206,7 @@ def _is_within(path: Path, parent: Path) -> bool:
 
 
 __all__ = [
+    "CHECKSUM_UNAVAILABLE",
     "ExperimentResult",
     "ResearchExecutionError",
     "VerificationResult",

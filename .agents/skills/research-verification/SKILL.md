@@ -38,7 +38,10 @@ classify `pass`, `reject`, or `invalid`. This role does not rerun AIDM or approv
   orchestrator's fail-closed recovery artifact; both artifacts are distinct and neither contains
   raw evidence data.
 - `verification.json` has schema version `1`, `status`, boolean `passed`, the complete fixed check
-  map, safe `reasons`, and `provenance` with proposal/manifest/report/database SHA-256 values.
+  map, safe `reasons`, and `provenance` with proposal/manifest/report/database checksum values.
+  Each provenance key is always present; an unavailable artifact uses the deterministic value
+  `unavailable`. The orchestrator accepts that value only for `status: "invalid"` and requires
+  real SHA-256 values for valid outcomes.
 - Read only the listed run artifacts and configured metadata. Do not write source, tests, fixtures,
   skills, scripts, datasets, generated code, customer systems, or promotion gates.
 

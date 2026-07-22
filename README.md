@@ -379,18 +379,18 @@ PY
 
 ## 레거시 어댑터 실행기(`.agents/`) 안전 사용
 
-`.agents/legacy_adapter/contract.py`는 고객 레거시 예측기를 블랙박스 어댑터로 실행합니다. 어댑터 JSON은 `schema_version: "1"`, 비어 있지 않은 `legacy_command` argv, 매니페스트 디렉터리 아래의 상대 `input_dataset`/`predictions_output`, `required_prediction_columns`, `timeout_seconds(1..3600)`만 허용합니다. 명령은 shell 없이 실행되며 `HARNESS_INPUT_DATASET`, `HARNESS_PREDICTIONS_OUTPUT`, `HARNESS_RUN_DIR` 이름의 환경 변수만 전달합니다. 이 환경 변수 이름은 레거시 어댑터 계약의 호환 API이며, 코딩 에이전트 하니스와는 관련이 없습니다.
+`.agents/legacy_adapter/contract.py`는 고객 레거시 예측기를 블랙박스 어댑터로 실행합니다. 기존 수동 문서와 명령을 위해 `PYTHONPATH=.agents uv run python -m harness.contract`도 동일한 호환 API로 유지합니다. 어댑터 JSON은 `schema_version: "1"`, 비어 있지 않은 `legacy_command` argv, 매니페스트 디렉터리 아래의 상대 `input_dataset`/`predictions_output`, `required_prediction_columns`, `timeout_seconds(1..3600)`만 허용합니다. 명령은 shell 없이 실행되며 `HARNESS_INPUT_DATASET`, `HARNESS_PREDICTIONS_OUTPUT`, `HARNESS_RUN_DIR` 이름의 환경 변수만 전달합니다. 이 환경 변수 이름은 레거시 어댑터 계약의 호환 API이며, 코딩 에이전트 하니스와는 관련이 없습니다.
 
 Fixture-first 순서:
 
 ```bash
-PYTHONPATH=.agents uv run python -m legacy_adapter.contract --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/fixture
+PYTHONPATH=.agents uv run python -m harness.contract --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/fixture
 .agents/scripts/run-legacy.sh --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/legacy
 .agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --run-dir .agents/runs/aidm --folds 1 --top-single-candidates 1
 cp .agents/fixtures/promoted-manifest.json .agents/runs/promotion/promotion_manifest.json
 .agents/scripts/verify-promotion.sh --run-dir .agents/runs/promotion
 ```
 
-증거 파일은 `legacy-evidence.json`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`, `promotion-evidence.json`입니다. 증거에는 체크섬과 상태만 남기며 입력 행 내용, 고객 데이터, 비밀, 환경 변수 값은 기록하지 않습니다. 경로 이탈, 빈 CSV, 필수 예측 컬럼 누락, `actual_*`/`generation_mw` 누수, `decision: reject`, 컴파일 실패는 모두 거부로 처리하고 성공 증거를 만들지 않습니다.
+증거 파일은 `legacy-evidence.json`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`, `promotion-evidence.json`입니다. 레거시 세 스크립트는 기존처럼 `.agents/` 밖의 로컬 출력 경로도 허용하지만 파일시스템 루트, `.git`, 소스·문서 디렉터리와 심볼릭 링크 경로는 거부합니다. 증거에는 체크섬과 상태만 남기며 입력 행 내용, 고객 데이터, 비밀, 환경 변수 값은 기록하지 않습니다. 경로 이탈, 빈 CSV, 필수 예측 컬럼 누락, `actual_*`/`generation_mw` 누수, `decision: reject`, 컴파일 실패는 모두 거부로 처리하고 성공 증거를 만들지 않습니다.
 
 실제 고객 데이터 또는 고객 시스템 실행은 사람이 명시적으로 승인하기 전까지 금지됩니다. AIDD가 생성한 코드는 human approval 이후 검토용 패치 요청으로만 다루며, 에이전트는 배포·머지·고객 시스템 편집을 수행하지 않습니다.

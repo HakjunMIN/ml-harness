@@ -16,6 +16,7 @@ from power_forecasting.models import SUPPORTED_MODEL_NAMES
 from power_forecasting.proposals import load_proposal, proposal_to_dict
 from power_forecasting.research_contracts import ResearchLoopConfig
 from power_forecasting.research_execution import (
+    CHECKSUM_UNAVAILABLE,
     ResearchExecutionError,
     VerificationResult,
     run_experiment_agent,
@@ -427,6 +428,38 @@ def test_verifier_fails_closed_on_malformed_artifacts(
     assert verification.passed is False
     assert verification.reasons
     assert verification.report_path.is_file()
+
+
+def test_verifier_invalid_report_has_complete_unavailable_provenance(
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    experiment.report_path.unlink()
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    payload = json.loads(verification.report_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "invalid"
+    assert set(payload["provenance"]) == {
+        "proposal_sha256",
+        "manifest_sha256",
+        "report_sha256",
+        "database_sha256",
+    }
+    assert payload["provenance"]["report_sha256"] == CHECKSUM_UNAVAILABLE
+    assert payload["provenance"]["manifest_sha256"] == _sha256_file(
+        experiment.manifest_path
+    )
+    assert payload["provenance"]["database_sha256"] == _sha256_file(
+        experiment.manifest_path.parent / "experiments.db"
+    )
 
 
 def test_verifier_report_contains_only_aggregate_provenance(

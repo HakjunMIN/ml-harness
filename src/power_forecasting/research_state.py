@@ -342,7 +342,14 @@ def transition_state(
     if to_status not in _ALLOWED_TRANSITIONS[state.status]:
         raise ResearchStateError(f"transition {state.status} -> {to_status} is not allowed")
 
-    verify_recorded_artifacts(state, artifact_paths={})
+    allow_missing_artifacts = to_status == "failed" and any(
+        path.name == "verification.json" for path in artifact_paths.values()
+    )
+    verify_recorded_artifacts(
+        state,
+        artifact_paths={},
+        allow_missing=allow_missing_artifacts,
+    )
     artifacts = dict(state.artifacts)
     recorded_artifacts = _recorded_artifacts(
         artifact_paths,
@@ -406,8 +413,9 @@ def verify_recorded_artifacts(
     state: ResearchState,
     *,
     artifact_paths: Mapping[str, Path],
+    allow_missing: bool = False,
 ) -> None:
-    """Verify all persisted artifact checksums before state can be resumed."""
+    """Verify persisted artifact checksums, optionally retaining missing fail-closed evidence."""
 
     if not isinstance(state, ResearchState):
         raise TypeError("state must be a ResearchState")
@@ -422,6 +430,8 @@ def verify_recorded_artifacts(
     for artifact_path, expected_checksum in state.artifacts.items():
         path = Path(artifact_path)
         if not path.exists() or not path.is_file():
+            if allow_missing and not path.exists():
+                continue
             raise ResearchStateError(f"recorded artifact is missing: {artifact_path}")
         actual_checksum = _sha256_file(path)
         if actual_checksum != expected_checksum:

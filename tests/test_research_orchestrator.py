@@ -210,6 +210,60 @@ def test_partial_verifier_result_fails_closed(tmp_path, monkeypatch):
     assert "verification-failure.json" in json.dumps(result)
 
 
+def test_missing_artifact_invalid_verifier_report_is_accepted_fail_closed(
+    tmp_path, monkeypatch
+):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+
+    def missing_artifact_verifier(*, config, proposal, experiment, iteration):
+        experiment.report_path.unlink()
+        path = experiment.manifest_path.parent / "verification.json"
+        checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
+        checks["report_checksum"] = False
+        reasons = ("check_failed:report_checksum",)
+        provenance = {
+            "proposal_sha256": hashlib.sha256(
+                json.dumps(
+                    proposal.to_dict(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "manifest_sha256": hashlib.sha256(
+                experiment.manifest_path.read_bytes()
+            ).hexdigest(),
+            "report_sha256": "unavailable",
+            "database_sha256": hashlib.sha256(
+                (experiment.manifest_path.parent / "experiments.db").read_bytes()
+            ).hexdigest(),
+        }
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "status": "invalid",
+                    "passed": False,
+                    "checks": checks,
+                    "reasons": list(reasons),
+                    "provenance": provenance,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return VerificationResult(False, checks, reasons, path)
+
+    monkeypatch.setattr(
+        orchestrator, "run_verifier_agent", missing_artifact_verifier
+    )
+    result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
+
+    assert result["status"] == "failed"
+    assert result["verifier"]["outcome"] == "invalid"
+    assert "verification-failure.json" not in json.dumps(result)
+
+
 def test_arbitrary_verifier_report_path_cannot_promote(tmp_path, monkeypatch):
     import power_forecasting.research_orchestrator as orchestrator
 
@@ -357,6 +411,29 @@ def test_journal_append_before_state_write_recovers_on_resume(tmp_path, monkeypa
     monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
     result = run_research_loop(config, resume=True)
     assert result["status"] == "ready_for_human_review"
+
+
+def test_journal_append_rejects_preexisting_symlink(tmp_path):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    target = tmp_path / "target.jsonl"
+    target.write_text("keep\n", encoding="utf-8")
+    journal = tmp_path / "journal.jsonl"
+    journal.symlink_to(target)
+
+    with pytest.raises(OSError, match="journal"):
+        orchestrator._append_journal(
+            journal,
+            (
+                {
+                    "timestamp": "2026-01-01T00:00:00+00:00",
+                    "from_status": "initialized",
+                    "to_status": "diagnosed",
+                },
+            ),
+        )
+
+    assert target.read_text(encoding="utf-8") == "keep\n"
 
 
 def test_journal_recovery_rejects_malformed_tail_timestamp(tmp_path, monkeypatch):
