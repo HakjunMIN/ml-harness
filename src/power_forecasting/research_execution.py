@@ -50,6 +50,37 @@ _PROPOSAL_NAME = "research-proposal.json"
 _EVIDENCE_NAME = "experiment-evidence.json"
 _VERIFICATION_NAME = "verification.json"
 _SHA256_LENGTH = 64
+_PROPOSAL_RUN_PARAMS_KEYS = frozenset(
+    {
+        "schema_version",
+        "candidate_name",
+        "model",
+        "folds",
+        "seed",
+        "specs",
+        "model_recipe",
+        "proposal_id",
+        "proposal",
+    }
+)
+_SEARCH_PROPOSAL_RUN_PARAMS_KEYS = _PROPOSAL_RUN_PARAMS_KEYS | frozenset(
+    {"search"}
+)
+_PROPOSAL_RUN_ARTIFACT_KEYS = frozenset(
+    {"summary", "fold_metrics", "prediction_rows", "proposal"}
+)
+_SELECTED_SEARCH_RUN_ARTIFACT_KEYS = _PROPOSAL_RUN_ARTIFACT_KEYS | frozenset(
+    {"selected_from_trial"}
+)
+_REUSED_SEARCH_RUN_ARTIFACT_KEYS = frozenset(
+    {
+        "summary",
+        "fold_metrics",
+        "reused_from_run_id",
+        "reused_from_trial_number",
+        "reused_from_candidate_name",
+    }
+)
 _VERIFICATION_CHECKS = (
     "experiment_identity",
     "artifact_paths",
@@ -1037,6 +1068,15 @@ def _proposal_runs_are_complete(
             summary = artifacts.get("summary")
             if (
                 row["status"] != "completed"
+                or row["name"] != expected_run["run_name"]
+                or not _matches_any_key_set(
+                    params,
+                    expected_run["params_key_sets"],
+                )
+                or not _matches_any_key_set(
+                    artifacts,
+                    expected_run["artifact_key_sets"],
+                )
                 or params.get("proposal") != proposal_payload
                 or params.get("folds") != config.fold_count
                 or type(params.get("seed")) is not int
@@ -1077,6 +1117,9 @@ def _expected_proposal_runs(proposal: ResearchProposal) -> dict[str, dict[str, A
                 "kind": "direct",
                 "recipe": recipe.to_dict(),
                 "model": model_definition_from_recipe(recipe).name,
+                "run_name": f"aidm-proposal-{candidate_name}",
+                "params_key_sets": (_PROPOSAL_RUN_PARAMS_KEYS,),
+                "artifact_key_sets": (_PROPOSAL_RUN_ARTIFACT_KEYS,),
                 "specs": specs,
             }
         if proposal.search is None:
@@ -1088,6 +1131,14 @@ def _expected_proposal_runs(proposal: ResearchProposal) -> dict[str, dict[str, A
                 "feature_index": feature_index,
                 "feature_set": feature_set.name,
                 "model": f"Recipe:lightgbm:optuna_lightgbm_{trial_number}",
+                "run_name": (
+                    f"aidm-optuna-lightgbm-{feature_set.name}-trial-{trial_number}"
+                ),
+                "params_key_sets": (_SEARCH_PROPOSAL_RUN_PARAMS_KEYS,),
+                "artifact_key_sets": (
+                    _PROPOSAL_RUN_ARTIFACT_KEYS,
+                    _REUSED_SEARCH_RUN_ARTIFACT_KEYS,
+                ),
                 "specs": specs,
                 "trial_number": trial_number,
             }
@@ -1097,9 +1148,21 @@ def _expected_proposal_runs(proposal: ResearchProposal) -> dict[str, dict[str, A
             "feature_index": feature_index,
             "feature_set": feature_set.name,
             "model": "Recipe:lightgbm:selected_lightgbm",
+            "run_name": f"aidm-selected-lightgbm-{feature_set.name}",
+            "params_key_sets": (_SEARCH_PROPOSAL_RUN_PARAMS_KEYS,),
+            "artifact_key_sets": (_SELECTED_SEARCH_RUN_ARTIFACT_KEYS,),
             "specs": specs,
         }
     return expected
+
+
+def _matches_any_key_set(
+    value: object,
+    expected_key_sets: tuple[frozenset[str], ...],
+) -> bool:
+    return isinstance(value, Mapping) and any(
+        set(value) == expected_keys for expected_keys in expected_key_sets
+    )
 
 
 def _search_run_is_bounded(

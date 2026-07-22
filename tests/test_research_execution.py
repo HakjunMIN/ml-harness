@@ -741,6 +741,61 @@ def test_verifier_rejects_tampered_selected_proposal_sqlite_parameters(
     assert "check_failed:proposal_runs" in verification.reasons
 
 
+@pytest.mark.parametrize(
+    "tamper",
+    ("run_name", "unexpected_params_key", "unexpected_artifacts_key"),
+)
+def test_verifier_rejects_unexpected_selected_proposal_evidence(
+    tamper: str,
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    iteration_dir = experiment.manifest_path.parent
+    evidence = json.loads(
+        (iteration_dir / "experiment-evidence.json").read_text(encoding="utf-8")
+    )
+    selected_run_id = evidence["selected_candidate"]["database_run_id"]
+    with sqlite3.connect(iteration_dir / "experiments.db") as connection:
+        row = connection.execute(
+            "SELECT params_json, artifacts_json FROM runs WHERE id = ?",
+            (selected_run_id,),
+        ).fetchone()
+        assert row is not None
+        if tamper == "run_name":
+            connection.execute(
+                "UPDATE runs SET name = ? WHERE id = ?",
+                ("aidm-proposal-tampered", selected_run_id),
+            )
+        elif tamper == "unexpected_params_key":
+            params = json.loads(row[0])
+            params["unexpected"] = "untrusted"
+            connection.execute(
+                "UPDATE runs SET params_json = ? WHERE id = ?",
+                (json.dumps(params), selected_run_id),
+            )
+        else:
+            artifacts = json.loads(row[1])
+            artifacts["unexpected"] = "untrusted"
+            connection.execute(
+                "UPDATE runs SET artifacts_json = ? WHERE id = ?",
+                (json.dumps(artifacts), selected_run_id),
+            )
+    _update_evidence_checksum(experiment, "database_sha256", iteration_dir / "experiments.db")
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["proposal_runs"] is False
+    assert "check_failed:proposal_runs" in verification.reasons
+
+
 def test_verifier_binds_report_content_to_manifest_evidence(
     execution_config: ResearchLoopConfig,
     proposal,
