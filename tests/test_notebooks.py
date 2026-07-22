@@ -68,6 +68,14 @@ def test_demo_notebooks_tell_the_three_path_story():
 
     auto_code = _notebook_code(NOTEBOOK_DIR / "03_auto_research_path.ipynb")
     assert "run-research-loop.sh" in auto_code
+    for artifact in (
+        "awaiting_proposal",
+        "proposal-context.json",
+        "proposal-catalog.json",
+        "research-proposal.json",
+        "--resume",
+    ):
+        assert artifact in auto_code
     auto_markdown = _notebook_markdown(NOTEBOOK_DIR / "03_auto_research_path.ipynb")
     assert "ready_for_human_review" in auto_markdown
     for skill in (

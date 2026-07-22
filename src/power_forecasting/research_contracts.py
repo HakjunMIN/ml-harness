@@ -14,7 +14,7 @@ from power_forecasting.aidm import AIDMConfig
 SCHEMA_VERSION = "1"
 SUPPORTED_PROFILES = frozenset({"safe_weather", "history_tree", "bounded_search"})
 
-_CONFIG_KEYS = frozenset(
+_REQUIRED_CONFIG_KEYS = frozenset(
     {
         "schema_version",
         "run_id",
@@ -29,6 +29,7 @@ _CONFIG_KEYS = frozenset(
         "max_plant_regression",
     }
 )
+_OPTIONAL_CONFIG_KEYS = frozenset({"agent_proposals"})
 _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
@@ -49,6 +50,7 @@ class ResearchLoopConfig:
     objective: str
     minimum_improvement: float
     max_plant_regression: float
+    agent_proposals: bool = False
 
 
 def load_research_loop_config(
@@ -61,7 +63,7 @@ def load_research_loop_config(
 
     if not isinstance(value, Mapping):
         raise ResearchContractError("research-loop config must be a mapping")
-    _exact_keys(value, _CONFIG_KEYS, "research-loop config")
+    _exact_keys(value, _REQUIRED_CONFIG_KEYS, "research-loop config", _OPTIONAL_CONFIG_KEYS)
 
     config_file = _path_argument(config_path, "config_path")
     root = _repository_root(repository_root)
@@ -87,6 +89,9 @@ def load_research_loop_config(
         value["minimum_improvement"],
         value["max_plant_regression"],
     )
+    agent_proposals = value.get("agent_proposals", False)
+    if type(agent_proposals) is not bool:
+        raise ResearchContractError("agent_proposals must be a boolean")
 
     return ResearchLoopConfig(
         schema_version=SCHEMA_VERSION,
@@ -100,14 +105,20 @@ def load_research_loop_config(
         objective=objective,
         minimum_improvement=minimum_improvement,
         max_plant_regression=max_plant_regression,
+        agent_proposals=agent_proposals,
     )
 
 
-def _exact_keys(value: Mapping[str, object], expected: frozenset[str], label: str) -> None:
+def _exact_keys(
+    value: Mapping[str, object],
+    expected: frozenset[str],
+    label: str,
+    optional: frozenset[str] = frozenset(),
+) -> None:
     actual = set(value)
-    if actual == expected:
+    if expected <= actual <= expected | optional:
         return
-    unknown = sorted(actual - expected)
+    unknown = sorted(actual - expected - optional)
     missing = sorted(expected - actual)
     if unknown:
         raise ResearchContractError(f"{label} unknown keys: {unknown}")

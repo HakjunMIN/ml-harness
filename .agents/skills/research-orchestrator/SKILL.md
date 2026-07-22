@@ -11,6 +11,11 @@ strict state graph. The only invocation is `.agents/scripts/run-research-loop.sh
 with optional `--resume`; the runner invokes exactly `uv run python -m power_forecasting.cli
 research-loop`. Orchestration is opt-in and stops before AIDD/code/deploy.
 
+When `agent_proposals: true` is set in the immutable config, the runner stops at
+`awaiting_proposal` after diagnostic evidence. It writes a catalog and aggregate-only proposal
+context under the assigned iteration directory. Invoke `research-proposal` to create the requested
+JSON, then rerun the exact same command with `--resume`.
+
 ## Prerequisites
 - The runner, project package, and schema-version `1` configuration are present.
 - Input artifacts already exist; the orchestrator never creates customer or source inputs.
@@ -45,7 +50,9 @@ research-loop`. Orchestration is opt-in and stops before AIDD/code/deploy.
   JSON, incomplete journal groups, and terminal resume all fail closed. Invalid verifier reports
   use the exact provenance keys with `unavailable` for any unavailable artifact checksum; only
   invalid reports may use that representation.
-- State transitions are only `initialized -> diagnosed -> proposed -> experimenting -> verifying`
+- State transitions are `initialized -> diagnosed -> proposed -> experimenting -> verifying`, or
+  for agent proposals, `initialized -> diagnosed -> awaiting_proposal -> proposed ->
+  experimenting -> verifying`,
   and then `iterate`, `ready_for_human_review`, `exhausted`, or `failed`.
   A diagnostic failure traverses the required internal states without allocating a profile,
   selecting a proposal, running an experiment, or emitting `experiment-failure.json`; only
@@ -56,15 +63,19 @@ research-loop`. Orchestration is opt-in and stops before AIDD/code/deploy.
 ## Bounded Iteration and Stop Conditions
 - Profile order is explicit and each profile is used at most once. `max_iterations` and
   `fold_count` are each 1..10; candidate/search budgets are validated before AIDM execution.
-- `ready_for_human_review`, `exhausted`, and `failed` are terminal. `--resume` recovers only a
+- `awaiting_proposal` is nonterminal but deliberately does not run AIDM. `ready_for_human_review`,
+  `exhausted`, and `failed` are terminal. `--resume` recovers only a
   nonterminal, checksum-consistent state and never reruns an interrupted experiment as success.
 - A successful Stage 1 run produces review evidence only. It does not invoke AIDD or create a
   deployable module.
 
 ## Workflow
 1. Validate the config and initialize an immutable config snapshot and journal.
-2. Advance through diagnosis, one proposal, one bounded experiment, and verification.
-3. Persist every transition and checksum, then stop at a terminal state and write the summary.
+2. Advance through diagnosis; for `agent_proposals: true`, stop and hand the catalog/context to
+   `research-proposal`.
+3. Resume only after a catalog-contained proposal is present, then run one bounded experiment and
+   verification.
+4. Persist every transition and checksum, then stop at a terminal state and write the summary.
 
 ## Prohibitions
 Do not edit source or customer data, merge, deploy, call AIDD, generate/modify executable code,

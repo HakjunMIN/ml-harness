@@ -25,7 +25,13 @@ def _run_dir(tmp_path: Path) -> Path:
     return ROOT / ".agents" / "output" / f"pytest-research-{tmp_path.name}"
 
 
-def _config(tmp_path: Path, profiles: list[str], max_iterations: int) -> Path:
+def _config(
+    tmp_path: Path,
+    profiles: list[str],
+    max_iterations: int,
+    *,
+    agent_proposals: bool = False,
+) -> Path:
     shutil.rmtree(_run_dir(tmp_path), ignore_errors=True)
     config_path = tmp_path / "research-loop.json"
     payload = {
@@ -40,6 +46,7 @@ def _config(tmp_path: Path, profiles: list[str], max_iterations: int) -> Path:
         "objective": "NMAE",
         "minimum_improvement": 0.01,
         "max_plant_regression": 0.03,
+        "agent_proposals": agent_proposals,
     }
     config_path.write_text(json.dumps(payload), encoding="utf-8")
     return config_path
@@ -170,6 +177,56 @@ def test_promoted_result_ends_at_human_review_and_summary_is_private(tmp_path, m
     assert result["used_profiles"] == ["safe_weather"]
     assert "generation_mw" not in json.dumps(result)
     assert Path(result["summary_path"]).is_file()
+
+
+def test_agent_proposal_handoff_resumes_with_catalog_candidate(tmp_path, monkeypatch):
+    calls = _fake_agents(monkeypatch, decisions=["promote"])
+    config_path = _config(tmp_path, ["safe_weather"], 1, agent_proposals=True)
+
+    handoff = run_research_loop(config_path)
+
+    assert handoff["status"] == "awaiting_proposal"
+    proposal_path = Path(handoff["proposal_path"])
+    assert Path(handoff["proposal_context_path"]).is_file()
+    assert Path(handoff["proposal_catalog_path"]).is_file()
+    proposal = generate_profile_proposal(
+        "safe_weather",
+        run_id="test-loop",
+        legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
+        fold_count=1,
+        objective="NMAE",
+        candidate_cap=2,
+        diagnosis=_diagnosis(),
+    )
+    proposal_path.write_text(json.dumps(proposal.to_dict()), encoding="utf-8")
+
+    result = run_research_loop(config_path, resume=True)
+
+    assert result["status"] == "ready_for_human_review"
+    assert calls["experiment"] == 1
+
+
+def test_agent_proposal_handoff_rejects_out_of_catalog_candidate(tmp_path, monkeypatch):
+    calls = _fake_agents(monkeypatch, decisions=["promote"])
+    config_path = _config(tmp_path, ["safe_weather"], 1, agent_proposals=True)
+    handoff = run_research_loop(config_path)
+    proposal_path = Path(handoff["proposal_path"])
+    proposal = generate_profile_proposal(
+        "safe_weather",
+        run_id="test-loop",
+        legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
+        fold_count=1,
+        objective="NMAE",
+        candidate_cap=2,
+        diagnosis=_diagnosis(),
+    ).to_dict()
+    proposal["model_recipes"][0]["parameters"]["alpha"] = 0.1
+    proposal_path.write_text(json.dumps(proposal), encoding="utf-8")
+
+    result = run_research_loop(config_path, resume=True)
+
+    assert result["status"] == "awaiting_proposal"
+    assert calls["experiment"] == 0
 
 
 def test_rejection_uses_each_profile_once_then_exhausts(tmp_path, monkeypatch):

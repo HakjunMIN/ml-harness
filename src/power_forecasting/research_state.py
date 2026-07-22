@@ -49,6 +49,7 @@ _STATUSES = frozenset(
     {
         "initialized",
         "diagnosed",
+        "awaiting_proposal",
         "proposed",
         "experimenting",
         "verifying",
@@ -61,7 +62,8 @@ _STATUSES = frozenset(
 _TERMINAL_STATUSES = frozenset({"ready_for_human_review", "exhausted", "failed"})
 _ALLOWED_TRANSITIONS = {
     "initialized": frozenset({"diagnosed"}),
-    "diagnosed": frozenset({"proposed"}),
+    "diagnosed": frozenset({"proposed", "awaiting_proposal"}),
+    "awaiting_proposal": frozenset({"proposed"}),
     "proposed": frozenset({"experimenting"}),
     "experimenting": frozenset({"verifying"}),
     "verifying": frozenset({"iterate", "ready_for_human_review", "exhausted", "failed"}),

@@ -31,6 +31,7 @@ from power_forecasting.research_execution import (
 from power_forecasting.research_roles import (
     DiagnosticReport,
     generate_profile_proposal,
+    proposal_catalog,
     run_diagnostic_agent,
 )
 from power_forecasting.research_state import (
@@ -56,6 +57,8 @@ _VERIFICATION_NAME = "verification.json"
 _FAILURE_NAME = "verification-failure.json"
 _EXHAUSTION_NAME = "exhaustion.json"
 _SUMMARY_NAME = "research-summary.json"
+_PROPOSAL_CONTEXT_NAME = "proposal-context.json"
+_PROPOSAL_CATALOG_NAME = "proposal-catalog.json"
 _PROFILE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_:-]{0,127}$")
 _CANDIDATE_CAP = 3
@@ -269,6 +272,34 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 verifier_reasons = (_safe_reason("diagnosis_binding_invalid"),)
                 continue
             profile = _current_profile(state)
+            iteration_dir = _iteration_directory(run_dir, state.iteration, profile)
+            if config.agent_proposals:
+                catalog_path = iteration_dir / _PROPOSAL_CATALOG_NAME
+                catalog = proposal_catalog()
+                atomic_write_json(catalog_path, catalog)
+                context_path = iteration_dir / _PROPOSAL_CONTEXT_NAME
+                atomic_write_json(
+                    context_path,
+                    {
+                        "schema_version": "1",
+                        "run_id": config.run_id,
+                        "iteration": state.iteration,
+                        "profile": profile,
+                        "config_sha256": config_sha256,
+                        "catalog_sha256": _canonical_sha256(catalog),
+                        "remaining_evaluations": _remaining_evaluations(state),
+                        "diagnosis_sha256": _sha256_file(_artifact_named(state, _DIAGNOSIS_NAME)),
+                        "previous_proposals": _proposal_history(state),
+                    },
+                )
+                state, journal_count = _advance(
+                    run_dir,
+                    state,
+                    to_status="awaiting_proposal",
+                    artifact_paths={"proposal_context": context_path, "proposal_catalog": catalog_path},
+                    journal_count=journal_count,
+                )
+                return _handoff_result(state, context_path, catalog_path)
             proposal = generate_profile_proposal(
                 profile,
                 run_id=config.run_id,
@@ -278,7 +309,6 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 candidate_cap=_CANDIDATE_CAP,
                 diagnosis=diagnosis,
             )
-            iteration_dir = _iteration_directory(run_dir, state.iteration, profile)
             proposal_path = iteration_dir / _PROPOSAL_NAME
             notes_path = iteration_dir / _NOTES_NAME
             atomic_write_json(proposal_path, proposal.to_dict())
@@ -301,6 +331,48 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                     "notes": notes_path,
                     "config": config_snapshot_path,
                 },
+                journal_count=journal_count,
+            )
+            continue
+
+        if state.status == "awaiting_proposal":
+            profile = _current_profile(state)
+            iteration_dir = _iteration_directory(run_dir, state.iteration, profile)
+            proposal_path = iteration_dir / _PROPOSAL_NAME
+            catalog_path = iteration_dir / _PROPOSAL_CATALOG_NAME
+            context_path = iteration_dir / _PROPOSAL_CONTEXT_NAME
+            try:
+                proposal = _load_proposal(proposal_path)
+                catalog = _load_json_object(catalog_path, "proposal catalog")
+                context = _load_json_object(context_path, "proposal context")
+                if context.get("catalog_sha256") != _canonical_sha256(catalog):
+                    raise ResearchStateError("proposal catalog checksum mismatch")
+                _validate_catalog_proposal(proposal, catalog, profile)
+                if _proposal_evaluation_count(proposal) > int(context["remaining_evaluations"]):
+                    raise ResearchStateError("proposal exceeds remaining evaluation budget")
+                if _proposal_sha256(proposal) in {
+                    item["sha256"] for item in _proposal_history(state)
+                }:
+                    raise ResearchStateError("proposal duplicates prior proposal")
+            except (KeyError, TypeError, ValueError, ResearchStateError):
+                return _handoff_result(state, context_path, catalog_path)
+            notes_path = iteration_dir / _NOTES_NAME
+            atomic_write_json(
+                notes_path,
+                {
+                    "schema_version": "1",
+                    "proposal_sha256": _proposal_sha256(proposal),
+                    "catalog_sha256": _canonical_sha256(catalog),
+                    "evaluation_count": _proposal_evaluation_count(proposal),
+                    "remaining_evaluations": int(context["remaining_evaluations"])
+                    - _proposal_evaluation_count(proposal),
+                },
+            )
+            state, journal_count = _advance(
+                run_dir,
+                state,
+                to_status="proposed",
+                artifact_paths={"proposal": proposal_path, "notes": notes_path},
                 journal_count=journal_count,
             )
             continue
@@ -581,6 +653,7 @@ def _effective_config(config: ResearchLoopConfig) -> dict[str, object]:
         "objective": config.objective,
         "minimum_improvement": config.minimum_improvement,
         "max_plant_regression": config.max_plant_regression,
+        "agent_proposals": config.agent_proposals,
     }
 
 
@@ -1038,6 +1111,10 @@ def _validate_recovery_group(group: tuple[Mapping[str, object], ...]) -> None:
             expected = frozenset({_EXHAUSTION_NAME})
         else:
             expected = frozenset({_PROPOSAL_NAME, _NOTES_NAME, _CONFIG_NAME})
+    elif transition == ("diagnosed", "awaiting_proposal"):
+        expected = frozenset({_PROPOSAL_CONTEXT_NAME, _PROPOSAL_CATALOG_NAME})
+    elif transition == ("awaiting_proposal", "proposed"):
+        expected = frozenset({_PROPOSAL_NAME, _NOTES_NAME})
     elif transition == ("proposed", "experimenting"):
         expected = frozenset()
     elif transition == ("experimenting", "verifying"):
@@ -1158,6 +1235,112 @@ def _load_proposal(path: Path) -> ResearchProposal:
         return load_proposal(path)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ResearchStateError("recorded proposal cannot be loaded") from exc
+
+
+def _load_json_object(path: Path, label: str) -> dict[str, object]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle, object_pairs_hook=_strict_config_object)
+    except (_DuplicateConfigKey, OSError, json.JSONDecodeError) as exc:
+        raise ResearchStateError(f"{label} is invalid") from exc
+    if not isinstance(value, Mapping):
+        raise ResearchStateError(f"{label} is invalid")
+    return dict(value)
+
+
+def _proposal_evaluation_count(proposal: ResearchProposal) -> int:
+    search_count = 0 if proposal.search is None else int(proposal.search["n_trials"]) + 1
+    return len(proposal.feature_sets) * (len(proposal.model_recipes) + search_count)
+
+
+def _proposal_history(state: ResearchState) -> list[dict[str, object]]:
+    history: list[dict[str, object]] = []
+    for artifact_path in sorted(state.artifacts):
+        path = Path(artifact_path)
+        if path.name != _PROPOSAL_NAME:
+            continue
+        proposal = _load_proposal(path)
+        history.append(
+            {
+                "sha256": _proposal_sha256(proposal),
+                "evaluation_count": _proposal_evaluation_count(proposal),
+            }
+        )
+    return history
+
+
+def _remaining_evaluations(state: ResearchState) -> int:
+    return 50 - sum(int(item["evaluation_count"]) for item in _proposal_history(state))
+
+
+def _validate_catalog_proposal(
+    proposal: ResearchProposal,
+    catalog: Mapping[str, object],
+    profile: str,
+) -> None:
+    if (
+        catalog.get("schema_version") != "1"
+        or catalog.get("max_evaluations") != 50
+        or not isinstance(catalog.get("profiles"), list)
+        or not isinstance(catalog.get("feature_specs"), Mapping)
+        or not isinstance(catalog.get("model_recipes"), Mapping)
+        or profile not in catalog["profiles"]
+    ):
+        raise ResearchStateError("proposal catalog is invalid")
+    feature_specs = catalog["feature_specs"]
+    model_recipes = catalog["model_recipes"]
+    feature_groups = ("safe_weather",) if profile == "safe_weather" else (
+        ("history_tree",) if profile == "history_tree" else ("safe_weather", "history_tree")
+    )
+    try:
+        allowed_features = {
+            _canonical_json(spec)
+            for group in feature_groups
+            for spec in feature_specs[group]
+        }
+        allowed_recipes = {
+            _canonical_json(
+                {"recipe": recipe["recipe"], "parameters": recipe["parameters"]}
+            )
+            for recipe in model_recipes[profile]
+        }
+    except (KeyError, TypeError):
+        raise ResearchStateError("proposal catalog is invalid") from None
+    for feature_set in proposal.feature_sets:
+        if any(_canonical_json(spec.to_dict()) not in allowed_features for spec in feature_set.specs):
+            raise ResearchStateError("proposal contains a feature outside its catalog")
+    for recipe in proposal.model_recipes:
+        candidate = {"recipe": recipe.recipe, "parameters": dict(recipe.parameters)}
+        if _canonical_json(candidate) not in allowed_recipes:
+            raise ResearchStateError("proposal contains a model recipe outside its catalog")
+    if proposal.search is not None:
+        search = catalog.get("search")
+        if not isinstance(search, Mapping):
+            raise ResearchStateError("proposal catalog is invalid")
+        catalog_search = dict(search)
+        proposal_search = dict(proposal.search)
+        catalog_search.pop("n_trials", None)
+        proposal_search.pop("n_trials", None)
+        if _canonical_json(proposal_search) != _canonical_json(catalog_search):
+            raise ResearchStateError("proposal contains a search outside its catalog")
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _handoff_result(
+    state: ResearchState, context_path: Path, catalog_path: Path
+) -> dict[str, object]:
+    return {
+        "status": "awaiting_proposal",
+        "run_id": state.run_id,
+        "iteration": state.iteration,
+        "proposal_context_path": str(context_path.resolve()),
+        "proposal_catalog_path": str(catalog_path.resolve()),
+        "proposal_path": str((context_path.parent / _PROPOSAL_NAME).resolve()),
+        "resume_command": f".agents/scripts/run-research-loop.sh --config <same-config> --resume",
+    }
 
 
 def _experiment_artifacts(experiment: ExperimentResult) -> dict[str, Path]:

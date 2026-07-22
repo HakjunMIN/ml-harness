@@ -6,9 +6,10 @@ description: Use when Stage 1 research-loop needs one bounded, declarative AIDM 
 # Research Proposal
 
 ## Exact Responsibility
-Translate one recommended profile into one proposal-first `ResearchProposal`. Use only the fixed
-repository feature transforms, model recipes, and bounded search spaces. This role chooses
-hypotheses; it never writes estimator code or executes an unbounded search.
+Translate one recommended profile into one proposal-first `ResearchProposal`. With
+`agent_proposals: true`, read the runner-generated catalog and aggregate-only context, then choose
+the next bounded hypothesis from that catalog. This role never writes estimator code or executes an
+unbounded search.
 
 ## Prerequisites
 - A valid, checksum-bound `diagnosis.json` recommends the requested profile.
@@ -16,6 +17,7 @@ hypotheses; it never writes estimator code or executes an unbounded search.
 
 ## Allowed Inputs
 - `research-config.json`, `state.json`, and the current `diagnosis.json`, each schema version `1`.
+- For agent handoff, the assigned `proposal-context.json` and `proposal-catalog.json`.
 - The diagnosis must bind the configured dataset and baseline by lowercase SHA-256 and mark the
   selected profile as recommended.
 - A proposal must use schema version `1`, baseline `{"model":"SPOT"}`, prediction-time feature
@@ -25,16 +27,18 @@ hypotheses; it never writes estimator code or executes an unbounded search.
   values are forbidden.
 
 ## Workflow
-1. Select the next unused recommended profile.
-2. Render and validate one schema-version `1` proposal plus bounded notes.
-3. Persist both artifacts and their canonical checksums before AIDM execution.
+1. Confirm the loop is `awaiting_proposal` and read only the assigned context/catalog artifacts.
+2. Select feature sets, recipes, and optional TPE values from the catalog; use prior aggregate
+   results and remaining evaluation budget to justify the choice.
+3. Write `research-proposal.json` into the assigned iteration directory. Do not edit the catalog,
+   context, or runner-managed notes.
+4. Invoke the same research runner with `--resume`; the runner validates the proposal before AIDM.
 
 ## Output and Permissions
-- Write only the current iteration's `research-proposal.json` and `research-notes.json` under
-  `iterations/<iteration>-<profile>/`.
+- Write only the current iteration's `research-proposal.json` under
+  `iterations/<iteration>-<profile>/`; the runner writes `research-notes.json`.
 - `research-proposal.json` contains `schema_version`, `proposal_id`, `rationale`, `baseline`,
-  `feature_sets`, `model_recipes`, `budget`, and optional `search`; notes contain schema version,
-  profile, iteration, candidate cap, and rejected idea reason codes.
+  `feature_sets`, `model_recipes`, `budget`, and optional `search`.
 - Read the effective config, diagnosis, and state. Do not write source, tests, fixtures, skills,
   scripts, datasets, generated modules, manifests, customer systems, or gate configuration.
 
@@ -42,8 +46,8 @@ hypotheses; it never writes estimator code or executes an unbounded search.
 - Bind proposal provenance to run ID, iteration, diagnosis checksum, baseline checksum, and the
   canonical proposal SHA-256 recorded by the orchestrator.
 - `budget.max_evaluations` is 1..50; `top_feature_groups` is 1..10. Search trials are 1..50 and
-  only allowed discrete values may be used. Keep the candidate cap fixed at the orchestrator
-  limit (three candidates).
+  only cataloged discrete values may be used. The proposal budget must cover the candidate count
+  and fit the context's remaining run-wide evaluation budget.
 - Do not include raw rows, target values, secrets, environment values, or arbitrary code in JSON.
 
 ## Bounded Iteration and Stop Conditions

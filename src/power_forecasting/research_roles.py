@@ -434,6 +434,25 @@ def _bounded_search(n_trials: int) -> Mapping[str, Any]:
     }
 
 
+def proposal_catalog() -> dict[str, object]:
+    """Return the immutable, privacy-safe candidate catalog for coding agents."""
+
+    return {
+        "schema_version": "1",
+        "max_evaluations": 50,
+        "profiles": list(_PROFILE_ORDER),
+        "feature_specs": {
+            "safe_weather": [spec.to_dict() for spec in _safe_weather_specs()],
+            "history_tree": [spec.to_dict() for spec in _history_specs()],
+        },
+        "model_recipes": {
+            profile: [recipe.to_dict() for recipe in _recipe_templates(profile)]
+            for profile in _PROFILE_ORDER
+        },
+        "search": _bounded_search(50),
+    }
+
+
 def _profile_rationale(profile: str) -> str:
     return {
         "safe_weather": "Evaluate bounded prediction-time calendar and weather features.",
@@ -578,5 +597,6 @@ def _iso_timestamp(value: object, label: str) -> None:
 __all__ = [
     "DiagnosticReport",
     "generate_profile_proposal",
+    "proposal_catalog",
     "run_diagnostic_agent",
 ]

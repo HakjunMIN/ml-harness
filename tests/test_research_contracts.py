@@ -84,6 +84,15 @@ def test_valid_config_resolves_relative_paths_from_configuration_directory(
     assert config.profiles == ("safe_weather", "history_tree")
 
 
+def test_config_accepts_opt_in_agent_proposals(contract_paths: dict[str, Path]) -> None:
+    config = _load(_payload(agent_proposals=True), contract_paths)
+
+    assert config.agent_proposals is True
+
+    with pytest.raises(ResearchContractError, match="agent_proposals"):
+        _load(_payload(agent_proposals="true"), contract_paths)
+
+
 def test_config_rejects_unknown_keys(contract_paths: dict[str, Path]) -> None:
     with pytest.raises(ResearchContractError, match="unknown keys"):
         _load(_payload(unexpected=True), contract_paths)
@@ -309,7 +318,8 @@ def test_state_graph_is_exact() -> None:
 
     assert research_state._ALLOWED_TRANSITIONS == {
         "initialized": frozenset({"diagnosed"}),
-        "diagnosed": frozenset({"proposed"}),
+        "diagnosed": frozenset({"proposed", "awaiting_proposal"}),
+        "awaiting_proposal": frozenset({"proposed"}),
         "proposed": frozenset({"experimenting"}),
         "experimenting": frozenset({"verifying"}),
         "verifying": frozenset({"iterate", "ready_for_human_review", "exhausted", "failed"}),

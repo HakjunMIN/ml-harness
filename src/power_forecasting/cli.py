@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
 
             summary = run_research_loop(args.config, resume=args.resume)
             print(json.dumps(summary, sort_keys=True))
-            if summary.get("status") != "ready_for_human_review":
+            if summary.get("status") not in {"ready_for_human_review", "awaiting_proposal"}:
                 return 2
         else:
             raise ValueError(f"unknown command: {args.command}")
