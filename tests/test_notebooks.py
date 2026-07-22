@@ -53,12 +53,15 @@ def test_demo_notebooks_are_valid_and_compile():
 
 def test_demo_notebooks_tell_the_three_path_story():
     baseline_code = _notebook_code(NOTEBOOK_DIR / "01_legacy_baseline.ipynb")
-    assert "run_legacy" in baseline_code
+    assert "generate_legacy_demo_data" in baseline_code
+    assert "chronological_holdout" in baseline_code
     assert "SPOT" in baseline_code
+    for model_name in ("Mean", "Weather", "ForecastWeather", "Ldaps"):
+        assert model_name in baseline_code
 
     manual_code = _notebook_code(NOTEBOOK_DIR / "02_manual_skill_path.ipynb")
-    assert "run_aidm_workflow" in manual_code
-    assert "run_aidd_workflow" in manual_code
+    assert "run-aidm.sh" in manual_code
+    assert "verify-promotion.sh" in manual_code
     manual_markdown = _notebook_markdown(NOTEBOOK_DIR / "02_manual_skill_path.ipynb")
     for skill in ("legacy-intake", "aidm-experiment", "aidd-promotion", "release-gate"):
         assert skill in manual_markdown

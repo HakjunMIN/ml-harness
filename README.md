@@ -129,13 +129,11 @@ uv run python -m power_forecasting.cli all --output artifacts/demo --minimum-imp
 | 노트북 | 역할 | 실행 내용 |
 | --- | --- | --- |
 | [`00_legacy_power_forecasting_models.ipynb`](notebooks/00_legacy_power_forecasting_models.ipynb) | 참조·설명 | 확보할 수 없는 운영 코드 대신 Mean, Weather, ForecastWeather, Ldaps, SPOT을 합성 데이터로 재구성하고, 제한된 피처·모델 연구까지 담은 이미 개선된 결과를 설명합니다. |
-| [`01_legacy_baseline.ipynb`](notebooks/01_legacy_baseline.ipynb) | 개선 전 기준선 | 같은 합성 데이터로 레거시 모델을 평가하고 예측 시점 기준선 `SPOT` NMAE를 고정합니다. 이것이 개선 대상입니다. |
-| [`02_manual_skill_path.ipynb`](notebooks/02_manual_skill_path.ipynb) | 사람이 통제하는 기본 경로 | `legacy-intake -> AIDM experiment -> AIDD promotion -> human review`. 제한된 JSON 제안으로 `SPOT`을 넘어서는 후보를 찾고, 게이트를 통과하면 결정론적 피처 모듈을 생성한 뒤 사람 검토 경계에서 멈춥니다. |
-| [`03_auto_research_path.ipynb`](notebooks/03_auto_research_path.ipynb) | 선택적 자동 연구 경로 | `diagnosis -> bounded proposal -> AIDM -> evidence verification -> human review`. Stage 1 연구 루프가 진단·제안·실험·검증을 자동 수행한 뒤 `ready_for_human_review`에서 멈추며, AIDD·배포는 하지 않습니다. |
+| [`01_legacy_baseline.ipynb`](notebooks/01_legacy_baseline.ipynb) | 개선 전 기준선 | `00`처럼 노트북 안에서 합성 데이터 생성·레거시 모델 평가를 직접 수행해 예측 시점 기준선 `SPOT` NMAE를 고정하고, `artifacts/demo/dataset.csv`와 SPOT 예측을 내보냅니다. 이것이 개선 대상이며 `02`·`03`의 입력입니다. |
+| [`02_manual_skill_path.ipynb`](notebooks/02_manual_skill_path.ipynb) | 사람이 통제하는 기본 경로 | `legacy-intake -> AIDM experiment -> AIDD promotion -> human review`. `01`의 데이터셋을 바탕으로 이 저장소 스킬 러너 `run-aidm.sh`·`verify-promotion.sh`를 직접 실행합니다. 제한된 JSON 제안으로 `SPOT`을 넘어서는 후보를 찾고, 게이트를 통과하면 결정론적 피처 모듈을 생성한 뒤 사람 검토 경계에서 멈춥니다. |
+| [`03_auto_research_path.ipynb`](notebooks/03_auto_research_path.ipynb) | 선택적 자동 연구 경로 | `diagnosis -> bounded proposal -> AIDM -> evidence verification -> human review`. `01`의 데이터셋을 대상으로 스킬 러너 `run-research-loop.sh`를 실행합니다. Stage 1 연구 루프가 진단·제안·실험·검증을 자동 수행한 뒤 `ready_for_human_review`에서 멈추며, AIDD·배포는 하지 않습니다. |
 
-각 데모 노트북은 문서가 아니라 실제 하네스 코드를 실행해 검증 가능한 증적
-(`promotion_manifest.json`, `generated/promoted_features.py`, `research-summary.json` 등)을
-남깁니다. 합성 예제는 고객 운영 증거나 고객 모형과의 동등성을 주장하지 않으며,
+각 데모 노트북은 문서가 아니라 실제 하네스 코드를 실행해 검증 가능한 증적을 남깁니다. `01`은 `artifacts/demo/`에, `02`·`03`은 각각 `.agents/runs/notebook-02-manual/`·`.agents/runs/notebook-03-auto/`에 `promotion_manifest.json`, `generated/promoted_features.py`, `research-summary.json` 등을 남깍니다. `02`·`03`은 `01`이 먼저 실행된 상태를 전제로 하며, 사용하는 스킬은 모두 이 저장소의 `.agents` 하네스로 제한됩니다. 합성 예제는 고객 운영 증거나 고객 모형과의 동등성을 주장하지 않으며,
 `Weather`는 예측 시점에 쓸 수 없는 실제 기상 기반 진단값입니다.
 
 ## 아키텍처 및 데이터 흐름
@@ -282,7 +280,7 @@ artifacts/demo/
 
 ## 대시보드
 
-데모 노트북이나 CLI로 산출물을 생성한 뒤 대시보드를 실행합니다.
+대시보드는 `artifacts/demo/`의 산출물을 읽습니다. `01` 노트북은 데이터셋을, CLI `all`은 승격 매니페스트·생성 모듈까지 이 경로에 채웁니다(데모 노트북 `02`·`03`의 승격 증적은 `.agents/runs/`에 남습니다). 산출물을 생성한 뒤 대시보드를 실행합니다.
 
 ```bash
 uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
