@@ -158,6 +158,10 @@ _VERIFICATION_CHECKS = (
 class ResearchExecutionError(RuntimeError):
     """Raised when the bounded AIDM experiment workflow cannot produce evidence."""
 
+    def __init__(self, message: str, *, failure_path: Path | None = None) -> None:
+        super().__init__(message)
+        self.failure_path = failure_path
+
 
 @dataclass(frozen=True)
 class ExperimentResult:
@@ -277,10 +281,19 @@ def run_experiment_agent(
         TypeError,
         ValueError,
     ) as exc:
-        _write_failure_evidence(iteration_dir, config.run_id, experiment_id, iteration)
+        failure_path = _write_failure_evidence(
+            iteration_dir,
+            config.run_id,
+            experiment_id,
+            iteration,
+        )
         if isinstance(exc, ResearchExecutionError):
+            exc.failure_path = failure_path
             raise
-        raise ResearchExecutionError("AIDM experiment workflow failed") from exc
+        raise ResearchExecutionError(
+            "AIDM experiment workflow failed",
+            failure_path=failure_path,
+        ) from exc
 
     return ExperimentResult(
         run_id=config.run_id,
@@ -603,10 +616,11 @@ def _write_failure_evidence(
     run_id: str,
     experiment_id: str,
     iteration: int,
-) -> None:
+) -> Path | None:
+    path = iteration_dir / "experiment-failure.json"
     try:
         atomic_write_json(
-            iteration_dir / "experiment-failure.json",
+            path,
             {
                 "schema_version": _SCHEMA_VERSION,
                 "run_id": run_id,
@@ -616,7 +630,8 @@ def _write_failure_evidence(
             },
         )
     except (OSError, TypeError, ValueError):
-        pass
+        return None
+    return path
 
 
 def _paths_match(

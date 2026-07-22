@@ -47,6 +47,7 @@ _DIAGNOSTIC_FAILURE_NAME = "diagnostic-failure.json"
 _NOTES_NAME = "research-notes.json"
 _PROPOSAL_NAME = "research-proposal.json"
 _EVIDENCE_NAME = "experiment-evidence.json"
+_EXPERIMENT_FAILURE_NAME = "experiment-failure.json"
 _VERIFICATION_NAME = "verification.json"
 _FAILURE_NAME = "verification-failure.json"
 _EXHAUSTION_NAME = "exhaustion.json"
@@ -134,6 +135,7 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
         )
         was_terminal = state.status in _TERMINAL_STATUSES
         state = _reconcile_journal(run_dir, state)
+        _validate_recorded_experiment_failures(state, config_payload)
         if was_terminal:
             raise ResearchStateError(f"cannot resume terminal state {state.status}")
         journal_count = len(state.transitions)
@@ -347,16 +349,37 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                     iteration=state.iteration,
                 )
             except (ResearchExecutionError, OSError, TypeError, ValueError) as exc:
-                failure_path = _write_failure(
-                    run_dir,
-                    state.iteration,
-                    "experiment_failed",
-                )
+                artifact_paths: dict[str, Path]
+                experiment_failure = None
+                if isinstance(exc, ResearchExecutionError):
+                    try:
+                        failure_path = exc.failure_path
+                        if failure_path is None:
+                            failure_path = _locate_experiment_failure_artifact(
+                                run_dir,
+                                state.iteration,
+                            )
+                        experiment_failure = _validate_experiment_failure_artifact(
+                            failure_path,
+                            config=config,
+                            iteration=state.iteration,
+                        )
+                    except (OSError, TypeError, ValueError, ResearchStateError):
+                        experiment_failure = None
+                if experiment_failure is not None:
+                    artifact_paths = {"experiment_failure": experiment_failure}
+                else:
+                    failure_path = _write_failure(
+                        run_dir,
+                        state.iteration,
+                        "experiment_failed",
+                    )
+                    artifact_paths = {"failure": failure_path}
                 state, journal_count = _advance(
                     run_dir,
                     state,
                     to_status="verifying",
-                    artifact_paths={"failure": failure_path},
+                    artifact_paths=artifact_paths,
                     journal_count=journal_count,
                 )
                 verifier_outcome = "invalid"
@@ -416,7 +439,10 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 verifier_outcome = "reject"
                 verifier_reasons = (_safe_reason("no_recommended_profiles"),)
                 continue
-            if any(Path(path).name == _FAILURE_NAME for path in state.artifacts):
+            if any(
+                Path(path).name in {_FAILURE_NAME, _EXPERIMENT_FAILURE_NAME}
+                for path in state.artifacts
+            ):
                 state, journal_count = _advance(
                     run_dir,
                     state,
@@ -580,6 +606,46 @@ def _verify_resume_config(
         raise ResearchStateError("configuration changed since run initialization")
     if _canonical_sha256(snapshot) != state.config_sha256:
         raise ResearchStateError("persisted configuration checksum mismatch")
+
+
+def _validate_recorded_experiment_failures(
+    state: ResearchState,
+    config_payload: Mapping[str, object],
+) -> None:
+    run_dir = Path(str(config_payload["run_dir"])).resolve()
+    for artifact_path in state.artifacts:
+        path = Path(artifact_path)
+        if path.name != _EXPERIMENT_FAILURE_NAME:
+            continue
+        if path.is_symlink() or path.parent.is_symlink() or not path.is_file():
+            raise ResearchStateError("experiment failure artifact is not a regular file")
+        try:
+            relative = path.resolve().relative_to(run_dir / "iterations")
+        except ValueError as exc:
+            raise ResearchStateError(
+                "experiment failure artifact is outside the iterations directory"
+            ) from exc
+        if not relative.parts or not re.match(r"^[0-9]{3}-", relative.parts[0]):
+            raise ResearchStateError("experiment failure artifact path is invalid")
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle, object_pairs_hook=_strict_config_object)
+        except (_DuplicateConfigKey, OSError, json.JSONDecodeError) as exc:
+            raise ResearchStateError("experiment failure artifact JSON is invalid") from exc
+        if (
+            not isinstance(payload, Mapping)
+            or set(payload)
+            != {"schema_version", "run_id", "experiment_id", "iteration", "run_state"}
+            or payload["schema_version"] != "1"
+            or payload["run_id"] != config_payload["run_id"]
+            or type(payload["experiment_id"]) is not str
+            or not _SHA256_PATTERN.fullmatch(payload["experiment_id"])
+            or type(payload["iteration"]) is not int
+            or payload["iteration"] < 1
+            or payload["run_state"] != "failed"
+            or not relative.parts[0].startswith(f"{payload['iteration']:03d}-")
+        ):
+            raise ResearchStateError("experiment failure artifact schema or binding is invalid")
 
 
 def _persist_state(run_dir: Path, state: ResearchState) -> None:
@@ -801,6 +867,8 @@ def _validate_recovery_group(group: tuple[Mapping[str, object], ...]) -> None:
             expected = frozenset()
         elif names == [_FAILURE_NAME]:
             expected = frozenset({_FAILURE_NAME})
+        elif names == [_EXPERIMENT_FAILURE_NAME]:
+            expected = frozenset({_EXPERIMENT_FAILURE_NAME})
         else:
             expected = frozenset(
                 {
@@ -825,6 +893,7 @@ def _validate_recovery_group(group: tuple[Mapping[str, object], ...]) -> None:
         if expected not in {
             frozenset(),
             frozenset({_FAILURE_NAME}),
+            frozenset({_EXPERIMENT_FAILURE_NAME}),
             frozenset({_VERIFICATION_NAME}),
             frozenset({_DIAGNOSTIC_FAILURE_NAME}),
         }:
@@ -1145,6 +1214,65 @@ def _write_failure(run_dir: Path, iteration: int, reason: str) -> Path:
         },
     )
     return path
+
+
+def _validate_experiment_failure_artifact(
+    path: Path | None,
+    *,
+    config: ResearchLoopConfig,
+    iteration: int,
+) -> Path | None:
+    if not isinstance(path, Path):
+        return None
+    if (
+        path.name != _EXPERIMENT_FAILURE_NAME
+        or path.is_symlink()
+        or path.parent.is_symlink()
+        or not path.is_file()
+    ):
+        return None
+    resolved = path.resolve()
+    iterations_root = (Path(config.run_dir).resolve() / "iterations").resolve()
+    try:
+        relative = resolved.relative_to(iterations_root)
+    except ValueError:
+        return None
+    if (
+        len(relative.parts) != 2
+        or not relative.parts[0].startswith(f"{iteration:03d}-")
+        or relative.parts[1] != _EXPERIMENT_FAILURE_NAME
+    ):
+        return None
+    try:
+        with resolved.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle, object_pairs_hook=_strict_config_object)
+    except (_DuplicateConfigKey, OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload)
+        != {"schema_version", "run_id", "experiment_id", "iteration", "run_state"}
+        or payload["schema_version"] != "1"
+        or payload["run_id"] != config.run_id
+        or type(payload["experiment_id"]) is not str
+        or not _SHA256_PATTERN.fullmatch(payload["experiment_id"])
+        or payload["iteration"] != iteration
+        or payload["run_state"] != "failed"
+    ):
+        return None
+    return resolved
+
+
+def _locate_experiment_failure_artifact(run_dir: Path, iteration: int) -> Path | None:
+    iterations_root = run_dir / "iterations"
+    if iterations_root.is_symlink() or not iterations_root.is_dir():
+        return None
+    candidates = sorted(
+        path
+        for path in iterations_root.glob(f"{iteration:03d}-*/{_EXPERIMENT_FAILURE_NAME}")
+        if path.is_file() and not path.is_symlink() and not path.parent.is_symlink()
+    )
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _write_diagnostic_failure(run_dir: Path, iteration: int, reason: str = "diagnostic_failed") -> Path:

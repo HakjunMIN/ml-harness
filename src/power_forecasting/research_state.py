@@ -68,6 +68,8 @@ _ALLOWED_TRANSITIONS = {
     "iterate": frozenset({"diagnosed"}),
 }
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_EXPERIMENT_ID_PATTERN = _SHA256_PATTERN
+_EXPERIMENT_FAILURE_NAME = "experiment-failure.json"
 _SENSITIVE_TEXT_PATTERN = re.compile(
     r"""(?ix)
     (?:^|[^a-z0-9])
@@ -418,6 +420,10 @@ def verify_recorded_artifacts(
             raise ResearchStateError(f"recorded artifact checksum mismatch: {artifact_path}")
         if artifact_path in diagnostic_paths:
             _validate_diagnostic_artifact(path)
+        if path.name == _EXPERIMENT_FAILURE_NAME:
+            if path.is_symlink() or path.parent.is_symlink():
+                raise ResearchStateError("experiment failure artifact path is unsafe")
+            _validate_experiment_failure_artifact(path)
 
 
 def atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
@@ -489,6 +495,10 @@ def _recorded_artifacts(
             raise ResearchStateError(f"artifact path must be an existing file: {artifact_path}")
         if validate_diagnostic or _is_diagnostic_artifact(name):
             _validate_diagnostic_artifact(resolved_path)
+        if resolved_path.name == _EXPERIMENT_FAILURE_NAME:
+            if resolved_path.is_symlink() or resolved_path.parent.is_symlink():
+                raise ResearchStateError("experiment failure artifact path is unsafe")
+            _validate_experiment_failure_artifact(resolved_path)
         paths_seen.add(artifact_path)
         recorded.append((artifact_path, _sha256_file(resolved_path)))
     return tuple(sorted(recorded))
@@ -505,6 +515,34 @@ def _sha256_file(path: Path) -> str:
 def _is_diagnostic_artifact(name: str) -> bool:
     segments = re.split(r"[^a-z0-9]+", name.casefold())
     return bool(_DIAGNOSTIC_ARTIFACT_NAMES & set(segments))
+
+
+def _validate_experiment_failure_artifact(path: Path) -> None:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle, object_pairs_hook=_strict_diagnostic_object)
+    except (json.JSONDecodeError, UnicodeDecodeError, _DiagnosticJsonError) as exc:
+        raise ResearchStateError(f"experiment failure JSON is invalid: {exc}") from exc
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version",
+        "run_id",
+        "experiment_id",
+        "iteration",
+        "run_state",
+    }:
+        raise ResearchStateError("experiment failure artifact schema is invalid")
+    _state_run_id(value["run_id"])
+    if value["schema_version"] != "1":
+        raise ResearchStateError("experiment failure schema_version must be exactly '1'")
+    if (
+        type(value["experiment_id"]) is not str
+        or not _EXPERIMENT_ID_PATTERN.fullmatch(value["experiment_id"])
+    ):
+        raise ResearchStateError("experiment failure experiment_id is invalid")
+    if isinstance(value["iteration"], bool) or not isinstance(value["iteration"], int):
+        raise ResearchStateError("experiment failure iteration is invalid")
+    if value["iteration"] < 1 or value["run_state"] != "failed":
+        raise ResearchStateError("experiment failure state is invalid")
 
 
 def _diagnostic_artifact_paths(state: ResearchState) -> frozenset[str]:

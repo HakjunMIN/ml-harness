@@ -562,7 +562,19 @@ def test_experiment_agent_records_typed_workflow_failure_evidence(
 
     failures = list(Path(execution_config.run_dir).rglob("experiment-failure.json"))
     assert len(failures) == 1
-    assert json.loads(failures[0].read_text(encoding="utf-8"))["run_state"] == "failed"
+    failure = json.loads(failures[0].read_text(encoding="utf-8"))
+    assert set(failure) == {
+        "schema_version",
+        "run_id",
+        "experiment_id",
+        "iteration",
+        "run_state",
+    }
+    assert failure["schema_version"] == "1"
+    assert failure["run_id"] == execution_config.run_id
+    assert len(failure["experiment_id"]) == 64
+    assert failure["iteration"] == 1
+    assert failure["run_state"] == "failed"
 
 
 def test_verifier_does_not_rewrite_source_evidence(

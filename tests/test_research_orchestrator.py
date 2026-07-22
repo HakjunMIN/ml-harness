@@ -498,15 +498,81 @@ def test_journal_recovery_accepts_verifier_report_failure_group(tmp_path, monkey
     assert result["status"] == "failed"
 
 
-def test_journal_recovery_accepts_experiment_failure_without_artifacts(tmp_path, monkeypatch):
+def test_journal_recovery_accepts_bound_experiment_failure_group(tmp_path, monkeypatch):
     import power_forecasting.research_orchestrator as orchestrator
 
     _fake_agents(monkeypatch, decisions=["promote"])
+    def failed_experiment(**kwargs):
+        directory = Path(kwargs["config"].run_dir) / "iterations" / "001-experiment"
+        directory.mkdir(parents=True, exist_ok=True)
+        failure_path = directory / "experiment-failure.json"
+        failure_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "run_id": kwargs["config"].run_id,
+                    "experiment_id": "a" * 64,
+                    "iteration": kwargs["iteration"],
+                    "run_state": "failed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        raise orchestrator.ResearchExecutionError("experiment failure")
+
+    monkeypatch.setattr(orchestrator, "run_experiment_agent", failed_experiment)
+    original_persist = orchestrator._persist_state
     monkeypatch.setattr(
         orchestrator,
-        "run_experiment_agent",
-        lambda **kwargs: (_ for _ in ()).throw(ValueError("experiment failure")),
+        "_persist_state",
+        lambda run_dir, state: (
+            original_persist(run_dir, state)
+            if state.status != "verifying"
+            else (_ for _ in ()).throw(KeyboardInterrupt())
+        ),
     )
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
+    result = run_research_loop(config, resume=True)
+    assert result["status"] == "failed"
+    state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
+    failure_paths = [
+        path for path in state["artifacts"] if path.endswith("experiment-failure.json")
+    ]
+    assert len(failure_paths) == 1
+    assert state["transitions"][-2]["artifact_path"] == failure_paths[0]
+
+
+def test_resume_rejects_tampered_experiment_failure_artifact(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+
+    def failed_experiment(**kwargs):
+        directory = Path(kwargs["config"].run_dir) / "iterations" / "001-experiment"
+        directory.mkdir(parents=True, exist_ok=True)
+        failure_path = directory / "experiment-failure.json"
+        failure_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "run_id": kwargs["config"].run_id,
+                    "experiment_id": "b" * 64,
+                    "iteration": kwargs["iteration"],
+                    "run_state": "failed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        raise orchestrator.ResearchExecutionError(
+            "experiment failure",
+            failure_path=failure_path,
+        )
+
+    monkeypatch.setattr(orchestrator, "run_experiment_agent", failed_experiment)
     original_persist = orchestrator._persist_state
     monkeypatch.setattr(
         orchestrator,
@@ -521,9 +587,11 @@ def test_journal_recovery_accepts_experiment_failure_without_artifacts(tmp_path,
     with pytest.raises(KeyboardInterrupt):
         run_research_loop(config)
 
+    failure_path = next((tmp_path / "run").rglob("experiment-failure.json"))
+    failure_path.write_text(failure_path.read_text(encoding="utf-8") + "tampered", encoding="utf-8")
     monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
-    result = run_research_loop(config, resume=True)
-    assert result["status"] == "failed"
+    with pytest.raises(ResearchStateError, match="checksum mismatch"):
+        run_research_loop(config, resume=True)
 
 
 def test_excluded_profiles_are_filtered_and_exhausted(tmp_path, monkeypatch):

@@ -96,6 +96,8 @@ def test_research_skill_failure_artifacts_match_orchestrator_contract() -> None:
     assert "`iteration`, and a safe `reason`" not in diagnostic
     assert "verification.json" in verification
     assert "invalid" in verification
-    assert "verification-failure.json" not in verification
+    assert "verification-failure.json" in verification
+    assert "malformed" in verification
     assert "diagnostic-failure.json" in readme
-    assert "verification-failure.json" not in readme
+    assert "verification-failure.json" in readme
+    assert "malformed" in readme

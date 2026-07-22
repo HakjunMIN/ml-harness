@@ -380,9 +380,12 @@ budget(각 proposal budget 1~50) 안에서만 반복합니다. 각 run은
 `experiment-failure.json`(실험 실패 시), `verification.json`과 최종
 `research-summary.json`을 SHA-256으로 연결합니다. 성공한 진단만 `diagnosis.json`을 만들며,
 진단이 실패하면 terminal `diagnostic-failure.json`(안전한 `rejected_conditions`)으로
-대체합니다. `verification.json`은 malformed evidence에도 `status: "invalid"`로
-fail-closed 기록을 남깁니다. 상태는 `ready_for_human_review`, `exhausted`, 또는 `failed`에서
-멈추며, 터미널 상태는 재개하지 않습니다.
+대체합니다. 검증기가 입력 evidence를 malformed로 판단하면 검증기가 `verification.json`에
+`status: "invalid"`로 fail-closed 기록을 남깁니다. 검증기 반환값/report가 malformed이거나
+orchestrator의 evidence 처리 자체가 실패하면 orchestrator가 별도의
+`verification-failure.json`(안전한 reason code만 포함)을 기록합니다. 두 경로 모두 raw
+evidence data를 기록하지 않으며 서로 대체 관계가 아닙니다. 상태는
+`ready_for_human_review`, `exhausted`, 또는 `failed`에서 멈추며, 터미널 상태는 재개하지 않습니다.
 
 이 루프의 경계는 AIDD 호출, 실행 가능한 코드 생성, merge, deploy 직전입니다.
 `research-summary.json`은 연구 진단/제안/검증 결과일 뿐 release 또는 deploy 승인 증거가

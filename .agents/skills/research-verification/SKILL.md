@@ -29,9 +29,14 @@ classify `pass`, `reject`, or `invalid`. This role does not rerun AIDM or approv
 3. Write one verification result and hand the terminal/iteration decision to the orchestrator.
 
 ## Output and Permissions
-- Write only `verification.json` in the current iteration directory for valid, rejected, or
-  malformed evidence. Malformed/unsafe evidence is serialized with `status: "invalid"` and
-  `passed: false`; this is the fail-closed artifact.
+- The verifier writes only `verification.json` in the current iteration directory for valid,
+  rejected, or malformed input evidence. Malformed/unsafe input evidence is serialized with
+  `status: "invalid"` and `passed: false`; this is the verifier's fail-closed artifact.
+- The orchestrator, not the verifier, may write `verification-failure.json` when the verifier
+  return value/report is malformed or orchestrator evidence handling fails before a valid
+  `verification.json` can be accepted. It contains only a safe reason code and is the
+  orchestrator's fail-closed recovery artifact; both artifacts are distinct and neither contains
+  raw evidence data.
 - `verification.json` has schema version `1`, `status`, boolean `passed`, the complete fixed check
   map, safe `reasons`, and `provenance` with proposal/manifest/report/database SHA-256 values.
 - Read only the listed run artifacts and configured metadata. Do not write source, tests, fixtures,
@@ -60,7 +65,8 @@ not release/deployment approval.
 ## Error Table
 | Error | Action |
 | --- | --- |
-| Missing/malformed artifact | Write failure evidence and fail closed. |
+| Missing/malformed input evidence | The verifier writes `verification.json` with `status: "invalid"` and fails closed. |
+| Malformed verifier result/report or orchestrator evidence handling | The orchestrator writes `verification-failure.json` and fails closed. |
 | Checksum/path/provenance mismatch | Mark `invalid`; do not promote. |
 | Manifest rejection or gate failure | Mark `reject`; retain the rejection reason. |
 
