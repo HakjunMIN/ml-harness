@@ -625,7 +625,11 @@ def _validate_recorded_experiment_failures(
             raise ResearchStateError(
                 "experiment failure artifact is outside the iterations directory"
             ) from exc
-        if not relative.parts or not re.match(r"^[0-9]{3}-", relative.parts[0]):
+        if (
+            len(relative.parts) != 2
+            or not re.fullmatch(r"[0-9]{3}-[^/]+", relative.parts[0])
+            or relative.parts[1] != _EXPERIMENT_FAILURE_NAME
+        ):
             raise ResearchStateError("experiment failure artifact path is invalid")
         try:
             with path.open("r", encoding="utf-8") as handle:
@@ -1256,6 +1260,7 @@ def _validate_experiment_failure_artifact(
         or payload["run_id"] != config.run_id
         or type(payload["experiment_id"]) is not str
         or not _SHA256_PATTERN.fullmatch(payload["experiment_id"])
+        or type(payload["iteration"]) is not int
         or payload["iteration"] != iteration
         or payload["run_state"] != "failed"
     ):

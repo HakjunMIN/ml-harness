@@ -594,6 +594,113 @@ def test_resume_rejects_tampered_experiment_failure_artifact(tmp_path, monkeypat
         run_research_loop(config, resume=True)
 
 
+def test_boolean_experiment_failure_iteration_fails_closed(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+
+    def failed_experiment(**kwargs):
+        directory = Path(kwargs["config"].run_dir) / "iterations" / "001-experiment"
+        directory.mkdir(parents=True, exist_ok=True)
+        failure_path = directory / "experiment-failure.json"
+        failure_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "run_id": kwargs["config"].run_id,
+                    "experiment_id": "c" * 64,
+                    "iteration": True,
+                    "run_state": "failed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        raise orchestrator.ResearchExecutionError(
+            "experiment failure",
+            failure_path=failure_path,
+        )
+
+    monkeypatch.setattr(orchestrator, "run_experiment_agent", failed_experiment)
+    result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
+
+    assert result["status"] == "failed"
+    state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
+    assert not any(path.endswith("experiment-failure.json") for path in state["artifacts"])
+    assert any(path.endswith("verification-failure.json") for path in state["artifacts"])
+
+
+def test_resume_rejects_nested_experiment_failure_artifact_path(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+
+    def failed_experiment(**kwargs):
+        directory = Path(kwargs["config"].run_dir) / "iterations" / "001-experiment"
+        directory.mkdir(parents=True, exist_ok=True)
+        failure_path = directory / "experiment-failure.json"
+        failure_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "run_id": kwargs["config"].run_id,
+                    "experiment_id": "d" * 64,
+                    "iteration": kwargs["iteration"],
+                    "run_state": "failed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        raise orchestrator.ResearchExecutionError(
+            "experiment failure",
+            failure_path=failure_path,
+        )
+
+    monkeypatch.setattr(orchestrator, "run_experiment_agent", failed_experiment)
+    original_persist = orchestrator._persist_state
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_state",
+        lambda run_dir, state: (
+            original_persist(run_dir, state)
+            if state.status != "failed"
+            else (_ for _ in ()).throw(KeyboardInterrupt())
+        ),
+    )
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    run_dir = tmp_path / "run"
+    canonical = next(run_dir.rglob("experiment-failure.json"))
+    nested = canonical.parent / "nested" / canonical.name
+    nested.parent.mkdir()
+    canonical.rename(nested)
+    checksum = hashlib.sha256(nested.read_bytes()).hexdigest()
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    canonical_key = str(canonical.resolve())
+    nested_key = str(nested.resolve())
+    state["artifacts"][nested_key] = state["artifacts"].pop(canonical_key)
+    for event in state["transitions"]:
+        if event["artifact_path"] == canonical_key:
+            event["artifact_path"] = nested_key
+            event["sha256"] = checksum
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    journal_path = run_dir / "journal.jsonl"
+    events = []
+    for line in journal_path.read_text(encoding="utf-8").splitlines():
+        event = json.loads(line)
+        if event["artifact_path"] == canonical_key:
+            event["artifact_path"] = nested_key
+            event["sha256"] = checksum
+        events.append(json.dumps(event))
+    journal_path.write_text("\n".join(events) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
+    with pytest.raises(ResearchStateError, match="path"):
+        run_research_loop(config, resume=True)
+
+
 def test_excluded_profiles_are_filtered_and_exhausted(tmp_path, monkeypatch):
     import power_forecasting.research_orchestrator as orchestrator
 
