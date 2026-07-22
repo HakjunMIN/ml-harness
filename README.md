@@ -9,10 +9,13 @@
 legacy-intake -> AIDM experiment -> AIDD promotion -> human review
 
 선택적 자동 Stage 1 연구 경로
-diagnosis -> bounded proposal -> AIDM -> evidence verification -> human review
+diagnosis -> awaiting_proposal -> bounded proposal -> AIDM -> evidence verification -> human review
 ```
 
-기본 경로에서는 사람이 데이터셋, 제안 JSON, 명령, 다음 단계를 선택합니다. 선택적 Stage 1 research loop는 연구 단계만 제한적으로 자동화하며 AIDD, 고객 시스템 변경, 병합, 배포 이전에 멈춥니다.
+기본 경로에서는 사람이 데이터셋, 제안 JSON, 명령, 다음 단계를 선택합니다. 선택적 Stage 1
+research loop는 연구 단계만 제한적으로 자동화합니다. `agent_proposals: true`이면 진단 뒤
+코딩 에이전트가 catalog 안의 후보만 담은 제안 JSON을 작성하고, 같은 실행을 `--resume`으로
+재개합니다. 어떤 경로도 AIDD, 고객 시스템 변경, 병합, 배포 이전에 멈춥니다.
 
 이 두 경로는 [데모 노트북](#데모-노트북-레거시에서-개선까지)에서 바로 실행해 볼 수 있습니다. `01`은 개선 전 레거시 기준선, `02`는 사람이 통제하는 수동 경로, `03`은 자동 연구 경로입니다.
 
@@ -131,7 +134,7 @@ uv run python -m power_forecasting.cli all --output artifacts/demo --minimum-imp
 | [`00_legacy_power_forecasting_models.ipynb`](notebooks/00_legacy_power_forecasting_models.ipynb) | 참조·설명 | 확보할 수 없는 운영 코드 대신 Mean, Weather, ForecastWeather, Ldaps, SPOT을 합성 데이터로 재구성하고, 제한된 피처·모델 연구까지 담은 이미 개선된 결과를 설명합니다. |
 | [`01_legacy_baseline.ipynb`](notebooks/01_legacy_baseline.ipynb) | 개선 전 기준선 | `00`처럼 노트북 안에서 합성 데이터 생성·레거시 모델 평가를 직접 수행해 예측 시점 기준선 `SPOT` NMAE를 고정하고, `artifacts/demo/dataset.csv`와 SPOT 예측을 내보냅니다. 이것이 개선 대상이며 `02`·`03`의 입력입니다. |
 | [`02_manual_skill_path.ipynb`](notebooks/02_manual_skill_path.ipynb) | 사람이 통제하는 기본 경로 | `legacy-intake -> AIDM experiment -> AIDD promotion -> human review`. `01`의 데이터셋을 바탕으로 이 저장소 스킬 러너 `run-aidm.sh`·`verify-promotion.sh`를 직접 실행합니다. 제한된 JSON 제안으로 `SPOT`을 넘어서는 후보를 찾고, 게이트를 통과하면 결정론적 피처 모듈을 생성한 뒤 사람 검토 경계에서 멈춥니다. |
-| [`03_auto_research_path.ipynb`](notebooks/03_auto_research_path.ipynb) | 선택적 자동 연구 경로 | `diagnosis -> bounded proposal -> AIDM -> evidence verification -> human review`. `01`의 데이터셋을 대상으로 스킬 러너 `run-research-loop.sh`를 실행합니다. Stage 1 연구 루프가 진단·제안·실험·검증을 자동 수행한 뒤 `ready_for_human_review`에서 멈추며, AIDD·배포는 하지 않습니다. |
+| [`03_auto_research_path.ipynb`](notebooks/03_auto_research_path.ipynb) | 선택적 agent-proposal 연구 경로 | `diagnosis -> awaiting_proposal -> bounded proposal -> AIDM -> evidence verification -> human review`. `01`의 데이터셋을 대상으로 스킬 러너 `run-research-loop.sh`를 실행합니다. Stage 1이 진단 뒤 `proposal-context.json`과 `proposal-catalog.json`을 생성하고, 코딩 에이전트가 `research-proposal.json`을 작성하면 `--resume`으로 실험·검증을 진행합니다. `ready_for_human_review`에서 멈추며 AIDD·배포는 하지 않습니다. |
 
 각 데모 노트북은 문서가 아니라 실제 하네스 코드를 실행해 검증 가능한 증적을 남깁니다. `01`은 `artifacts/demo/`에, `02`·`03`은 각각 `.agents/runs/notebook-02-manual/`·`.agents/runs/notebook-03-auto/`에 `promotion_manifest.json`, `generated/promoted_features.py`, `research-summary.json` 등을 남깍니다. `02`·`03`은 `01`이 먼저 실행된 상태를 전제로 하며, 사용하는 스킬은 모두 이 저장소의 `.agents` 하네스로 제한됩니다. 합성 예제는 고객 운영 증거나 고객 모형과의 동등성을 주장하지 않으며,
 `Weather`는 예측 시점에 쓸 수 없는 실제 기상 기반 진단값입니다.
@@ -299,7 +302,7 @@ uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
 | `aidd-promotion` | 승격 매니페스트를 검증하고 결정론적 피처 모듈 및 사람 검토용 요청을 생성합니다. | 고객 저장소 수정, 병합, 배포를 수행하지 않습니다. |
 | `release-gate` | legacy, AIDM, AIDD, compile, 사람 승인 증적을 fail-closed로 판정합니다. | 명시적 사람 승인 없이 release나 배포를 허용하지 않습니다. |
 | `research-diagnostic` | 집계 데이터 품질·누수·프로필 적합성을 진단합니다. | 후보를 발명하거나 AIDM·AIDD를 실행하지 않습니다. |
-| `research-proposal` | 진단 결과에서 하나의 제한된 선언형 AIDM 제안을 만듭니다. | 코드·임의 탐색·게이트 변경을 만들지 않습니다. |
+| `research-proposal` | `awaiting_proposal`의 context/catalog에서 하나의 제한된 선언형 AIDM 제안을 만듭니다. | catalog 밖 후보, 코드·임의 탐색·게이트 변경을 만들지 않습니다. |
 | `research-verification` | AIDM iteration의 증적·체크섬·게이트를 재검증합니다. | AIDM 재실행, release 승인, AIDD 호출을 하지 않습니다. |
 | `research-orchestrator` | Stage 1의 진단·제안·AIDM·검증 상태 머신을 조정합니다. | AIDD, 코드 생성, 고객 시스템 변경, 병합, 배포 전에 종료합니다. |
 
@@ -325,6 +328,8 @@ research loop가 자동화하는 범위는 다음으로 제한됩니다.
 - `safe_weather`, `history_tree`, `bounded_search` 고정 프로필에서의 예측 시점 피처 후보 선택
 - 제한된 개별 모델 후보 비교와, 설정된 경우 bounded LightGBM Optuna TPE 하이퍼파라미터 탐색
 - AIDM 실험 증적 생성과 체크섬으로 연결된 검증
+- `agent_proposals: true`일 때, `proposal-context.json`과 `proposal-catalog.json`을 근거로
+  코딩 에이전트가 제한된 후보 조합을 제안하고 `--resume`으로 실행
 
 반대로 이 루프는 AIDD 호출, 실행 가능한 코드 생성, 고객 시스템 수정, 병합, 배포, 게이트 변경, 여러 모델 예측을 조합하는 앙상블을 수행하지 않습니다. `RandomForest`와 `HistGradientBoosting`은 비교 대상인 개별 모델 유형이며, 여러 후보 예측을 결합하는 자동 앙상블 기능이 아닙니다. 다중 모델 예측 앙상블은 증적 계약과 게이트를 별도로 설계해야 하는 향후 확장 지점입니다.
 
@@ -339,10 +344,17 @@ manifest만 사용하고 출력은 `.agents/runs/research-loop-fixture/` 아래�
 비밀값을 export하거나 출력하지 않습니다. `--resume`은 동일한 설정과 체크섬을 가진
 비터미널 실행만 재개합니다.
 
+`agent_proposals: true`인 config는 진단 뒤 정상 상태인 `awaiting_proposal`에서 종료 코드 0으로
+멈춥니다. 현재 iteration의 `proposal-context.json`과 `proposal-catalog.json`을 읽어
+`research-proposal.json` 하나를 작성한 뒤, 같은 config로 `--resume`을 실행합니다. runner는
+catalog 밖의 feature, model recipe, TPE search space를 실행 전에 거부하고, 이전 proposal과
+중복되지 않으며 run 전체에 남은 50회 평가 예산 안인지 확인합니다.
+
 Stage 1은 한 프로필당 최대 한 번, 설정된 `max_iterations`(1~10)와 AIDM proposal/search
-budget(각 proposal budget 1~50) 안에서만 반복합니다. 각 run은
+budget(각 proposal budget 1~50, agent-proposal run 전체 50회 평가) 안에서만 반복합니다. 각 run은
 `research-config.json`, `state.json`, `journal.jsonl`, iteration별
-`research-proposal.json`, `research-notes.json`, AIDM `promotion_manifest.json`,
+`proposal-context.json`, `proposal-catalog.json`, `research-proposal.json`,
+`research-notes.json`, AIDM `promotion_manifest.json`,
 `experiments.db`, `performance_report.md`, `experiment-evidence.json`,
 `experiment-failure.json`(실험 실패 시), `verification.json`과 최종
 `research-summary.json`을 SHA-256으로 연결합니다. 성공한 진단만 `diagnosis.json`을 만들며,
@@ -352,7 +364,8 @@ terminal `diagnostic-failure.json`(안전한 `rejected_conditions`)으로 대체
 `status: "invalid"`로 fail-closed 기록을 남깁니다. 검증기 반환값/report가 malformed이거나
 orchestrator의 evidence 처리 자체가 실패하면 orchestrator가 별도의
 `verification-failure.json`(안전한 reason code만 포함)을 기록합니다. 두 경로 모두 raw
-evidence data를 기록하지 않으며 서로 대체 관계가 아닙니다. 상태는
+evidence data를 기록하지 않으며 서로 대체 관계가 아닙니다. 상태는 agent handoff 중
+`awaiting_proposal`, 또는
 `ready_for_human_review`, `exhausted`, 또는 `failed`에서 멈추며, 터미널 상태는 재개하지 않습니다.
 
 이 루프의 경계는 AIDD 호출, 실행 가능한 코드 생성, merge, deploy 직전입니다.
