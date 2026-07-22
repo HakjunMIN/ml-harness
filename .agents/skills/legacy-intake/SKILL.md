@@ -1,6 +1,6 @@
 ---
 name: legacy-intake
-description: Use when an agent is asked to connect a customer legacy forecasting system to this repository-local harness, inspect adapter readiness, map data, or prepare a safe baseline run.
+description: Use when an agent is asked to connect a customer legacy forecasting system to this repository-local legacy adapter executor, inspect adapter readiness, map data, or prepare a safe baseline run.
 ---
 
 # Legacy Intake

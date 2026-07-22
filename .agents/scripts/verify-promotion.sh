@@ -16,6 +16,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$run_dir" ]] || { echo "--run-dir is required" >&2; usage; exit 2; }
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd "$script_dir/../.." && pwd -P)
+source "$script_dir/validate-legacy-output-dir.sh"
+validate_legacy_output_dir "$run_dir" "$repo_root"
+run_dir="$VALIDATED_OUTPUT_DIR"
 manifest="$run_dir/promotion_manifest.json"
 evidence="$run_dir/promotion-evidence.json"
 generated="$run_dir/generated/promoted_features.py"
@@ -23,8 +28,6 @@ patch="$run_dir/model-recipe-patch.json"
 [[ -f "$manifest" ]] || { echo "promotion manifest not found: $manifest" >&2; exit 2; }
 rm -f "$evidence" "$generated" "$patch"
 
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-repo_root=$(cd "$script_dir/../.." && pwd -P)
 export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
 cd "$repo_root"
 uv run python - <<'PY' "$manifest"

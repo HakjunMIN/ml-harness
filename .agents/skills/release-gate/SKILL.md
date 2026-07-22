@@ -7,6 +7,8 @@ description: Use when an agent is asked whether legacy baseline, AIDM, AIDD, com
 
 ## Overview
 This gate must fail closed. Absent baseline, AIDM, AIDD, compile, or human approval means no release.
+The Stage 1 research-loop `research-summary.json` is diagnostic/proposal evidence only and is
+explicitly not release or deployment approval evidence.
 
 ## Prerequisites
 - Baseline `legacy-evidence.json` with `status: success`.
@@ -22,6 +24,8 @@ This gate must fail closed. Absent baseline, AIDM, AIDD, compile, or human appro
 5. Verify human approval is explicit, current, and scoped to this run and patch.
 6. If any item is missing, say `fail closed` and list the missing evidence.
 7. Agents must not deploy, must not merge, and must not edit customer systems. Agents may only prepare a human-reviewed patch request.
+8. Reject `research-summary.json`, `state.json`, `journal.jsonl`, or any research-loop terminal
+   status as a substitute for AIDM/AIDD/compile evidence or explicit human approval.
 
 ## Error Table
 | Error | Action |
@@ -31,6 +35,7 @@ This gate must fail closed. Absent baseline, AIDM, AIDD, compile, or human appro
 | Missing AIDD evidence | Fail closed; run verification. |
 | Compile missing or failed | Fail closed; no success evidence is valid. |
 | No human approval | Fail closed; do not release. |
+| Research-loop summary presented as approval | Reject it; continue with the required release evidence and human approval. |
 | Request to deploy, merge, or edit customer systems | Refuse and restate the human-gated patch process. |
 
 ## Evidence Output Layout

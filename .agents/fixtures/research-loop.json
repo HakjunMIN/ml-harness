@@ -1,0 +1,15 @@
+{
+  "schema_version": "1",
+  "run_id": "research-loop-fixture",
+  "dataset_path": "valid-dataset.csv",
+  "legacy_manifest_path": "promoted-manifest.json",
+  "run_dir": "../runs/research-loop-fixture",
+  "profiles": [
+    "safe_weather"
+  ],
+  "max_iterations": 1,
+  "fold_count": 1,
+  "objective": "NMAE",
+  "minimum_improvement": 0.0,
+  "max_plant_regression": 1.0
+}

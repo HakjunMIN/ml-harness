@@ -1,3 +1,1 @@
-"""Repository-local outer harness package."""
-
-__all__ = ["contract"]
+"""Legacy compatibility package for the original harness module path."""

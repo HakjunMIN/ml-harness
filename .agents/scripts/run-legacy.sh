@@ -24,6 +24,9 @@ done
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd "$script_dir/../.." && pwd -P)
+source "$script_dir/validate-legacy-output-dir.sh"
+validate_legacy_output_dir "$run_dir" "$repo_root"
+run_dir="$VALIDATED_OUTPUT_DIR"
 export PYTHONPATH="$repo_root/.agents${PYTHONPATH:+:$PYTHONPATH}"
 args=(uv run python -m harness.contract --adapter "$adapter" --run-dir "$run_dir")
 if [[ -n "$run_id" ]]; then

@@ -549,6 +549,9 @@ def _run_lightgbm_search(
         "trial_number": int(selected_recipe["search"]["selected_trial_number"]),
         "candidate_name": selected_recipe["search"]["selected_trial_candidate_name"],
         "run_id": selected_trial.run_id,
+        "parameters": _json_safe_value(
+            dict(selected_recipe["search"]["selected_trial_parameters"])
+        ),
     }
     store.update_artifacts(selected.run_id, artifacts)
     return selected
