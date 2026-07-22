@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -459,6 +460,62 @@ def test_journal_append_rejects_symlinked_parent(tmp_path):
         )
 
     assert not (real_parent / "journal.jsonl").exists()
+
+
+def test_journal_parent_traverses_absolute_components_by_dirfd(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    trusted_root = tmp_path / "trusted" / "run"
+    trusted_root.mkdir(parents=True)
+    calls: list[tuple[object, int | None]] = []
+    original_open = orchestrator.os.open
+
+    def recording_open(path, flags, mode=0o777, *, dir_fd=None):
+        calls.append((path, dir_fd))
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(orchestrator.os, "open", recording_open)
+    orchestrator._append_journal(
+        trusted_root / "journal.jsonl",
+        (
+            {
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "from_status": "initialized",
+                "to_status": "diagnosed",
+            },
+        ),
+        trusted_root=trusted_root,
+    )
+
+    assert calls[0] == (os.sep, None)
+    assert all(dir_fd is not None for _, dir_fd in calls[1:])
+    assert all(not os.path.isabs(os.fspath(path)) for path, _ in calls[1:])
+
+
+def test_journal_rejects_symlinked_trusted_root_ancestor(tmp_path):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    real_parent = tmp_path / "real"
+    trusted_root = real_parent / "run"
+    trusted_root.mkdir(parents=True)
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    journal = linked_parent / "run" / "journal.jsonl"
+
+    with pytest.raises(OSError, match="journal"):
+        orchestrator._append_journal(
+            journal,
+            (
+                {
+                    "timestamp": "2026-01-01T00:00:00+00:00",
+                    "from_status": "initialized",
+                    "to_status": "diagnosed",
+                },
+            ),
+            trusted_root=journal.parent,
+        )
+
+    assert not (trusted_root / "journal.jsonl").exists()
 
 
 def test_advance_passes_trusted_run_dir_to_journal_append(tmp_path, monkeypatch):

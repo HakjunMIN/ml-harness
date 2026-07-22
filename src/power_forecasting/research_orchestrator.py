@@ -769,8 +769,14 @@ def _open_journal_parent(path: Path, trusted_root: Path) -> Iterator[int]:
     descriptors: list[int] = []
     try:
         try:
-            descriptors.append(os.open(root, directory_flags))
+            anchor = root.anchor or os.sep
+            descriptors.append(os.open(anchor, directory_flags))
             current = descriptors[0]
+            root_components = root.parts[1:] if root.anchor else root.parts
+            for component in root_components:
+                descriptor = os.open(component, directory_flags, dir_fd=current)
+                descriptors.append(descriptor)
+                current = descriptor
             for component in relative_parent.parts:
                 descriptor = os.open(component, directory_flags, dir_fd=current)
                 descriptors.append(descriptor)
