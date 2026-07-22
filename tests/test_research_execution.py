@@ -587,6 +587,111 @@ def test_verifier_detects_baseline_provenance_mismatch(
     assert verification.checks["baseline_provenance"] is False
 
 
+def test_verifier_rejects_tampered_manifest_seed(
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    manifest = json.loads(experiment.manifest_path.read_text(encoding="utf-8"))
+    manifest["seed"] = 99
+    experiment.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _update_evidence_checksum(experiment, "manifest_sha256", experiment.manifest_path)
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["seed_provenance"] is False
+    assert "check_failed:seed_provenance" in verification.reasons
+
+
+@pytest.mark.parametrize(
+    ("role", "check_name"),
+    (
+        ("baseline", "baseline_provenance"),
+        ("winner", "winner_provenance"),
+    ),
+)
+def test_verifier_rejects_tampered_manifest_run_identity(
+    role: str,
+    check_name: str,
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    manifest = json.loads(experiment.manifest_path.read_text(encoding="utf-8"))
+    manifest[role]["run_id"] = f"tampered-{role}-run-id"
+    experiment.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _update_evidence_checksum(experiment, "manifest_sha256", experiment.manifest_path)
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks[check_name] is False
+    assert f"check_failed:{check_name}" in verification.reasons
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    (
+        ("folds", 2),
+        ("seed", 99),
+        ("specs", [{"name": "unexpected"}]),
+        ("model", "not-spot"),
+    ),
+)
+def test_verifier_rejects_tampered_baseline_sqlite_parameters(
+    parameter: str,
+    value: object,
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    iteration_dir = experiment.manifest_path.parent
+    evidence = json.loads(
+        (iteration_dir / "experiment-evidence.json").read_text(encoding="utf-8")
+    )
+    with sqlite3.connect(iteration_dir / "experiments.db") as connection:
+        row = connection.execute(
+            "SELECT params_json FROM runs WHERE id = ?",
+            (evidence["baseline_database_run_id"],),
+        ).fetchone()
+        assert row is not None
+        params = json.loads(row[0])
+        params[parameter] = value
+        connection.execute(
+            "UPDATE runs SET params_json = ? WHERE id = ?",
+            (
+                json.dumps(params),
+                evidence["baseline_database_run_id"],
+            ),
+        )
+    _update_evidence_checksum(experiment, "database_sha256", iteration_dir / "experiments.db")
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["baseline_provenance"] is False
+    assert "check_failed:baseline_provenance" in verification.reasons
+
+
 def test_verifier_binds_report_content_to_manifest_evidence(
     execution_config: ResearchLoopConfig,
     proposal,

@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import sqlite3
+import uuid
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
@@ -59,9 +60,11 @@ _VERIFICATION_CHECKS = (
     "database_checksum",
     "manifest_schema",
     "thresholds",
+    "seed_provenance",
     "baseline_provenance",
     "bounded_proposal",
     "selected_candidate",
+    "winner_provenance",
     "selected_specs",
     "selected_recipe",
     "sqlite_runs",
@@ -119,11 +122,7 @@ def run_experiment_agent(
     proposal_path = iteration_dir / _PROPOSAL_NAME
     try:
         atomic_write_json(proposal_path, proposal_payload)
-        aidm_config = AIDMConfig(
-            folds=config.fold_count,
-            minimum_improvement=config.minimum_improvement,
-            max_plant_regression=config.max_plant_regression,
-        )
+        aidm_config = _research_aidm_config(config)
         dataset_path = Path(config.dataset_path)
         dataset_summary = _dataset_summary(dataset_path)
         aidm_result = run_aidm_workflow(
@@ -334,6 +333,7 @@ def run_verifier_agent(
 
     if checks["manifest_schema"] and isinstance(manifest, Mapping):
         checks["thresholds"] = _thresholds_match(manifest, config)
+        checks["seed_provenance"] = _seed_matches_config(manifest, config)
         embedded_proposal = _load_proposal_safely(manifest.get("proposal"))
         checks["bounded_proposal"] = (
             embedded_proposal is not None
@@ -380,12 +380,18 @@ def run_verifier_agent(
             checks["baseline_provenance"] = _baseline_matches_manifest(
                 manifest,
                 baseline_row,
+                config,
             )
             checks["selected_candidate"] = _candidate_matches_manifest(
                 experiment,
                 evidence_mapping,
                 manifest,
                 candidate_row,
+            )
+            checks["winner_provenance"] = _winner_run_identity_matches(
+                manifest,
+                candidate_row,
+                config,
             )
             checks["selected_specs"] = _specs_match(
                 experiment,
@@ -446,6 +452,15 @@ def _validate_iteration(config: ResearchLoopConfig, iteration: int) -> None:
         raise ValueError("iteration must be a positive integer")
     if iteration > config.max_iterations:
         raise ValueError("iteration must not exceed config.max_iterations")
+
+
+def _research_aidm_config(config: ResearchLoopConfig) -> AIDMConfig:
+    return AIDMConfig(
+        folds=config.fold_count,
+        minimum_improvement=config.minimum_improvement,
+        max_plant_regression=config.max_plant_regression,
+        seed=AIDMConfig().seed,
+    )
 
 
 def _experiment_id(run_id: str, iteration: int, proposal_sha256: str) -> str:
@@ -757,6 +772,14 @@ def _thresholds_match(manifest: Mapping[str, Any], config: ResearchLoopConfig) -
             thresholds["max_plant_regression"], config.max_plant_regression
         )
     )
+
+
+def _seed_matches_config(manifest: Mapping[str, Any], config: ResearchLoopConfig) -> bool:
+    try:
+        aidm_config = _research_aidm_config(config)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return type(manifest.get("seed")) is int and manifest["seed"] == aidm_config.seed
 
 
 def _same_finite_number(left: object, right: object) -> bool:
@@ -1159,17 +1182,110 @@ def _candidate_matches_manifest(
 def _baseline_matches_manifest(
     manifest: Mapping[str, Any],
     baseline_row: Mapping[str, Any],
+    config: ResearchLoopConfig,
 ) -> bool:
     baseline = manifest.get("baseline")
     summary = baseline_row["artifacts"].get("summary")
-    if not isinstance(baseline, Mapping) or not isinstance(summary, Mapping):
+    candidate = _candidate_from_run_row(baseline_row)
+    try:
+        aidm_config = _research_aidm_config(config)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    expected_run_id = _expected_manifest_run_id("baseline", candidate, aidm_config)
+    if (
+        not isinstance(baseline, Mapping)
+        or not isinstance(summary, Mapping)
+        or candidate is None
+        or expected_run_id is None
+    ):
         return False
     return (
         baseline.get("model") == "SPOT"
         and baseline_row["status"] == "completed"
-        and baseline_row["params"].get("candidate_name") == "baseline"
+        and baseline_row["name"] == "aidm-baseline-spot"
+        and baseline_row["params"] == _baseline_params(aidm_config)
         and summary.get("name") == "baseline"
+        and summary.get("specs") == []
+        and summary.get("run_id") == baseline_row["id"]
+        and "model_recipe" not in summary
         and summary.get("metrics") == baseline.get("metrics")
+        and baseline.get("run_id") == expected_run_id
+    )
+
+
+def _baseline_params(config: AIDMConfig) -> dict[str, object]:
+    return {
+        "schema_version": _SCHEMA_VERSION,
+        "candidate_name": "baseline",
+        "model": "SPOT",
+        "folds": config.folds,
+        "seed": config.seed,
+        "specs": [],
+    }
+
+
+def _winner_run_identity_matches(
+    manifest: Mapping[str, Any],
+    candidate_row: Mapping[str, Any],
+    config: ResearchLoopConfig,
+) -> bool:
+    winner = manifest.get("winner")
+    summary = candidate_row["artifacts"].get("summary")
+    candidate = _candidate_from_run_row(candidate_row)
+    try:
+        aidm_config = _research_aidm_config(config)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    expected_run_id = _expected_manifest_run_id("winner", candidate, aidm_config)
+    return (
+        isinstance(winner, Mapping)
+        and isinstance(summary, Mapping)
+        and candidate is not None
+        and expected_run_id is not None
+        and summary.get("run_id") == candidate_row["id"]
+        and candidate.name == winner.get("name")
+        and winner.get("run_id") == expected_run_id
+    )
+
+
+def _expected_manifest_run_id(
+    role: str,
+    candidate: CandidateResult | None,
+    config: AIDMConfig,
+) -> str | None:
+    if candidate is None or role not in {"baseline", "winner"}:
+        return None
+    try:
+        payload = {
+            "schema_version": _SCHEMA_VERSION,
+            "role": role,
+            "seed": config.seed,
+            "folds": config.folds,
+            "thresholds": {
+                "minimum_improvement": float(config.minimum_improvement),
+                "max_plant_regression": float(config.max_plant_regression),
+            },
+            "candidate": {
+                "name": candidate.name,
+                "metrics": {
+                    key: float(candidate.metrics[key]) for key in sorted(candidate.metrics)
+                },
+                "specs": [spec.to_dict() for spec in candidate.specs],
+            },
+        }
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"power-forecasting/aidm/manifest-run/{canonical}",
+        )
     )
 
 
@@ -1259,11 +1375,7 @@ def _gate_outcome_matches(
         gates = evaluate_promotion_gates(
             baseline,
             candidate,
-            AIDMConfig(
-                folds=config.fold_count,
-                minimum_improvement=config.minimum_improvement,
-                max_plant_regression=config.max_plant_regression,
-            ),
+            _research_aidm_config(config),
         )
     except (TypeError, ValueError, OverflowError):
         return False
