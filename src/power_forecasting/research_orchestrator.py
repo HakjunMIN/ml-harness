@@ -130,8 +130,9 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
             config_payload,
             config_sha256,
         )
+        was_terminal = state.status in _TERMINAL_STATUSES
         state = _reconcile_journal(run_dir, state)
-        if state.status in _TERMINAL_STATUSES:
+        if was_terminal:
             raise ResearchStateError(f"cannot resume terminal state {state.status}")
         journal_count = len(state.transitions)
     else:
@@ -754,10 +755,18 @@ def _validate_recovery_group(group: tuple[Mapping[str, object], ...]) -> None:
         "exhausted",
     }:
         expected = frozenset({_VERIFICATION_NAME})
-    elif transition[1] == "failed":
-        expected = frozenset({_FAILURE_NAME, _VERIFICATION_NAME})
+    elif transition == ("initialized", "failed") or transition == ("diagnosed", "failed"):
+        expected = frozenset({_FAILURE_NAME})
+    elif transition == ("verifying", "failed"):
+        expected = frozenset(names)
+        if expected not in {
+            frozenset(),
+            frozenset({_FAILURE_NAME}),
+            frozenset({_VERIFICATION_NAME}),
+        }:
+            raise ResearchStateError("journal failure transition artifacts are invalid")
     else:
-        expected = None
+        raise ResearchStateError("journal failure transition origin is invalid")
     if expected is not None and frozenset(names) != expected:
         raise ResearchStateError("journal transition group has incomplete artifacts")
 

@@ -415,6 +415,117 @@ def test_journal_recovery_rejects_partial_multi_artifact_group(tmp_path, monkeyp
         run_research_loop(config, resume=True)
 
 
+def test_journal_recovery_accepts_diagnostic_failure_group(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    monkeypatch.setattr(
+        orchestrator,
+        "run_diagnostic_agent",
+        lambda config: (_ for _ in ()).throw(ValueError("diagnostic failure")),
+    )
+    original_persist = orchestrator._persist_state
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_state",
+        lambda run_dir, state: (
+            original_persist(run_dir, state)
+            if state.status == "initialized"
+            else (_ for _ in ()).throw(KeyboardInterrupt())
+        ),
+    )
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
+    result = run_research_loop(config, resume=True)
+    assert result["status"] == "failed"
+
+
+def test_journal_recovery_accepts_verifier_report_failure_group(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+
+    def invalid_verifier(*, config, proposal, experiment, iteration):
+        checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
+        checks["promoted"] = False
+        reasons = ("invalid_outcome",)
+        path = experiment.manifest_path.parent / "verification.json"
+        proposal_sha256 = hashlib.sha256(
+            json.dumps(proposal.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        payload = {
+            "schema_version": "1",
+            "status": "invalid",
+            "passed": False,
+            "checks": checks,
+            "reasons": list(reasons),
+            "provenance": {
+                "proposal_sha256": proposal_sha256,
+                "manifest_sha256": hashlib.sha256(
+                    experiment.manifest_path.read_bytes()
+                ).hexdigest(),
+                "report_sha256": hashlib.sha256(
+                    experiment.report_path.read_bytes()
+                ).hexdigest(),
+                "database_sha256": hashlib.sha256(
+                    (experiment.manifest_path.parent / "experiments.db").read_bytes()
+                ).hexdigest(),
+            },
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return VerificationResult(False, checks, reasons, path)
+
+    monkeypatch.setattr(orchestrator, "run_verifier_agent", invalid_verifier)
+    original_persist = orchestrator._persist_state
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_state",
+        lambda run_dir, state: (
+            original_persist(run_dir, state)
+            if state.status != "failed"
+            else (_ for _ in ()).throw(KeyboardInterrupt())
+        ),
+    )
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
+    result = run_research_loop(config, resume=True)
+    assert result["status"] == "failed"
+
+
+def test_journal_recovery_accepts_experiment_failure_without_artifacts(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    monkeypatch.setattr(
+        orchestrator,
+        "run_experiment_agent",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("experiment failure")),
+    )
+    original_persist = orchestrator._persist_state
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_state",
+        lambda run_dir, state: (
+            original_persist(run_dir, state)
+            if state.status != "failed"
+            else (_ for _ in ()).throw(KeyboardInterrupt())
+        ),
+    )
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
+    result = run_research_loop(config, resume=True)
+    assert result["status"] == "failed"
+
+
 def test_excluded_profiles_are_filtered_and_exhausted(tmp_path, monkeypatch):
     import power_forecasting.research_orchestrator as orchestrator
 
