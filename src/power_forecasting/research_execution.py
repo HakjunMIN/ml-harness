@@ -28,6 +28,7 @@ from power_forecasting.data import DataContractError, parse_timestamps, validate
 from power_forecasting.features import FeatureSpec
 from power_forecasting.models import SUPPORTED_MODEL_NAMES, model_definition_from_recipe
 from power_forecasting.proposals import (
+    ModelRecipe,
     ProposalValidationError,
     ResearchProposal,
     load_proposal,
@@ -74,6 +75,24 @@ _SELECTED_SEARCH_RUN_ARTIFACT_KEYS = _PROPOSAL_RUN_ARTIFACT_KEYS | frozenset(
 )
 _SELECTED_FROM_TRIAL_KEYS = frozenset(
     {"trial_number", "candidate_name", "run_id", "parameters"}
+)
+_SEARCH_RECIPE_KEYS = frozenset(
+    {"name", "recipe", "parameters", "rationale", "search"}
+)
+_TRIAL_SEARCH_KEYS = frozenset(
+    {"sampler", "seed", "n_trials", "space", "trial_number", "feature_set"}
+)
+_SELECTED_SEARCH_KEYS = frozenset(
+    {
+        "sampler",
+        "seed",
+        "n_trials",
+        "space",
+        "selected_trial_number",
+        "selected_trial_candidate_name",
+        "selected_trial_parameters",
+        "feature_set",
+    }
 )
 _REUSED_SEARCH_RUN_ARTIFACT_KEYS = frozenset(
     {
@@ -918,21 +937,102 @@ def _selected_search_matches(
         )
     except StopIteration:
         return False
-    expected_space = proposal.search["spaces"]["lightgbm"]
-    selected_trial = search.get("selected_trial_number")
     return (
-        recipe.get("recipe") == "lightgbm"
-        and recipe.get("parameters") == search.get("selected_trial_parameters")
-        and search.get("sampler") == proposal.search["sampler"]
-        and search.get("seed") == proposal.search["seed"] + feature_index
-        and search.get("n_trials") == proposal.search["n_trials"]
-        and search.get("space") == expected_space
-        and search.get("feature_set") == feature_set_name
-        and isinstance(selected_trial, int)
-        and not isinstance(selected_trial, bool)
-        and 0 <= selected_trial < proposal.search["n_trials"]
-        and search.get("selected_trial_candidate_name")
-        == f"optuna_lightgbm_{selected_trial}:{feature_set_name}"
+        _bounded_search_recipe_is_valid(
+            recipe,
+            proposal.search,
+            feature_set_name=feature_set_name,
+            feature_index=feature_index,
+            expected_name="selected_lightgbm",
+            selected=True,
+        )
+        and winner_name == f"selected_lightgbm:{feature_set_name}"
+    )
+
+
+def _bounded_search_recipe_is_valid(
+    recipe: Mapping[str, Any],
+    search_proposal: Mapping[str, Any] | None,
+    *,
+    feature_set_name: str,
+    feature_index: int,
+    expected_name: str,
+    selected: bool,
+    trial_number: int | None = None,
+) -> bool:
+    if search_proposal is None or not _has_exact_keys(recipe, _SEARCH_RECIPE_KEYS):
+        return False
+    if (
+        recipe.get("name") != expected_name
+        or recipe.get("recipe") != "lightgbm"
+        or type(recipe.get("rationale")) is not str
+        or not recipe["rationale"].strip()
+    ):
+        return False
+    parameters = recipe.get("parameters")
+    if not _search_parameters_are_allowed(parameters, search_proposal):
+        return False
+    provenance = recipe.get("search")
+    if not isinstance(provenance, Mapping):
+        return False
+    expected_keys = _SELECTED_SEARCH_KEYS if selected else _TRIAL_SEARCH_KEYS
+    if not _has_exact_keys(provenance, expected_keys):
+        return False
+    expected_space = search_proposal["spaces"]["lightgbm"]
+    expected_seed = search_proposal["seed"] + feature_index
+    if (
+        type(provenance.get("sampler")) is not str
+        or provenance.get("sampler") != search_proposal["sampler"]
+        or type(provenance.get("seed")) is not int
+        or provenance.get("seed") != expected_seed
+        or type(provenance.get("n_trials")) is not int
+        or provenance.get("n_trials") != search_proposal["n_trials"]
+        or provenance.get("feature_set") != feature_set_name
+        or _safe_json_sha256(provenance.get("space")) != _safe_json_sha256(expected_space)
+        or recipe.get("search") != provenance
+    ):
+        return False
+    if selected:
+        selected_trial = provenance.get("selected_trial_number")
+        selected_parameters = provenance.get("selected_trial_parameters")
+        return (
+            type(selected_trial) is int
+            and 0 <= selected_trial < search_proposal["n_trials"]
+            and provenance.get("selected_trial_candidate_name")
+            == f"optuna_lightgbm_{selected_trial}:{feature_set_name}"
+            and _search_parameters_are_allowed(selected_parameters, search_proposal)
+            and selected_parameters == parameters
+        )
+    return (
+        type(provenance.get("trial_number")) is int
+        and provenance.get("trial_number") == trial_number
+    )
+
+
+def _search_parameters_are_allowed(
+    parameters: object,
+    search_proposal: Mapping[str, Any],
+) -> bool:
+    if not isinstance(parameters, Mapping):
+        return False
+    try:
+        expected_space = search_proposal["spaces"]["lightgbm"]
+        if set(parameters) != set(expected_space):
+            return False
+        validated = ModelRecipe(
+            "validated_search_recipe",
+            "lightgbm",
+            parameters,
+            "Validated bounded search recipe.",
+        )
+    except (KeyError, ProposalValidationError, TypeError, ValueError, OverflowError):
+        return False
+    return (
+        dict(validated.parameters) == dict(parameters)
+        and all(
+            value in expected_space[parameter]
+            for parameter, value in parameters.items()
+        )
     )
 
 
@@ -1498,6 +1598,7 @@ def _proposal_runs_are_complete(
                 row,
                 rows_by_candidate_name,
                 expected_run,
+                proposal.search,
             ):
                 return False
     except (KeyError, TypeError, ValueError, OverflowError):
@@ -1581,32 +1682,22 @@ def _search_run_is_bounded(
     provenance = params.get("search")
     if not isinstance(recipe, Mapping) or not isinstance(provenance, Mapping):
         return False
-    if recipe.get("name") not in {
-        f"optuna_lightgbm_{expected.get('trial_number')}",
-        "selected_lightgbm",
-    }:
-        return False
-    if recipe.get("recipe") != "lightgbm" or recipe.get("search") != provenance:
-        return False
-    expected_seed = int(search["seed"]) + int(expected["feature_index"])
-    if (
-        provenance.get("sampler") != search["sampler"]
-        or provenance.get("seed") != expected_seed
-        or provenance.get("n_trials") != search["n_trials"]
-        or provenance.get("feature_set") != expected["feature_set"]
-        or provenance.get("space") != search["spaces"]["lightgbm"]
-    ):
-        return False
-    if expected["kind"] == "trial":
-        return provenance.get("trial_number") == expected["trial_number"]
-    selected_trial = provenance.get("selected_trial_number")
+    expected_name = (
+        f"optuna_lightgbm_{expected.get('trial_number')}"
+        if expected["kind"] == "trial"
+        else "selected_lightgbm"
+    )
     return (
-        isinstance(selected_trial, int)
-        and not isinstance(selected_trial, bool)
-        and 0 <= selected_trial < int(search["n_trials"])
-        and provenance.get("selected_trial_candidate_name")
-        == f"optuna_lightgbm_{selected_trial}:{expected['feature_set']}"
-        and provenance.get("selected_trial_parameters") == recipe.get("parameters")
+        params.get("search") == recipe.get("search")
+        and _bounded_search_recipe_is_valid(
+            recipe,
+            search,
+            feature_set_name=expected["feature_set"],
+            feature_index=expected["feature_index"],
+            expected_name=expected_name,
+            selected=expected["kind"] == "selected",
+            trial_number=expected.get("trial_number"),
+        )
     )
 
 
@@ -1614,6 +1705,7 @@ def _selected_trial_is_linked(
     selected_row: Mapping[str, Any],
     rows_by_candidate_name: Mapping[str, Mapping[str, Any]],
     expected: Mapping[str, Any],
+    search: Mapping[str, Any] | None,
 ) -> bool:
     selected_params = selected_row.get("params")
     selected_artifacts = selected_row.get("artifacts")
@@ -1628,6 +1720,14 @@ def _selected_trial_is_linked(
         not isinstance(selected_recipe, Mapping)
         or not isinstance(selected_search, Mapping)
         or not _has_exact_keys(selected_from_trial, _SELECTED_FROM_TRIAL_KEYS)
+        or not _bounded_search_recipe_is_valid(
+            selected_recipe,
+            search,
+            feature_set_name=expected["feature_set"],
+            feature_index=expected["feature_index"],
+            expected_name="selected_lightgbm",
+            selected=True,
+        )
     ):
         return False
     try:
@@ -1638,6 +1738,7 @@ def _selected_trial_is_linked(
             type(trial_number) is not int
             or not isinstance(selected_parameters, Mapping)
             or type(feature_set) is not str
+            or not _search_parameters_are_allowed(selected_from_trial["parameters"], search)
         ):
             return False
         expected_trial_name = f"optuna_lightgbm_{trial_number}:{feature_set}"
@@ -2038,10 +2139,13 @@ def _verification_reasons(
     decision: str | None,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
+    normal_rejection = decision == "reject" and all(
+        value for name, value in checks.items() if name != "promoted"
+    )
     for name in _VERIFICATION_CHECKS:
         if checks.get(name):
             continue
-        if name == "promoted" and decision == "reject":
+        if name == "promoted" and normal_rejection:
             reasons.append("experiment_rejected")
         else:
             reasons.append(f"check_failed:{name}")

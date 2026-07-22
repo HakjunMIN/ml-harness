@@ -1359,3 +1359,79 @@ def test_verifier_crosschecks_referenced_selected_trial_evidence(
     assert verification.passed is False
     assert verification.checks["proposal_runs"] is False
     assert "check_failed:proposal_runs" in verification.reasons
+
+
+def test_verifier_rejects_out_of_space_search_evidence_for_rejected_experiment(
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rejected_config = replace(execution_config, minimum_improvement=0.9)
+    search_proposal, experiment = _run_fast_search_experiment(
+        rejected_config,
+        proposal,
+        monkeypatch,
+    )
+    assert experiment.run_state == "rejected"
+    iteration_dir = experiment.manifest_path.parent
+    evidence_path = iteration_dir / "experiment-evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+
+    manifest = json.loads(experiment.manifest_path.read_text(encoding="utf-8"))
+    manifest["selected_model_recipe"]["parameters"]["n_estimators"] = 999
+    manifest["selected_model_recipe"]["search"]["selected_trial_parameters"][
+        "n_estimators"
+    ] = 999
+    experiment.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with sqlite3.connect(iteration_dir / "experiments.db") as connection:
+        selected_id = evidence["selected_candidate"]["database_run_id"]
+        selected = connection.execute(
+            "SELECT params_json, artifacts_json FROM runs WHERE id = ?",
+            (selected_id,),
+        ).fetchone()
+        assert selected is not None
+        selected_params = json.loads(selected[0])
+        selected_artifacts = json.loads(selected[1])
+        selected_params["model_recipe"]["parameters"]["n_estimators"] = 999
+        selected_params["search"]["selected_trial_parameters"]["n_estimators"] = 999
+        selected_artifacts["summary"]["model_recipe"]["parameters"]["n_estimators"] = 999
+        selected_artifacts["summary"]["model_recipe"]["search"][
+            "selected_trial_parameters"
+        ]["n_estimators"] = 999
+        selected_artifacts["selected_from_trial"]["parameters"]["n_estimators"] = 999
+        connection.execute(
+            "UPDATE runs SET params_json = ?, artifacts_json = ? WHERE id = ?",
+            (json.dumps(selected_params), json.dumps(selected_artifacts), selected_id),
+        )
+
+        trial_id = selected_artifacts["selected_from_trial"]["run_id"]
+        trial = connection.execute(
+            "SELECT params_json, artifacts_json FROM runs WHERE id = ?",
+            (trial_id,),
+        ).fetchone()
+        assert trial is not None
+        trial_params = json.loads(trial[0])
+        trial_artifacts = json.loads(trial[1])
+        trial_params["model_recipe"]["parameters"]["n_estimators"] = 999
+        trial_artifacts["summary"]["model_recipe"]["parameters"]["n_estimators"] = 999
+        connection.execute(
+            "UPDATE runs SET params_json = ?, artifacts_json = ? WHERE id = ?",
+            (json.dumps(trial_params), json.dumps(trial_artifacts), trial_id),
+        )
+
+    _update_evidence_checksum(experiment, "manifest_sha256", experiment.manifest_path)
+    _update_evidence_checksum(experiment, "database_sha256", iteration_dir / "experiments.db")
+
+    verification = run_verifier_agent(
+        config=rejected_config,
+        proposal=search_proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["promoted"] is False
+    assert verification.checks["bounded_proposal"] is False
+    assert "check_failed:bounded_proposal" in verification.reasons
+    assert "experiment_rejected" not in verification.reasons
