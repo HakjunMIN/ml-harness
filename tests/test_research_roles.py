@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import importlib
 import json
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from power_forecasting.aidd import PromotionManifestError
 from power_forecasting.data import (
     REQUIRED_COLUMNS,
     generate_synthetic_data,
@@ -28,6 +30,28 @@ from power_forecasting.research_contracts import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DATASET = REPOSITORY_ROOT / ".agents" / "fixtures" / "valid-dataset.csv"
 FIXTURE_MANIFEST = REPOSITORY_ROOT / ".agents" / "fixtures" / "promoted-manifest.json"
+REJECTED_MANIFEST = (
+    REPOSITORY_ROOT / ".agents" / "fixtures" / "rejected-promotion-manifest.json"
+)
+LEAKAGE_MANIFEST = (
+    REPOSITORY_ROOT / ".agents" / "fixtures" / "leakage-promotion-manifest.json"
+)
+MALFORMED_MANIFEST = (
+    REPOSITORY_ROOT / ".agents" / "fixtures" / "malformed-promotion-manifest.json"
+)
+MISSING_THRESHOLDS_MANIFEST = (
+    REPOSITORY_ROOT
+    / ".agents"
+    / "fixtures"
+    / "missing-thresholds-promotion-manifest.json"
+)
+BASE_DATASET = REPOSITORY_ROOT / ".agents" / "fixtures" / "research-roles-base.csv"
+TARGET_VARIANT_DATASET = (
+    REPOSITORY_ROOT / ".agents" / "fixtures" / "research-roles-target-variant.csv"
+)
+PLANT_VARIANT_DATASET = (
+    REPOSITORY_ROOT / ".agents" / "fixtures" / "research-roles-plant-variant.csv"
+)
 PREDICTION_TIME_COLUMNS = tuple(
     column
     for column in REQUIRED_COLUMNS
@@ -39,12 +63,16 @@ def _roles():
     return importlib.import_module("power_forecasting.research_roles")
 
 
-def _config() -> ResearchLoopConfig:
+def _config(
+    *,
+    dataset_path: Path = FIXTURE_DATASET,
+    legacy_manifest_path: Path = FIXTURE_MANIFEST,
+) -> ResearchLoopConfig:
     return ResearchLoopConfig(
         schema_version="1",
         run_id="research_roles_001",
-        dataset_path=str(FIXTURE_DATASET),
-        legacy_manifest_path=str(FIXTURE_MANIFEST),
+        dataset_path=str(dataset_path),
+        legacy_manifest_path=str(legacy_manifest_path),
         run_dir=str(REPOSITORY_ROOT / ".agents" / "runs" / "research_roles_001"),
         profiles=("safe_weather", "history_tree", "bounded_search"),
         max_iterations=3,
@@ -57,6 +85,33 @@ def _config() -> ResearchLoopConfig:
 
 def _diagnosis():
     return _roles().run_diagnostic_agent(_config())
+
+
+def _normalized_diagnosis_for_proposal_comparison(
+    roles,
+    report,
+    reference,
+    *,
+    replace_residual_summary: bool,
+):
+    payload = report.to_dict()
+    payload["dataset_sha256"] = reference.dataset_sha256
+    if replace_residual_summary:
+        payload["residual_summary"] = reference.residual_summary
+    return roles.DiagnosticReport(**payload)
+
+
+def _raw_fixture_sensitive_values(
+    *dataset_paths: Path,
+) -> tuple[set[str], set[str]]:
+    plant_ids: set[str] = set()
+    target_samples: set[str] = set()
+    for dataset_path in dataset_paths:
+        with dataset_path.open(encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                plant_ids.add(row["plant_id"])
+                target_samples.add(row["generation_mw"])
+    return plant_ids, target_samples
 
 
 def _candidate_count(proposal: ResearchProposal) -> int:
@@ -184,6 +239,141 @@ def test_diagnostic_recommendations_are_supported_and_history_is_feasible_for_fi
         "history_tree",
         "bounded_search",
     )
+
+
+@pytest.mark.parametrize(
+    ("manifest_path", "error_type", "message"),
+    [
+        (MALFORMED_MANIFEST, ResearchContractError, "must contain JSON"),
+        (REJECTED_MANIFEST, PromotionManifestError, "decision"),
+        (LEAKAGE_MANIFEST, PromotionManifestError, "target leakage"),
+        (MISSING_THRESHOLDS_MANIFEST, PromotionManifestError, "missing thresholds"),
+    ],
+)
+def test_diagnostic_agent_fails_closed_on_malformed_or_untrusted_promotion_manifests(
+    manifest_path: Path,
+    error_type: type[Exception],
+    message: str,
+):
+    with pytest.raises(error_type, match=message):
+        _roles().run_diagnostic_agent(_config(legacy_manifest_path=manifest_path))
+
+
+@pytest.mark.parametrize("profile", ("safe_weather", "history_tree", "bounded_search"))
+def test_profile_generation_accepts_manifest_path_stored_by_research_loop_config(
+    profile: str,
+):
+    roles = _roles()
+    config = _config()
+    proposal = roles.generate_profile_proposal(
+        profile,
+        run_id=config.run_id,
+        legacy_manifest_path=config.legacy_manifest_path,
+        fold_count=config.fold_count,
+        objective=config.objective,
+        candidate_cap=6,
+        diagnosis=roles.run_diagnostic_agent(config),
+    )
+
+    assert isinstance(proposal, ResearchProposal)
+
+
+@pytest.mark.parametrize("profile", ("safe_weather", "history_tree", "bounded_search"))
+def test_profile_generation_uses_only_equal_aggregate_diagnoses(
+    profile: str,
+):
+    roles = _roles()
+    base_frame = pd.read_csv(BASE_DATASET)
+    target_variant_frame = pd.read_csv(TARGET_VARIANT_DATASET)
+    plant_variant_frame = pd.read_csv(PLANT_VARIANT_DATASET)
+
+    pd.testing.assert_frame_equal(
+        base_frame.drop(columns="generation_mw"),
+        target_variant_frame.drop(columns="generation_mw"),
+    )
+    pd.testing.assert_frame_equal(
+        base_frame.drop(columns="plant_id"),
+        plant_variant_frame.drop(columns="plant_id"),
+    )
+    assert not base_frame["generation_mw"].equals(target_variant_frame["generation_mw"])
+    assert not base_frame["plant_id"].equals(plant_variant_frame["plant_id"])
+
+    base = roles.run_diagnostic_agent(_config(dataset_path=BASE_DATASET))
+    target_variant = roles.run_diagnostic_agent(
+        _config(dataset_path=TARGET_VARIANT_DATASET)
+    )
+    plant_variant = roles.run_diagnostic_agent(
+        _config(dataset_path=PLANT_VARIANT_DATASET)
+    )
+
+    assert target_variant.dataset_sha256 != base.dataset_sha256
+    assert target_variant.residual_summary != base.residual_summary
+    assert target_variant.missingness == base.missingness
+    assert target_variant.drift_summary == base.drift_summary
+    assert plant_variant.dataset_sha256 != base.dataset_sha256
+    assert plant_variant.residual_summary == base.residual_summary
+    assert plant_variant.missingness == base.missingness
+    assert plant_variant.drift_summary == base.drift_summary
+
+    # The file fingerprint changes with either fixture; only target values alter residuals.
+    normalized_target = _normalized_diagnosis_for_proposal_comparison(
+        roles,
+        target_variant,
+        base,
+        replace_residual_summary=True,
+    )
+    normalized_plant = _normalized_diagnosis_for_proposal_comparison(
+        roles,
+        plant_variant,
+        base,
+        replace_residual_summary=False,
+    )
+    assert base == normalized_target == normalized_plant
+
+    plant_ids, target_samples = _raw_fixture_sensitive_values(
+        BASE_DATASET,
+        TARGET_VARIANT_DATASET,
+        PLANT_VARIANT_DATASET,
+    )
+    serialized_proposals = [
+        json.dumps(
+            proposal_to_dict(
+                roles.generate_profile_proposal(
+                    profile,
+                    run_id="aggregate_only_001",
+                    legacy_manifest_path=_config().legacy_manifest_path,
+                    fold_count=2,
+                    objective="nmae",
+                    candidate_cap=6,
+                    diagnosis=diagnosis,
+                )
+            ),
+            sort_keys=True,
+            allow_nan=False,
+        )
+        for diagnosis in (base, normalized_target, normalized_plant)
+    ]
+
+    assert serialized_proposals[0] == serialized_proposals[1] == serialized_proposals[2]
+    for serialized in serialized_proposals:
+        assert "generation_mw" not in serialized
+        assert all(
+            raw_value not in serialized for raw_value in plant_ids | target_samples
+        )
+
+
+def test_profile_generation_rejects_dataset_rows_as_diagnosis():
+    roles = _roles()
+    with pytest.raises(TypeError, match="DiagnosticReport"):
+        roles.generate_profile_proposal(
+            "safe_weather",
+            run_id="aggregate_only_001",
+            legacy_manifest_path=_config().legacy_manifest_path,
+            fold_count=2,
+            objective="nmae",
+            candidate_cap=2,
+            diagnosis=pd.read_csv(BASE_DATASET),
+        )
 
 
 @pytest.mark.parametrize(

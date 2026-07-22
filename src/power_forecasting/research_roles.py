@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from os import PathLike
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from power_forecasting.aidd import validate_promotion_manifest
 from power_forecasting.cli import _load_dataset
 from power_forecasting.data import DataContractError, REQUIRED_COLUMNS, parse_timestamps
 from power_forecasting.features import FeatureSpec
@@ -247,9 +249,9 @@ def _validate_profile_request(
     if type(profile) is not str or profile not in SUPPORTED_PROFILES:
         raise ResearchContractError(f"unsupported research profile: {profile!r}")
     validate_run_id(run_id)
-    if not isinstance(legacy_manifest_path, Path):
-        raise TypeError("legacy_manifest_path must be a Path")
-    _validate_legacy_manifest(legacy_manifest_path)
+    _validate_legacy_manifest(
+        _path_from_pathlike(legacy_manifest_path, "legacy_manifest_path")
+    )
     if isinstance(fold_count, bool) or not isinstance(fold_count, int) or not 1 <= fold_count <= 10:
         raise ResearchContractError("fold_count must be between 1 and 10")
     if type(objective) is not str or not objective.strip():
@@ -489,10 +491,16 @@ def _validate_legacy_manifest(path: Path) -> None:
             manifest = json.load(handle)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ResearchContractError("legacy_manifest_path must contain JSON") from exc
-    if not isinstance(manifest, Mapping) or manifest.get("schema_version") != _SCHEMA_VERSION:
-        raise ResearchContractError(
-            "legacy_manifest_path must contain a schema_version '1' manifest"
-        )
+    validate_promotion_manifest(manifest)
+
+
+def _path_from_pathlike(value: object, label: str) -> Path:
+    if not isinstance(value, (str, PathLike)):
+        raise TypeError(f"{label} must be a PathLike or string")
+    try:
+        return Path(value)
+    except TypeError as exc:
+        raise TypeError(f"{label} must be a PathLike or string") from exc
 
 
 def _sha256_file(path: Path) -> str:
