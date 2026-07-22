@@ -6,6 +6,10 @@ _canonical_non_symlink_path() {
   local path_without_root="${absolute#/}"
   local IFS=/
   local -a components
+  if [[ -z "$path_without_root" ]]; then
+    CANONICAL_PATH="/"
+    return 0
+  fi
   read -r -a components <<< "$path_without_root"
   for component in "${components[@]}"; do
     case "$component" in

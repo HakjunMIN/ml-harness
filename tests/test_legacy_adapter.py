@@ -279,6 +279,37 @@ def test_output_scripts_reject_external_run_directories_before_side_effects(
 
 
 @pytest.mark.parametrize("script_name", ["run-legacy.sh", "run-aidm.sh", "verify-promotion.sh"])
+def test_output_scripts_reject_root_run_directory_with_exit_two(script_name: str) -> None:
+    if script_name == "run-legacy.sh":
+        arguments = [
+            "--adapter",
+            str(FIXTURES / "valid-adapter.json"),
+            "--run-dir",
+            "/",
+        ]
+    elif script_name == "run-aidm.sh":
+        arguments = [
+            "--dataset",
+            str(FIXTURES / "valid-dataset.csv"),
+            "--run-dir",
+            "/",
+        ]
+    else:
+        arguments = ["--run-dir", "/"]
+
+    completed = subprocess.run(
+        [str(SCRIPTS / script_name), *arguments],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "run-dir must be contained" in completed.stderr
+
+
+@pytest.mark.parametrize("script_name", ["run-legacy.sh", "run-aidm.sh", "verify-promotion.sh"])
 def test_output_scripts_reject_symlinked_run_directories(
     tmp_path: Path, script_name: str
 ) -> None:
