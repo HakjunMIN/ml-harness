@@ -30,7 +30,8 @@ research-loop`. Orchestration is opt-in and stops before AIDD/code/deploy.
   `diagnostic-failure.json`, `research-summary.json`, `verification-failure.json`,
   `exhaustion.json`, plus per-iteration
   `research-proposal.json`, `research-notes.json`, `promotion_manifest.json`, `experiments.db`,
-  `performance_report.md`, `experiment-evidence.json`, and `verification.json`.
+  `performance_report.md`, `experiment-evidence.json`, `experiment-failure.json`, and
+  `verification.json`.
 - `state.json` schema version `1` records status, iteration, used/remaining profiles, artifact
   paths, transition history, and config SHA-256. Journal events have timestamp, status transition,
   iteration/profile, artifact path, and SHA-256. Summary has run ID, terminal status, iterations,

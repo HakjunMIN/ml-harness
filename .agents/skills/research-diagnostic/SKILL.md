@@ -33,6 +33,9 @@ which fixed profiles are feasible. Do not invent candidates or run AIDM.
 - `diagnosis.json` has `schema_version: "1"`, `dataset_sha256`, nonnegative `row_count` and
   `plant_count`, ISO `time_start`/`time_end`, aggregate `missingness`, `drift_summary`,
   `residual_summary`, boolean `leakage_checks`, and `recommended_profiles`.
+- `diagnostic-failure.json` has only the guaranteed failure shape:
+  `schema_version: "1"`, `status: "failed"`, and `rejected_conditions` containing safe reason
+  codes. It does not guarantee `iteration` or `reason` fields.
 - Read the configured inputs and existing run metadata. Do not write source, tests, fixtures,
   skills, scripts, generated code, AIDD artifacts, or customer systems.
 
@@ -42,8 +45,8 @@ which fixed profiles are feasible. Do not invent candidates or run AIDM.
 - Use only aggregate counts, ratios, timestamps, and safe reason codes. Never log a customer row,
   raw target, `actual_*`, `generation_mw`, secret, token, credential, or environment value.
 - A failed diagnostic writes bounded privacy-safe `diagnostic-failure.json` with `schema_version:
-  "1"`, `status: "failed"`, `iteration`, and a safe `reason`; it never emits partial success
-  evidence.
+  "1"`, `status: "failed"`, and `rejected_conditions` safe reason codes; it never emits partial
+  success evidence.
 
 ## Bounded Iteration and Stop Conditions
 - Run once per loop, before proposal generation. The orchestrator caps total profile iterations

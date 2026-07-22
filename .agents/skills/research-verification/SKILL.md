@@ -29,8 +29,9 @@ classify `pass`, `reject`, or `invalid`. This role does not rerun AIDM or approv
 3. Write one verification result and hand the terminal/iteration decision to the orchestrator.
 
 ## Output and Permissions
-- Write only `verification.json` for a valid classification, or `verification-failure.json` for
-  malformed/unsafe evidence, in the current iteration directory.
+- Write only `verification.json` in the current iteration directory for valid, rejected, or
+  malformed evidence. Malformed/unsafe evidence is serialized with `status: "invalid"` and
+  `passed: false`; this is the fail-closed artifact.
 - `verification.json` has schema version `1`, `status`, boolean `passed`, the complete fixed check
   map, safe `reasons`, and `provenance` with proposal/manifest/report/database SHA-256 values.
 - Read only the listed run artifacts and configured metadata. Do not write source, tests, fixtures,
@@ -64,8 +65,9 @@ not release/deployment approval.
 | Manifest rejection or gate failure | Mark `reject`; retain the rejection reason. |
 
 ## Evidence Output Layout
-The iteration contains the AIDM artifacts plus `verification.json` or `verification-failure.json`.
-The orchestrator records each artifact path and checksum in `state.json` and `journal.jsonl`.
+The iteration contains the AIDM artifacts plus `verification.json`, including invalid/fail-closed
+results. The orchestrator records each artifact path and checksum in `state.json` and
+`journal.jsonl`.
 
 ## Post-Run Reflection
 Report the classification, fixed checks that passed/failed, and artifact checksums. State whether

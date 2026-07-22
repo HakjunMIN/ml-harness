@@ -374,11 +374,14 @@ manifest만 사용하고 출력은 `.agents/runs/research-loop-fixture/` 아래�
 
 Stage 1은 한 프로필당 최대 한 번, 설정된 `max_iterations`(1~10)와 AIDM proposal/search
 budget(각 proposal budget 1~50) 안에서만 반복합니다. 각 run은
-`research-config.json`, `state.json`, `journal.jsonl`, `diagnosis.json`, iteration별
+`research-config.json`, `state.json`, `journal.jsonl`, iteration별
 `research-proposal.json`, `research-notes.json`, AIDM `promotion_manifest.json`,
 `experiments.db`, `performance_report.md`, `experiment-evidence.json`,
-`verification.json`(또는 `verification-failure.json`)과 최종 `research-summary.json`을
-SHA-256으로 연결합니다. 상태는 `ready_for_human_review`, `exhausted`, 또는 `failed`에서
+`experiment-failure.json`(실험 실패 시), `verification.json`과 최종
+`research-summary.json`을 SHA-256으로 연결합니다. 성공한 진단만 `diagnosis.json`을 만들며,
+진단이 실패하면 terminal `diagnostic-failure.json`(안전한 `rejected_conditions`)으로
+대체합니다. `verification.json`은 malformed evidence에도 `status: "invalid"`로
+fail-closed 기록을 남깁니다. 상태는 `ready_for_human_review`, `exhausted`, 또는 `failed`에서
 멈추며, 터미널 상태는 재개하지 않습니다.
 
 이 루프의 경계는 AIDD 호출, 실행 가능한 코드 생성, merge, deploy 직전입니다.

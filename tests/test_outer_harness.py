@@ -84,7 +84,18 @@ def test_research_skill_failure_artifacts_match_orchestrator_contract() -> None:
     diagnostic = (
         ROOT / ".agents" / "skills" / "research-diagnostic" / "SKILL.md"
     ).read_text(encoding="utf-8")
+    verification = (
+        ROOT / ".agents" / "skills" / "research-verification" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "diagnostic-failure.json" in orchestrator
+    assert "experiment-failure.json" in orchestrator
     assert "diagnostic-failure.json" in diagnostic
-    assert "verification-failure.json" not in diagnostic
+    assert "`rejected_conditions`" in diagnostic
+    assert "`iteration`, and a safe `reason`" not in diagnostic
+    assert "verification.json" in verification
+    assert "invalid" in verification
+    assert "verification-failure.json" not in verification
+    assert "diagnostic-failure.json" in readme
+    assert "verification-failure.json" not in readme
