@@ -9,12 +9,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from power_forecasting.aidd import validate_promotion_manifest
+from power_forecasting.aidd import PromotionManifestError, validate_promotion_manifest
 from power_forecasting.cli import _load_dataset
 from power_forecasting.data import DataContractError, REQUIRED_COLUMNS, parse_timestamps
 from power_forecasting.features import FeatureSpec
@@ -51,27 +52,6 @@ _LEAKAGE_CHECK_KEYS = frozenset(
     }
 )
 _PROFILE_ORDER = ("safe_weather", "history_tree", "bounded_search")
-
-
-class _FrozenDict(dict[str, Any]):
-    """A JSON-serializable mapping that rejects mutation."""
-
-    def _immutable(self, *args: object, **kwargs: object) -> None:
-        raise TypeError("mapping is immutable")
-
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
-
-    def __copy__(self) -> "_FrozenDict":
-        return self
-
-    def __deepcopy__(self, memo: dict[int, object]) -> "_FrozenDict":
-        return self
 
 
 @dataclass(frozen=True)
@@ -124,10 +104,18 @@ class DiagnosticReport:
         )
         recommended_profiles = _recommended_profiles(self.recommended_profiles)
 
-        object.__setattr__(self, "missingness", _FrozenDict(missingness))
-        object.__setattr__(self, "drift_summary", _FrozenDict(drift_summary))
-        object.__setattr__(self, "residual_summary", _FrozenDict(residual_summary))
-        object.__setattr__(self, "leakage_checks", _FrozenDict(leakage_checks))
+        object.__setattr__(self, "missingness", MappingProxyType(dict(missingness)))
+        object.__setattr__(self, "drift_summary", MappingProxyType(dict(drift_summary)))
+        object.__setattr__(
+            self,
+            "residual_summary",
+            MappingProxyType(dict(residual_summary)),
+        )
+        object.__setattr__(
+            self,
+            "leakage_checks",
+            MappingProxyType(dict(leakage_checks)),
+        )
         object.__setattr__(self, "recommended_profiles", recommended_profiles)
 
     def to_dict(self) -> dict[str, object]:
@@ -491,7 +479,16 @@ def _validate_legacy_manifest(path: Path) -> None:
             manifest = json.load(handle)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ResearchContractError("legacy_manifest_path must contain JSON") from exc
-    validate_promotion_manifest(manifest)
+    try:
+        validate_promotion_manifest(manifest)
+    except PromotionManifestError:
+        pass
+    else:
+        return
+    # Raise after handling so raw manifest details are not retained as exception context.
+    raise ResearchContractError(
+        "legacy_manifest_path must contain a trusted promoted manifest"
+    )
 
 
 def _path_from_pathlike(value: object, label: str) -> Path:

@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from power_forecasting.aidd import PromotionManifestError
 from power_forecasting.data import (
     REQUIRED_COLUMNS,
     generate_synthetic_data,
@@ -222,6 +221,52 @@ def test_diagnostic_report_is_immutable_and_serializes_only_aggregate_data(monke
     assert all(isinstance(value, (float, bool)) for value in payload["residual_summary"].values())
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("missingness", 0.0),
+        ("drift_summary", 0.0),
+        ("residual_summary", 0.0),
+        ("leakage_checks", True),
+    ],
+)
+def test_diagnostic_report_mappings_resist_dict_mutation_bypasses(
+    attribute: str,
+    value: float | bool,
+):
+    report = _diagnosis()
+    mapping = getattr(report, attribute)
+    original = dict(mapping)
+    key = "__mutation_attempt__"
+
+    assert not isinstance(mapping, dict)
+    if attribute == "missingness":
+        with pytest.raises(TypeError):
+            report.missingness |= {key: value}
+    with pytest.raises(TypeError):
+        mapping |= {key: value}
+    with pytest.raises(TypeError):
+        dict.__setitem__(mapping, key, value)
+    for mutate in (
+        lambda: mapping.update({key: value}),
+        lambda: mapping.pop(next(iter(mapping))),
+        lambda: mapping.clear(),
+    ):
+        with pytest.raises((AttributeError, TypeError)):
+            mutate()
+    for mutate in (
+        lambda: dict.update(mapping, {key: value}),
+        lambda: dict.pop(mapping, next(iter(mapping))),
+        lambda: dict.clear(mapping),
+    ):
+        with pytest.raises(TypeError):
+            mutate()
+
+    assert mapping == original
+    assert dict(mapping) == original
+    assert report.to_dict()[attribute] == original
+
+
 def test_diagnostic_report_payload_passes_existing_privacy_artifact_validation():
     from power_forecasting.research_state import _validate_diagnostic_field
 
@@ -242,21 +287,42 @@ def test_diagnostic_recommendations_are_supported_and_history_is_feasible_for_fi
 
 
 @pytest.mark.parametrize(
-    ("manifest_path", "error_type", "message"),
+    ("manifest_path", "message"),
     [
-        (MALFORMED_MANIFEST, ResearchContractError, "must contain JSON"),
-        (REJECTED_MANIFEST, PromotionManifestError, "decision"),
-        (LEAKAGE_MANIFEST, PromotionManifestError, "target leakage"),
-        (MISSING_THRESHOLDS_MANIFEST, PromotionManifestError, "missing thresholds"),
+        (MALFORMED_MANIFEST, "must contain JSON"),
+        (REJECTED_MANIFEST, "trusted promoted manifest"),
+        (LEAKAGE_MANIFEST, "trusted promoted manifest"),
+        (MISSING_THRESHOLDS_MANIFEST, "trusted promoted manifest"),
     ],
 )
 def test_diagnostic_agent_fails_closed_on_malformed_or_untrusted_promotion_manifests(
     manifest_path: Path,
-    error_type: type[Exception],
     message: str,
 ):
-    with pytest.raises(error_type, match=message):
+    with pytest.raises(ResearchContractError, match=message):
         _roles().run_diagnostic_agent(_config(legacy_manifest_path=manifest_path))
+
+
+def test_diagnostic_agent_sanitizes_invalid_manifest_provenance_errors(monkeypatch):
+    roles = _roles()
+    private_plant_id = "private-plant-identifier-7744"
+    manifest = json.loads(FIXTURE_MANIFEST.read_text(encoding="utf-8"))
+    manifest["per_plant_deltas"] = {private_plant_id: 1.1}
+    monkeypatch.setattr(roles.json, "load", lambda handle: manifest)
+
+    with pytest.raises(
+        ResearchContractError,
+        match="trusted promoted manifest",
+    ) as exc_info:
+        roles.run_diagnostic_agent(_config())
+
+    assert str(exc_info.value) == (
+        "legacy_manifest_path must contain a trusted promoted manifest"
+    )
+    assert private_plant_id not in str(exc_info.value)
+    assert "1.1" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
 
 
 @pytest.mark.parametrize("profile", ("safe_weather", "history_tree", "bounded_search"))
