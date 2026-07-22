@@ -10,9 +10,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
 
-from power_forecasting.research_contracts import ResearchLoopConfig, SUPPORTED_PROFILES
+from power_forecasting.research_contracts import (
+    ResearchContractError,
+    ResearchLoopConfig,
+    SUPPORTED_PROFILES,
+    validate_run_id,
+)
 
 
 _STATE_KEYS = frozenset(
@@ -52,18 +56,112 @@ _STATUSES = frozenset(
 )
 _TERMINAL_STATUSES = frozenset({"ready_for_human_review", "exhausted", "failed"})
 _ALLOWED_TRANSITIONS = {
-    "initialized": frozenset({"diagnosed", "failed"}),
-    "diagnosed": frozenset({"proposed", "failed"}),
-    "proposed": frozenset({"experimenting", "failed"}),
-    "experimenting": frozenset({"verifying", "failed"}),
+    "initialized": frozenset({"diagnosed"}),
+    "diagnosed": frozenset({"proposed"}),
+    "proposed": frozenset({"experimenting"}),
+    "experimenting": frozenset({"verifying"}),
     "verifying": frozenset({"iterate", "ready_for_human_review", "exhausted", "failed"}),
-    "iterate": frozenset({"diagnosed", "failed"}),
+    "iterate": frozenset({"diagnosed"}),
 }
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SENSITIVE_TEXT_PATTERN = re.compile(
+    r"""(?ix)
+    (?:^|[^a-z0-9])
+    (?:
+        aws[\s_-]?access[\s_-]?key(?:[\s_-]?id)?
+        |aws[\s_-]?secret[\s_-]?access[\s_-]?key
+        |api[\s_-]?key
+        |secret
+        |token
+        |password
+        |credential
+        |authorization
+    )
+    (?:
+        \s*(?:=|:)\s*\S+
+        |\s+\bis\b\s+\S+
+        |\s+(?:bearer|basic)\s+\S+
+    )
+    """
+)
+_RAW_SAMPLE_PATTERN = re.compile(
+    r"(?i)\b(?:generation_mw|actual_[a-z0-9_]+|target(?:_[a-z0-9_]+)?)\s*(?:=|:)"
+)
+_DIAGNOSTIC_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_REFERENCE_PATH_PATTERN = re.compile(r"^[A-Za-z0-9._/-]+$")
+_REFERENCE_PATH_SUFFIXES = frozenset({".json", ".db", ".sqlite", ".md", ".csv"})
+_DIAGNOSTIC_ARTIFACT_NAMES = frozenset({"diagnosis", "diagnostic", "diagnostic_report"})
+_DIAGNOSTIC_KEYS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "status",
+        "dataset",
+        "dataset_sha256",
+        "dataset_checksum",
+        "row_count",
+        "plant_count",
+        "time_start",
+        "time_end",
+        "time_coverage",
+        "fold_count",
+        "chronological_folds",
+        "chronological_fold_feasibility",
+        "chronological_fold_feasible",
+        "fold_feasibility",
+        "prediction_time_inputs",
+        "available_prediction_time_inputs",
+        "available_inputs",
+        "history_feature_feasible",
+        "history_features_feasible",
+        "history_feasible",
+        "history_feature_feasibility",
+        "baseline_evidence",
+        "baseline_reference",
+        "baseline_sha256",
+        "legacy_evidence",
+        "legacy_evidence_reference",
+        "legacy_evidence_sha256",
+        "warnings",
+        "rejected_conditions",
+    }
+)
+_DIAGNOSTIC_CHECKSUM_KEYS = frozenset(
+    {"dataset_sha256", "dataset_checksum", "baseline_sha256", "legacy_evidence_sha256"}
+)
+_DIAGNOSTIC_COUNT_KEYS = frozenset({"row_count", "plant_count", "fold_count"})
+_DIAGNOSTIC_INPUT_KEYS = frozenset(
+    {"prediction_time_inputs", "available_prediction_time_inputs", "available_inputs"}
+)
+_DIAGNOSTIC_HISTORY_BOOLEAN_KEYS = frozenset(
+    {"history_feature_feasible", "history_features_feasible", "history_feasible"}
+)
+_DIAGNOSTIC_FOLD_BOOLEAN_KEYS = frozenset({"chronological_fold_feasible"})
+_DATASET_KEYS = frozenset(
+    {
+        "sha256",
+        "checksum",
+        "dataset_sha256",
+        "dataset_checksum",
+        "row_count",
+        "plant_count",
+        "time_start",
+        "time_end",
+        "time_coverage",
+    }
+)
+_TIME_COVERAGE_KEYS = frozenset({"start", "end", "time_start", "time_end"})
+_FOLD_FEASIBILITY_KEYS = frozenset({"requested", "available", "fold_count", "feasible", "reason"})
+_HISTORY_FEASIBILITY_KEYS = frozenset({"feasible", "reason", "available_rows", "minimum_rows"})
+_EVIDENCE_REFERENCE_KEYS = frozenset({"path", "sha256", "checksum", "status"})
 
 
 class ResearchStateError(ValueError):
     """Raised when persisted research-loop state is invalid or unsafe to resume."""
+
+
+class _DiagnosticJsonError(ValueError):
+    """Raised while parsing diagnostic JSON that is not strict JSON."""
 
 
 @dataclass(frozen=True)
@@ -77,8 +175,7 @@ class ResearchState:
     transitions: tuple[Mapping[str, object], ...]
 
     def __post_init__(self) -> None:
-        if type(self.run_id) is not str or not self.run_id:
-            raise ResearchStateError("run_id must be a nonblank string")
+        _state_run_id(self.run_id)
         if type(self.status) is not str or self.status not in _STATUSES:
             raise ResearchStateError("status is not in the research-loop state graph")
         if isinstance(self.iteration, bool) or not isinstance(self.iteration, int):
@@ -319,6 +416,8 @@ def _recorded_artifacts(artifact_paths: Mapping[str, Path]) -> tuple[tuple[str, 
             raise ResearchStateError(f"duplicate artifact path: {artifact_path}")
         if not resolved_path.exists() or not resolved_path.is_file():
             raise ResearchStateError(f"artifact path must be an existing file: {artifact_path}")
+        if _is_diagnostic_artifact(name):
+            _validate_diagnostic_artifact(resolved_path)
         paths_seen.add(artifact_path)
         recorded.append((artifact_path, _sha256_file(resolved_path)))
     return tuple(sorted(recorded))
@@ -330,6 +429,240 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _is_diagnostic_artifact(name: str) -> bool:
+    segments = re.split(r"[^a-z0-9]+", name.casefold())
+    return bool(_DIAGNOSTIC_ARTIFACT_NAMES & set(segments))
+
+
+def _validate_diagnostic_artifact(path: Path) -> None:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(
+                handle,
+                object_pairs_hook=_strict_diagnostic_object,
+                parse_constant=_reject_diagnostic_constant,
+            )
+    except (json.JSONDecodeError, UnicodeDecodeError, _DiagnosticJsonError) as exc:
+        raise ResearchStateError(f"diagnostic JSON is invalid: {exc}") from exc
+
+    if not isinstance(value, Mapping):
+        raise ResearchStateError("diagnostic artifact must be a JSON object")
+    if not value:
+        raise ResearchStateError("diagnostic artifact must not be empty")
+    _diagnostic_keys(value, _DIAGNOSTIC_KEYS, "diagnostic artifact")
+
+    for field, field_value in value.items():
+        _validate_diagnostic_field(field, field_value)
+
+
+def _strict_diagnostic_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _DiagnosticJsonError(f"duplicate diagnostic field: {key}")
+        value[key] = item
+    return value
+
+
+def _reject_diagnostic_constant(value: str) -> None:
+    raise _DiagnosticJsonError(f"non-finite JSON constant: {value}")
+
+
+def _diagnostic_keys(value: Mapping[str, object], allowed: frozenset[str], label: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ResearchStateError(f"{label} contains forbidden fields: {unknown}")
+
+
+def _validate_diagnostic_field(field: str, value: object) -> None:
+    if field == "schema_version":
+        if value != "1":
+            raise ResearchStateError("diagnostic schema_version must be exactly '1'")
+        return
+    if field == "run_id":
+        _state_run_id(value)
+        return
+    if field == "status":
+        _diagnostic_code(value, field)
+        return
+    if field in _DIAGNOSTIC_CHECKSUM_KEYS:
+        _diagnostic_checksum(value, field)
+        return
+    if field in _DIAGNOSTIC_COUNT_KEYS:
+        _diagnostic_count(value, field)
+        return
+    if field in {"time_start", "time_end"}:
+        _diagnostic_timestamp(value, field)
+        return
+    if field == "time_coverage":
+        _validate_time_coverage(value, field)
+        return
+    if field == "dataset":
+        _validate_dataset_aggregate(value)
+        return
+    if field in {"chronological_folds", "chronological_fold_feasibility", "fold_feasibility"}:
+        _validate_fold_feasibility(value, field)
+        return
+    if field in _DIAGNOSTIC_FOLD_BOOLEAN_KEYS | _DIAGNOSTIC_HISTORY_BOOLEAN_KEYS:
+        if type(value) is not bool:
+            raise ResearchStateError(f"diagnostic {field} must be a boolean")
+        return
+    if field == "history_feature_feasibility":
+        _validate_history_feasibility(value)
+        return
+    if field in _DIAGNOSTIC_INPUT_KEYS:
+        _validate_prediction_time_inputs(value, field)
+        return
+    if field in {"warnings", "rejected_conditions"}:
+        _validate_diagnostic_codes(value, field)
+        return
+    if field in {
+        "baseline_evidence",
+        "baseline_reference",
+        "legacy_evidence",
+        "legacy_evidence_reference",
+    }:
+        _validate_evidence_reference(value, field)
+        return
+    raise ResearchStateError(f"diagnostic artifact contains forbidden field: {field}")
+
+
+def _validate_dataset_aggregate(value: object) -> None:
+    mapping = _diagnostic_mapping(value, _DATASET_KEYS, "diagnostic dataset")
+    for field, field_value in mapping.items():
+        if field in {"sha256", "checksum", "dataset_sha256", "dataset_checksum"}:
+            _diagnostic_checksum(field_value, f"dataset.{field}")
+        elif field in {"row_count", "plant_count"}:
+            _diagnostic_count(field_value, f"dataset.{field}")
+        elif field in {"time_start", "time_end"}:
+            _diagnostic_timestamp(field_value, f"dataset.{field}")
+        else:
+            _validate_time_coverage(field_value, f"dataset.{field}")
+
+
+def _validate_time_coverage(value: object, label: str) -> None:
+    mapping = _diagnostic_mapping(value, _TIME_COVERAGE_KEYS, label)
+    if not {"start", "time_start"} & set(mapping) or not {"end", "time_end"} & set(mapping):
+        raise ResearchStateError(f"{label} must include a start and end")
+    for field, field_value in mapping.items():
+        _diagnostic_timestamp(field_value, f"{label}.{field}")
+
+
+def _validate_fold_feasibility(value: object, label: str) -> None:
+    mapping = _diagnostic_mapping(value, _FOLD_FEASIBILITY_KEYS, f"diagnostic {label}")
+    for field, field_value in mapping.items():
+        if field in {"requested", "available", "fold_count"}:
+            _diagnostic_count(field_value, f"{label}.{field}")
+        elif field == "feasible":
+            if type(field_value) is not bool:
+                raise ResearchStateError(f"diagnostic {label}.feasible must be a boolean")
+        else:
+            _diagnostic_code(field_value, f"{label}.reason")
+
+
+def _validate_history_feasibility(value: object) -> None:
+    mapping = _diagnostic_mapping(value, _HISTORY_FEASIBILITY_KEYS, "diagnostic history_feature_feasibility")
+    for field, field_value in mapping.items():
+        if field == "feasible":
+            if type(field_value) is not bool:
+                raise ResearchStateError("diagnostic history_feature_feasibility.feasible must be a boolean")
+        elif field in {"available_rows", "minimum_rows"}:
+            _diagnostic_count(field_value, f"history_feature_feasibility.{field}")
+        else:
+            _diagnostic_code(field_value, "history_feature_feasibility.reason")
+
+
+def _validate_evidence_reference(value: object, label: str) -> None:
+    if value is None:
+        return
+    mapping = _diagnostic_mapping(value, _EVIDENCE_REFERENCE_KEYS, f"diagnostic {label}")
+    for field, field_value in mapping.items():
+        if field in {"sha256", "checksum"}:
+            _diagnostic_checksum(field_value, f"{label}.{field}")
+        elif field == "path":
+            _diagnostic_path(field_value, f"{label}.path")
+        else:
+            _diagnostic_code(field_value, f"{label}.status")
+
+
+def _diagnostic_mapping(
+    value: object,
+    allowed: frozenset[str],
+    label: str,
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ResearchStateError(f"{label} must be a mapping")
+    if not value:
+        raise ResearchStateError(f"{label} must not be empty")
+    _diagnostic_keys(value, allowed, label)
+    return value
+
+
+def _diagnostic_checksum(value: object, label: str) -> None:
+    if type(value) is not str or not _SHA256_PATTERN.fullmatch(value):
+        raise ResearchStateError(f"diagnostic {label} must be a lowercase SHA-256 string")
+
+
+def _diagnostic_count(value: object, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ResearchStateError(f"diagnostic {label} must be a nonnegative integer")
+
+
+def _validate_prediction_time_inputs(value: object, label: str) -> None:
+    if not isinstance(value, list):
+        raise ResearchStateError(f"diagnostic {label} must be a list")
+    for item in value:
+        _diagnostic_code(item, label)
+        if item == "generation_mw" or item.startswith(("actual_", "target_")):
+            raise ResearchStateError(f"diagnostic {label} contains a target or actual input")
+
+
+def _validate_diagnostic_codes(value: object, label: str) -> None:
+    if not isinstance(value, list):
+        raise ResearchStateError(f"diagnostic {label} must be a list")
+    for item in value:
+        _diagnostic_code(item, label)
+
+
+def _diagnostic_code(value: object, label: str) -> None:
+    if type(value) is not str or not value:
+        raise ResearchStateError(f"diagnostic {label} must contain nonblank strings")
+    if _SENSITIVE_TEXT_PATTERN.search(value) or _RAW_SAMPLE_PATTERN.search(value):
+        raise ResearchStateError(f"diagnostic {label} contains sensitive or raw sample content")
+    if not _DIAGNOSTIC_CODE_PATTERN.fullmatch(value):
+        raise ResearchStateError(f"diagnostic {label} must contain lowercase aggregate codes")
+
+
+def _diagnostic_timestamp(value: object, label: str) -> None:
+    if type(value) is not str or not value:
+        raise ResearchStateError(f"diagnostic {label} must be an ISO timestamp")
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ResearchStateError(f"diagnostic {label} must be an ISO timestamp") from exc
+
+
+def _diagnostic_path(value: object, label: str) -> None:
+    if type(value) is not str or not value:
+        raise ResearchStateError(f"diagnostic {label} must be a nonblank string")
+    path = Path(value)
+    if _SENSITIVE_TEXT_PATTERN.search(value) or _RAW_SAMPLE_PATTERN.search(value):
+        raise ResearchStateError(f"diagnostic {label} contains sensitive or raw sample content")
+    if (
+        not _REFERENCE_PATH_PATTERN.fullmatch(value)
+        or any(part == ".." for part in path.parts)
+        or path.suffix.casefold() not in _REFERENCE_PATH_SUFFIXES
+    ):
+        raise ResearchStateError(f"diagnostic {label} must be a safe artifact file path")
+
+
+def _state_run_id(value: object) -> str:
+    try:
+        return validate_run_id(value)
+    except ResearchContractError as exc:
+        raise ResearchStateError(str(exc)) from exc
 
 
 def _event(

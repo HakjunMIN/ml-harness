@@ -67,7 +67,7 @@ def load_research_loop_config(
     if value["schema_version"] != SCHEMA_VERSION:
         raise ResearchContractError("schema_version must be exactly '1'")
 
-    run_id = _run_id(value["run_id"])
+    run_id = validate_run_id(value["run_id"])
     config_dir = config_file.parent
     dataset_path = _existing_input_path(value["dataset_path"], config_dir, "dataset_path")
     legacy_manifest_path = _existing_input_path(
@@ -125,7 +125,7 @@ def _repository_root(value: Path) -> Path:
     return root
 
 
-def _run_id(value: object) -> str:
+def validate_run_id(value: object) -> str:
     if type(value) is not str or not _RUN_ID_PATTERN.fullmatch(value) or ".." in value:
         raise ResearchContractError("run_id must be a safe identifier")
     return value
@@ -251,4 +251,5 @@ __all__ = [
     "SCHEMA_VERSION",
     "SUPPORTED_PROFILES",
     "load_research_loop_config",
+    "validate_run_id",
 ]

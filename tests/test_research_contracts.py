@@ -196,20 +196,32 @@ def _config_for_state(contract_paths: dict[str, Path]):
     return _load(_payload(), contract_paths)
 
 
-def _diagnosis_artifact(tmp_path: Path) -> Path:
+def _diagnosis_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "1",
+        "run_id": "run_001",
+        "dataset_sha256": "a" * 64,
+        "row_count": 3,
+        "plant_count": 1,
+        "time_coverage": {
+            "start": "2026-01-01T00:00:00+00:00",
+            "end": "2026-01-01T02:00:00+00:00",
+        },
+        "chronological_folds": {"requested": 2, "feasible": True},
+        "prediction_time_inputs": ["forecast_irradiance", "forecast_cloud_cover"],
+        "history_feature_feasible": True,
+        "baseline_evidence": {"sha256": "b" * 64, "status": "available"},
+        "legacy_evidence": None,
+        "warnings": ["baseline_evidence_available"],
+        "rejected_conditions": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _diagnosis_artifact(tmp_path: Path, **overrides: object) -> Path:
     path = tmp_path / "diagnosis.json"
-    path.write_text(
-        json.dumps(
-            {
-                "dataset_sha256": "a" * 64,
-                "row_count": 3,
-                "plant_count": 1,
-                "target_samples": ["generation_mw=42"],
-                "environment": {"API_TOKEN": "not-for-state"},
-            }
-        ),
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps(_diagnosis_payload(**overrides)), encoding="utf-8")
     return path
 
 
@@ -230,6 +242,24 @@ def test_state_rejects_transitions_outside_graph(contract_paths: dict[str, Path]
 
     with pytest.raises(ResearchStateError, match="transition"):
         transition_state(state, to_status="proposed", artifact_paths={})
+
+
+@pytest.mark.parametrize("source_status", ["initialized", "diagnosed", "proposed", "experimenting", "iterate"])
+def test_only_verifying_may_transition_to_failed(
+    contract_paths: dict[str, Path], source_status: str
+) -> None:
+    state = replace(initialize_state(_config_for_state(contract_paths)), status=source_status)
+
+    with pytest.raises(ResearchStateError, match="transition"):
+        transition_state(state, to_status="failed", artifact_paths={})
+
+
+def test_verifying_may_transition_to_failed(
+    contract_paths: dict[str, Path], tmp_path: Path
+) -> None:
+    failed = transition_state(_state_at_verifying(contract_paths, tmp_path), to_status="failed", artifact_paths={})
+
+    assert failed.status == "failed"
 
 
 def test_iterate_explicitly_allocates_next_bounded_profile(
@@ -283,10 +313,165 @@ def test_state_records_only_checksum_metadata_for_diagnostic_artifacts(
     }
     assert event["artifact_path"] == str(artifact.resolve())
     assert event["sha256"] == state.artifacts[str(artifact.resolve())]
-    assert "generation_mw=42" not in serialized
-    assert "not-for-state" not in serialized
-    assert "target_samples" not in serialized
-    assert "environment" not in serialized
+    assert "dataset_sha256" not in serialized
+    assert "prediction_time_inputs" not in serialized
+    assert "baseline_evidence_available" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("target_samples", ["generation_mw=42"]),
+        ("rows", [{"plant_id": "plant_01", "generation_mw": 42}]),
+        ("records", [{"timestamp": "2026-01-01T00:00:00+00:00"}]),
+        ("secret_values", {"api_key": "not-safe"}),
+        ("environment", {"API_TOKEN": "not-safe"}),
+    ],
+)
+def test_diagnostic_artifact_rejects_rows_samples_secrets_and_environment_values(
+    contract_paths: dict[str, Path], tmp_path: Path, field: str, value: object
+) -> None:
+    artifact = _diagnosis_artifact(tmp_path, **{field: value})
+
+    with pytest.raises(ResearchStateError, match=field):
+        transition_state(
+            initialize_state(_config_for_state(contract_paths)),
+            to_status="diagnosed",
+            artifact_paths={"diagnosis": artifact},
+        )
+
+
+def test_diagnostic_artifact_requires_strict_json(
+    contract_paths: dict[str, Path], tmp_path: Path
+) -> None:
+    artifact = tmp_path / "diagnosis.json"
+    artifact.write_text('{"schema_version":', encoding="utf-8")
+
+    with pytest.raises(ResearchStateError, match="diagnostic JSON"):
+        transition_state(
+            initialize_state(_config_for_state(contract_paths)),
+            to_status="diagnosed",
+            artifact_paths={"diagnosis": artifact},
+        )
+
+
+@pytest.mark.parametrize("artifact_name", ["stage_1_diagnosis", "report_diagnostic"])
+def test_diagnostic_artifact_key_segments_enforce_content_safety(
+    contract_paths: dict[str, Path], tmp_path: Path, artifact_name: str
+) -> None:
+    artifact = _diagnosis_artifact(tmp_path, environment={"API_TOKEN": "not-safe"})
+
+    with pytest.raises(ResearchStateError, match="environment"):
+        transition_state(
+            initialize_state(_config_for_state(contract_paths)),
+            to_status="diagnosed",
+            artifact_paths={artifact_name: artifact},
+        )
+
+
+def test_hierarchical_diagnostic_artifact_key_enforces_content_safety(
+    contract_paths: dict[str, Path], tmp_path: Path
+) -> None:
+    artifact = _diagnosis_artifact(tmp_path, environment={"API_TOKEN": "not-safe"})
+
+    with pytest.raises(ResearchStateError, match="environment"):
+        transition_state(
+            initialize_state(_config_for_state(contract_paths)),
+            to_status="diagnosed",
+            artifact_paths={"diagnosis/raw.json": artifact},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("warnings", ["api key: hunter2"]),
+        (
+            "baseline_evidence",
+            {
+                "path": "https://example.invalid/report?api_key=hunter2",
+                "sha256": "b" * 64,
+                "status": "available",
+            },
+        ),
+    ],
+)
+def test_diagnostic_artifact_rejects_secret_values_in_allowed_fields(
+    contract_paths: dict[str, Path], tmp_path: Path, field: str, value: object
+) -> None:
+    artifact = _diagnosis_artifact(tmp_path, **{field: value})
+
+    with pytest.raises(ResearchStateError, match="sensitive"):
+        transition_state(
+            initialize_state(_config_for_state(contract_paths)),
+            to_status="diagnosed",
+            artifact_paths={"diagnosis": artifact},
+        )
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        "AWS_ACCESS_KEY_ID=AKIA_NOT_SAFE",
+        "plant_01,2026-01-01T00:00:00Z,42",
+    ],
+)
+def test_diagnostic_artifact_rejects_environment_and_raw_row_text(
+    contract_paths: dict[str, Path], tmp_path: Path, warning: str
+) -> None:
+    artifact = _diagnosis_artifact(tmp_path, warnings=[warning])
+
+    with pytest.raises(ResearchStateError, match="diagnostic warnings"):
+        transition_state(
+            initialize_state(_config_for_state(contract_paths)),
+            to_status="diagnosed",
+            artifact_paths={"diagnosis": artifact},
+        )
+
+
+@pytest.mark.parametrize(
+    "reference_path",
+    [
+        "plant_01,2026-01-01T00:00:00Z,42",
+        "ghp_0123456789abcdefghijklmno",
+    ],
+)
+def test_diagnostic_artifact_rejects_raw_or_secret_evidence_paths(
+    contract_paths: dict[str, Path], tmp_path: Path, reference_path: str
+) -> None:
+    artifact = _diagnosis_artifact(
+        tmp_path,
+        baseline_evidence={
+            "path": reference_path,
+            "sha256": "b" * 64,
+            "status": "available",
+        },
+    )
+
+    with pytest.raises(ResearchStateError, match="baseline_evidence.path"):
+        transition_state(
+            initialize_state(_config_for_state(contract_paths)),
+            to_status="diagnosed",
+            artifact_paths={"diagnosis": artifact},
+        )
+
+
+@pytest.mark.parametrize("run_id", ["../unsafe", "unsafe id"])
+def test_state_rejects_unsafe_run_ids_during_construction_and_loading(
+    contract_paths: dict[str, Path], tmp_path: Path, run_id: str
+) -> None:
+    initial = initialize_state(_config_for_state(contract_paths))
+
+    with pytest.raises(ResearchStateError, match="run_id"):
+        replace(initial, run_id=run_id)
+
+    payload = initial.to_dict()
+    payload["run_id"] = run_id
+    state_path = tmp_path / "unsafe-state.json"
+    atomic_write_json(state_path, payload)
+
+    with pytest.raises(ResearchStateError, match="run_id"):
+        load_state(state_path)
 
 
 def test_transitions_are_append_only_and_resume_rejects_checksum_mismatch(
