@@ -105,6 +105,23 @@ def _fake_agents(monkeypatch, *, decisions: list[str]):
 
     def verifier(*, config, proposal, experiment, iteration):
         path = experiment.manifest_path.parent / "verification.json"
+        proposal_sha256 = hashlib.sha256(
+            json.dumps(
+                proposal.to_dict(),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        provenance = {
+            "proposal_sha256": proposal_sha256,
+            "manifest_sha256": hashlib.sha256(
+                experiment.manifest_path.read_bytes()
+            ).hexdigest(),
+            "report_sha256": hashlib.sha256(experiment.report_path.read_bytes()).hexdigest(),
+            "database_sha256": hashlib.sha256(
+                (experiment.manifest_path.parent / "experiments.db").read_bytes()
+            ).hexdigest(),
+        }
         if decisions[iteration - 1] == "promote":
             checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
             status = "pass"
@@ -122,7 +139,7 @@ def _fake_agents(monkeypatch, *, decisions: list[str]):
             "passed": passed,
             "checks": checks,
             "reasons": list(reasons),
-            "provenance": {"proposal_sha256": "0" * 64},
+            "provenance": provenance,
         }
         path.write_text(json.dumps(payload), encoding="utf-8")
         return VerificationResult(
@@ -216,6 +233,40 @@ def test_arbitrary_verifier_report_path_cannot_promote(tmp_path, monkeypatch):
     assert result["status"] == "failed"
 
 
+def test_verifier_provenance_mismatch_fails_closed(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+
+    def mismatched_verifier(*, config, proposal, experiment, iteration):
+        path = experiment.manifest_path.parent / "verification.json"
+        checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "status": "pass",
+                    "passed": True,
+                    "checks": checks,
+                    "reasons": [],
+                    "provenance": {
+                        "proposal_sha256": "0" * 64,
+                        "manifest_sha256": "1" * 64,
+                        "report_sha256": "2" * 64,
+                        "database_sha256": "3" * 64,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return VerificationResult(True, checks, (), path)
+
+    monkeypatch.setattr(orchestrator, "run_verifier_agent", mismatched_verifier)
+    result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
+
+    assert result["status"] == "failed"
+
+
 def test_verifier_evidence_parse_error_persists_failed_state(tmp_path, monkeypatch):
     import power_forecasting.research_orchestrator as orchestrator
 
@@ -235,6 +286,71 @@ def test_verifier_evidence_parse_error_persists_failed_state(tmp_path, monkeypat
     assert result["status"] == "failed"
     state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "failed"
+
+
+def test_stale_cross_run_diagnosis_fails_before_proposal(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    monkeypatch.setattr(
+        orchestrator,
+        "generate_profile_proposal",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    run_dir = tmp_path / "run"
+    diagnosis_path = run_dir / "diagnosis.json"
+    diagnosis = json.loads(diagnosis_path.read_text(encoding="utf-8"))
+    diagnosis["run_id"] = "different-run"
+    diagnosis_path.write_text(json.dumps(diagnosis), encoding="utf-8")
+    checksum = hashlib.sha256(diagnosis_path.read_bytes()).hexdigest()
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    diagnosis_key = str(diagnosis_path.resolve())
+    state["artifacts"][diagnosis_key] = checksum
+    for event in state["transitions"]:
+        if event["artifact_path"] == diagnosis_key:
+            event["sha256"] = checksum
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    journal_path = run_dir / "journal.jsonl"
+    journal = json.loads(journal_path.read_text(encoding="utf-8").splitlines()[0])
+    journal["sha256"] = checksum
+    journal_path.write_text(json.dumps(journal) + "\n", encoding="utf-8")
+
+    result = run_research_loop(config, resume=True)
+    assert result["status"] == "failed"
+    assert result["verifier"]["reasons"] == ["diagnosis_binding_invalid"]
+
+
+def test_journal_append_before_state_write_recovers_on_resume(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    original_persist = orchestrator._persist_state
+    calls = {"count": 0}
+
+    def interrupt_after_initial(run_dir, state):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return original_persist(run_dir, state)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(orchestrator, "_persist_state", interrupt_after_initial)
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    run_dir = tmp_path / "run"
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "initialized"
+    assert len((run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+
+    monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
+    result = run_research_loop(config, resume=True)
+    assert result["status"] == "ready_for_human_review"
 
 
 def test_excluded_profiles_are_filtered_and_exhausted(tmp_path, monkeypatch):

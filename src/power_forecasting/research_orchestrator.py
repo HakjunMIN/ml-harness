@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -128,7 +129,7 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
             config_payload,
             config_sha256,
         )
-        _verify_journal(run_dir, state)
+        state = _reconcile_journal(run_dir, state)
         if state.status in _TERMINAL_STATUSES:
             raise ResearchStateError(f"cannot resume terminal state {state.status}")
         journal_count = len(state.transitions)
@@ -150,8 +151,26 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
         if state.status == "initialized":
             try:
                 diagnosis = run_diagnostic_agent(config)
+                if not isinstance(diagnosis, DiagnosticReport):
+                    raise ResearchOrchestratorError("diagnostic result is malformed")
+                if diagnosis.dataset_sha256 != config_payload["dataset_sha256"]:
+                    raise ResearchOrchestratorError("diagnostic dataset binding is inconsistent")
                 diagnosis_path = run_dir / _DIAGNOSIS_NAME
-                atomic_write_json(diagnosis_path, diagnosis.to_dict())
+                diagnosis_payload = diagnosis.to_dict()
+                diagnosis_payload.update(
+                    {
+                        "run_id": config.run_id,
+                        "config_sha256": config_sha256,
+                        "provenance": {
+                            "config_sha256": config_sha256,
+                            "dataset_sha256": config_payload["dataset_sha256"],
+                            "legacy_manifest_sha256": config_payload[
+                                "legacy_manifest_sha256"
+                            ],
+                        },
+                    }
+                )
+                atomic_write_json(diagnosis_path, diagnosis_payload)
             except Exception:
                 failure_path = _write_failure(run_dir, state.iteration, "diagnostic_failed")
                 state, journal_count = _advance(
@@ -207,7 +226,28 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 verifier_outcome = "reject"
                 verifier_reasons = (_safe_reason("no_recommended_profiles"),)
                 continue
-            diagnosis = _load_diagnosis(_artifact_named(state, _DIAGNOSIS_NAME))
+            try:
+                diagnosis = _load_diagnosis(
+                    _artifact_named(state, _DIAGNOSIS_NAME),
+                    config=config,
+                    config_payload=config_payload,
+                )
+            except Exception:
+                failure_path = _write_failure(
+                    run_dir,
+                    state.iteration,
+                    "diagnosis_binding_invalid",
+                )
+                state, journal_count = _advance(
+                    run_dir,
+                    state,
+                    to_status="failed",
+                    artifact_paths={"failure": failure_path},
+                    journal_count=journal_count,
+                )
+                verifier_outcome = "invalid"
+                verifier_reasons = (_safe_reason("diagnosis_binding_invalid"),)
+                continue
             profile = _current_profile(state)
             proposal = generate_profile_proposal(
                 profile,
@@ -338,7 +378,8 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 verifier_reasons = (_safe_reason("experiment_failed"),)
                 continue
             try:
-                proposal = _load_proposal(_artifact_named(state, _PROPOSAL_NAME))
+                proposal_path = _artifact_named(state, _PROPOSAL_NAME)
+                proposal = _load_proposal(proposal_path)
                 experiment = _load_experiment(state)
                 result = run_verifier_agent(
                     config=config,
@@ -351,6 +392,9 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                     config=config,
                     experiment=experiment,
                     iteration=state.iteration,
+                    proposal_path=proposal_path,
+                    proposal=proposal,
+                    state=state,
                 )
                 classified = _classify_verification(result, experiment)
             except Exception:
@@ -559,7 +603,7 @@ def _restore_file(path: Path, content: bytes | None) -> None:
             pass
 
 
-def _verify_journal(run_dir: Path, state: ResearchState) -> None:
+def _reconcile_journal(run_dir: Path, state: ResearchState) -> ResearchState:
     journal_path = run_dir / _JOURNAL_NAME
     try:
         lines = journal_path.read_text(encoding="utf-8").splitlines()
@@ -573,8 +617,90 @@ def _verify_journal(run_dir: Path, state: ResearchState) -> None:
         ]
     except (_DuplicateConfigKey, json.JSONDecodeError) as exc:
         raise ResearchStateError("journal JSON is invalid") from exc
-    if events != [dict(event) for event in state.transitions]:
+    event_keys = {
+        "timestamp",
+        "from_status",
+        "to_status",
+        "iteration",
+        "profile",
+        "artifact_path",
+        "sha256",
+    }
+    for event in events:
+        if (
+            not isinstance(event, Mapping)
+            or set(event) != event_keys
+            or type(event["timestamp"]) is not str
+            or (
+                event["artifact_path"] is not None
+                and type(event["artifact_path"]) is not str
+            )
+        ):
+            raise ResearchStateError("journal event schema is invalid")
+    recorded = [dict(event) for event in state.transitions]
+    if events[: len(recorded)] != recorded:
         raise ResearchStateError("journal does not match persisted state")
+    if len(events) == len(recorded):
+        return state
+
+    recovered = state
+    for group in _journal_groups(events[len(recorded) :]):
+        artifact_paths = {
+            Path(event["artifact_path"]).name: Path(event["artifact_path"])
+            for event in group
+            if event["artifact_path"] is not None
+        }
+        candidate = transition_state(
+            recovered,
+            to_status=str(group[0]["to_status"]),
+            artifact_paths=artifact_paths,
+        )
+        generated = candidate.transitions[-len(group) :]
+        for journal_event, generated_event in zip(group, generated):
+            for key in (
+                "from_status",
+                "to_status",
+                "iteration",
+                "profile",
+                "artifact_path",
+                "sha256",
+            ):
+                if journal_event[key] != generated_event[key]:
+                    raise ResearchStateError("journal transition cannot be recovered")
+        recovered = replace(
+            candidate,
+            transitions=recovered.transitions + tuple(group),
+        )
+
+    atomic_write_json(run_dir / _STATE_NAME, recovered.to_dict())
+    try:
+        return load_state(run_dir / _STATE_NAME)
+    except ResearchStateError:
+        raise
+
+
+def _journal_groups(
+    events: list[Mapping[str, object]],
+) -> tuple[tuple[Mapping[str, object], ...], ...]:
+    groups: list[tuple[Mapping[str, object], ...]] = []
+    current: list[Mapping[str, object]] = []
+    key: tuple[object, ...] | None = None
+    for event in events:
+        event_key = (
+            event["timestamp"],
+            event["from_status"],
+            event["to_status"],
+            event["iteration"],
+            event["profile"],
+        )
+        if current and event_key != key:
+            groups.append(tuple(current))
+            current = []
+        current.append(event)
+        key = event_key
+    if current:
+        groups.append(tuple(current))
+    return tuple(groups)
 
 
 def _current_profile(state: ResearchState) -> str:
@@ -615,16 +741,36 @@ def _artifact_named(state: ResearchState, name: str) -> Path:
     return matches[-1]
 
 
-def _load_diagnosis(path: Path) -> DiagnosticReport:
+def _load_diagnosis(
+    path: Path,
+    *,
+    config: ResearchLoopConfig,
+    config_payload: Mapping[str, object],
+) -> DiagnosticReport:
     try:
         with path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+            payload = json.load(handle, object_pairs_hook=_strict_config_object)
         if not isinstance(payload, Mapping):
             raise ValueError("diagnosis must be an object")
         payload = dict(payload)
+        provenance = payload.pop("provenance")
+        if (
+            payload.pop("run_id") != config.run_id
+            or payload.pop("config_sha256") != _canonical_sha256(config_payload)
+            or provenance
+            != {
+                "config_sha256": _canonical_sha256(config_payload),
+                "dataset_sha256": config_payload["dataset_sha256"],
+                "legacy_manifest_sha256": config_payload["legacy_manifest_sha256"],
+            }
+            or payload.get("dataset_sha256") != config_payload["dataset_sha256"]
+        ):
+            raise ResearchStateError("diagnosis binding does not match this run")
         payload["recommended_profiles"] = tuple(payload["recommended_profiles"])
         return DiagnosticReport(**payload)
-    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (_DuplicateConfigKey, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        if isinstance(exc, ResearchStateError):
+            raise
         raise ResearchStateError("recorded diagnosis cannot be loaded") from exc
 
 
@@ -687,6 +833,9 @@ def _validate_verification_result(
     config: ResearchLoopConfig,
     experiment: ExperimentResult,
     iteration: int,
+    proposal_path: Path,
+    proposal: ResearchProposal,
+    state: ResearchState,
 ) -> None:
     if not isinstance(result, VerificationResult):
         raise ResearchExecutionError("verifier result is malformed")
@@ -708,7 +857,13 @@ def _validate_verification_result(
         or not result.report_path.is_file()
     ):
         raise ResearchExecutionError("verifier report is missing")
-    _validate_verification_report(result, experiment)
+    _validate_verification_report(
+        result,
+        experiment,
+        proposal_path=proposal_path,
+        proposal=proposal,
+        state=state,
+    )
 
 
 def _expected_verification_path(
@@ -736,6 +891,10 @@ def _expected_verification_path(
 def _validate_verification_report(
     result: VerificationResult,
     experiment: ExperimentResult,
+    *,
+    proposal_path: Path,
+    proposal: ResearchProposal,
+    state: ResearchState,
 ) -> None:
     try:
         with result.report_path.open("r", encoding="utf-8") as handle:
@@ -764,7 +923,7 @@ def _validate_verification_report(
     ):
         raise ResearchExecutionError("verification report reasons are inconsistent")
     provenance = payload["provenance"]
-    if not isinstance(provenance, Mapping) or set(provenance) - _VERIFIER_PROVENANCE_KEYS:
+    if not isinstance(provenance, Mapping) or set(provenance) != _VERIFIER_PROVENANCE_KEYS:
         raise ResearchExecutionError("verification report provenance is invalid")
     if (
         "proposal_sha256" not in provenance
@@ -774,6 +933,18 @@ def _validate_verification_report(
         )
     ):
         raise ResearchExecutionError("verification report provenance is invalid")
+    expected_provenance = {
+        "proposal_sha256": _proposal_sha256(proposal),
+        "manifest_sha256": _bound_artifact_sha256(state, Path(experiment.manifest_path)),
+        "report_sha256": _bound_artifact_sha256(state, Path(experiment.report_path)),
+        "database_sha256": _bound_artifact_sha256(
+            state,
+            Path(experiment.manifest_path).parent / "experiments.db",
+        ),
+    }
+    _bound_artifact_sha256(state, proposal_path)
+    if dict(provenance) != expected_provenance:
+        raise ResearchExecutionError("verification report provenance is inconsistent")
     normal_rejection = (
         not result.passed
         and experiment.run_state == "rejected"
@@ -784,6 +955,25 @@ def _validate_verification_report(
     expected_status = "pass" if result.passed else "reject" if normal_rejection else "invalid"
     if payload["status"] != expected_status:
         raise ResearchExecutionError("verification report status is inconsistent")
+
+
+def _bound_artifact_sha256(state: ResearchState, path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ResearchExecutionError("verification evidence is not a regular file")
+    resolved = path.resolve()
+    recorded = state.artifacts.get(str(resolved))
+    if recorded is None:
+        raise ResearchExecutionError("verification evidence is not recorded")
+    actual = _sha256_file(resolved)
+    if actual != recorded:
+        raise ResearchExecutionError("verification evidence checksum is inconsistent")
+    return actual
+
+
+def _proposal_sha256(proposal: ResearchProposal) -> str:
+    payload = proposal.to_dict()
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _classify_verification(

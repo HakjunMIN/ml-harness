@@ -61,7 +61,7 @@ _STATUSES = frozenset(
 _TERMINAL_STATUSES = frozenset({"ready_for_human_review", "exhausted", "failed"})
 _ALLOWED_TRANSITIONS = {
     "initialized": frozenset({"diagnosed", "failed"}),
-    "diagnosed": frozenset({"proposed", "exhausted"}),
+    "diagnosed": frozenset({"proposed", "exhausted", "failed"}),
     "proposed": frozenset({"experimenting"}),
     "experimenting": frozenset({"verifying"}),
     "verifying": frozenset({"iterate", "ready_for_human_review", "exhausted", "failed"}),
@@ -99,6 +99,8 @@ _DIAGNOSTIC_KEYS = frozenset(
     {
         "schema_version",
         "run_id",
+        "config_sha256",
+        "provenance",
         "status",
         "dataset",
         "dataset_sha256",
@@ -136,7 +138,16 @@ _DIAGNOSTIC_KEYS = frozenset(
     }
 )
 _DIAGNOSTIC_CHECKSUM_KEYS = frozenset(
-    {"dataset_sha256", "dataset_checksum", "baseline_sha256", "legacy_evidence_sha256"}
+    {
+        "dataset_sha256",
+        "dataset_checksum",
+        "baseline_sha256",
+        "legacy_evidence_sha256",
+        "config_sha256",
+    }
+)
+_DIAGNOSTIC_PROVENANCE_KEYS = frozenset(
+    {"config_sha256", "dataset_sha256", "legacy_manifest_sha256"}
 )
 _DIAGNOSTIC_COUNT_KEYS = frozenset({"row_count", "plant_count", "fold_count"})
 _DIAGNOSTIC_INPUT_KEYS = frozenset(
@@ -555,6 +566,9 @@ def _validate_diagnostic_field(field: str, value: object) -> None:
     if field == "run_id":
         _state_run_id(value)
         return
+    if field == "provenance":
+        _validate_diagnostic_provenance(value)
+        return
     if field == "status":
         _diagnostic_code(value, field)
         return
@@ -740,6 +754,13 @@ def _diagnostic_mapping(
 def _diagnostic_checksum(value: object, label: str) -> None:
     if type(value) is not str or not _SHA256_PATTERN.fullmatch(value):
         raise ResearchStateError(f"diagnostic {label} must be a lowercase SHA-256 string")
+
+
+def _validate_diagnostic_provenance(value: object) -> None:
+    if not isinstance(value, Mapping) or set(value) != _DIAGNOSTIC_PROVENANCE_KEYS:
+        raise ResearchStateError("diagnostic provenance must contain exact binding keys")
+    for key, item in value.items():
+        _diagnostic_checksum(item, f"diagnostic provenance.{key}")
 
 
 def _diagnostic_count(value: object, label: str) -> None:
