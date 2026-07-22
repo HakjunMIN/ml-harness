@@ -229,6 +229,66 @@ def test_agent_proposal_handoff_rejects_out_of_catalog_candidate(tmp_path, monke
     assert calls["experiment"] == 0
 
 
+def test_agent_proposal_repeats_until_iteration_budget_or_human_review(tmp_path, monkeypatch):
+    calls = _fake_agents(monkeypatch, decisions=["reject", "reject", "promote"])
+    config_path = _config(tmp_path, ["safe_weather"], 3, agent_proposals=True)
+
+    handoff = run_research_loop(config_path)
+    for expected_iteration in (1, 2, 3):
+        assert handoff["status"] == "awaiting_proposal"
+        assert handoff["iteration"] == expected_iteration
+        proposal = generate_profile_proposal(
+            "safe_weather",
+            run_id=f"test-loop-{expected_iteration}",
+            legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
+            fold_count=1,
+            objective="NMAE",
+            candidate_cap=2,
+            diagnosis=_diagnosis(),
+        )
+        Path(handoff["proposal_path"]).write_text(
+            json.dumps(proposal.to_dict()),
+            encoding="utf-8",
+        )
+        result = run_research_loop(config_path, resume=True)
+        if expected_iteration < 3:
+            handoff = result
+
+    assert result["status"] == "ready_for_human_review"
+    assert result["iterations"] == 3
+    assert result["used_profiles"] == ["safe_weather", "safe_weather", "safe_weather"]
+    assert calls["experiment"] == 3
+
+
+def test_agent_proposal_exhausts_after_repeated_rejections(tmp_path, monkeypatch):
+    calls = _fake_agents(monkeypatch, decisions=["reject", "reject"])
+    config_path = _config(tmp_path, ["safe_weather"], 2, agent_proposals=True)
+
+    handoff = run_research_loop(config_path)
+    for expected_iteration in (1, 2):
+        proposal = generate_profile_proposal(
+            "safe_weather",
+            run_id=f"test-loop-reject-{expected_iteration}",
+            legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
+            fold_count=1,
+            objective="NMAE",
+            candidate_cap=2,
+            diagnosis=_diagnosis(),
+        )
+        Path(handoff["proposal_path"]).write_text(
+            json.dumps(proposal.to_dict()),
+            encoding="utf-8",
+        )
+        result = run_research_loop(config_path, resume=True)
+        if expected_iteration < 2:
+            handoff = result
+
+    assert result["status"] == "exhausted"
+    assert result["iterations"] == 2
+    assert result["used_profiles"] == ["safe_weather", "safe_weather"]
+    assert calls["experiment"] == 2
+
+
 def test_rejection_uses_each_profile_once_then_exhausts(tmp_path, monkeypatch):
     calls = _fake_agents(monkeypatch, decisions=["reject", "reject"])
     result = run_research_loop(_config(tmp_path, ["safe_weather", "history_tree"], 2))

@@ -350,8 +350,11 @@ manifest만 사용하고 출력은 `.agents/runs/research-loop-fixture/` 아래�
 catalog 밖의 feature, model recipe, TPE search space를 실행 전에 거부하고, 이전 proposal과
 중복되지 않으며 run 전체에 남은 50회 평가 예산 안인지 확인합니다.
 
-Stage 1은 한 프로필당 최대 한 번, 설정된 `max_iterations`(1~10)와 AIDM proposal/search
-budget(각 proposal budget 1~50, agent-proposal run 전체 50회 평가) 안에서만 반복합니다. 각 run은
+기본 research loop는 한 프로필당 최대 한 번 실행합니다. `agent_proposals: true`인 run은
+`max_iterations`(1~10)까지 configured profile을 결정론적으로 순환해, 검증 거부 후 다음
+`awaiting_proposal`에서 새 proposal을 받을 수 있습니다. AGENTS.md runbook은 시작할 때 이
+반복 횟수를 확인하고, 지정하지 않으면 10으로 config를 작성합니다. 모든 경로는 각 proposal
+budget(1~50)과 agent-proposal run 전체 50회 평가 예산 안에서만 반복합니다. 각 run은
 `research-config.json`, `state.json`, `journal.jsonl`, iteration별
 `proposal-context.json`, `proposal-catalog.json`, `research-proposal.json`,
 `research-notes.json`, AIDM `promotion_manifest.json`,

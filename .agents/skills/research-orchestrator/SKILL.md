@@ -61,8 +61,10 @@ JSON, then rerun the exact same command with `--resume`.
   target/actual samples, secrets, tokens, credentials, or environment values.
 
 ## Bounded Iteration and Stop Conditions
-- Profile order is explicit and each profile is used at most once. `max_iterations` and
-  `fold_count` are each 1..10; candidate/search budgets are validated before AIDM execution.
+- Profile order is explicit. Default runs use each configured profile at most once; with
+  `agent_proposals: true`, rejected iterations deterministically cycle those profiles until
+  `max_iterations` is reached. `max_iterations` and `fold_count` are each 1..10; candidate/search
+  budgets are validated before AIDM execution.
 - `awaiting_proposal` is nonterminal but deliberately does not run AIDM. `ready_for_human_review`,
   `exhausted`, and `failed` are terminal. `--resume` recovers only a
   nonterminal, checksum-consistent state and never reruns an interrupted experiment as success.

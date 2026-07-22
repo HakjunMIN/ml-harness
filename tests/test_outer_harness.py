@@ -12,6 +12,22 @@ FIXTURES = ROOT / ".agents" / "fixtures"
 RUNNER = ROOT / ".agents" / "scripts" / "run-research-loop.sh"
 
 
+def test_agents_runbook_defines_bounded_repeated_agent_proposals() -> None:
+    content = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    for required_text in (
+        '"agent_proposals": true',
+        '"max_iterations": 10',
+        "awaiting_proposal",
+        "proposal-context.json",
+        "proposal-catalog.json",
+        "--resume",
+        "50-evaluation budget",
+        "ready_for_human_review",
+    ):
+        assert required_text in content
+
+
 def test_research_fixture_uses_config_relative_synthetic_inputs_and_agents_runs_output() -> None:
     config_path = FIXTURES / "research-loop.json"
     payload = json.loads(config_path.read_text(encoding="utf-8"))

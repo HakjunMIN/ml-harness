@@ -51,8 +51,10 @@ unbounded search.
 - Do not include raw rows, target values, secrets, environment values, or arbitrary code in JSON.
 
 ## Bounded Iteration and Stop Conditions
-- Produce at most one proposal per allocated profile, in configured order, and never reuse a
-  profile. Stop when the profile list or `max_iterations` (1..10) is exhausted.
+- Produce exactly one proposal for the allocated iteration. In `agent_proposals` runs, a rejected
+  iteration may receive a repeated configured profile in deterministic order; use the current
+  context rather than reusing a prior proposal. Stop at `max_iterations` (1..10), the run-wide
+  evaluation budget, or a terminal runner status.
 - Reject the proposal and stop the iteration if schema, leakage, checksum, or budget validation
   fails. A rejected candidate is evidence for iteration, not permission to loosen a gate.
 

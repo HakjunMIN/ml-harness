@@ -364,6 +364,37 @@ def test_iterate_explicitly_allocates_next_bounded_profile(
         transition_state(iterating, to_status="diagnosed", artifact_paths={})
 
 
+def test_agent_proposal_state_cycles_profiles_to_iteration_budget(
+    contract_paths: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        _config_for_state(contract_paths),
+        profiles=("safe_weather",),
+        max_iterations=3,
+        agent_proposals=True,
+    )
+    state = initialize_state(config)
+
+    assert state.remaining_profiles == ("safe_weather", "safe_weather", "safe_weather")
+
+    for expected_iteration in (1, 2, 3):
+        state = transition_state(
+            state,
+            to_status="diagnosed",
+            artifact_paths={"diagnosis": _diagnosis_artifact(tmp_path)},
+        )
+        assert state.iteration == expected_iteration
+        if expected_iteration < 3:
+            state = transition_state(state, to_status="proposed", artifact_paths={})
+            state = transition_state(state, to_status="experimenting", artifact_paths={})
+            state = transition_state(state, to_status="verifying", artifact_paths={})
+            state = transition_state(state, to_status="iterate", artifact_paths={})
+
+    assert state.used_profiles == ("safe_weather", "safe_weather", "safe_weather")
+    assert state.remaining_profiles == ()
+
+
 @pytest.mark.parametrize("terminal_status", ["ready_for_human_review", "exhausted", "failed"])
 def test_terminal_states_are_immutable(
     contract_paths: dict[str, Path], tmp_path: Path, terminal_status: str

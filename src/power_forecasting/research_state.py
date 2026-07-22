@@ -234,12 +234,6 @@ class ResearchState:
 
         used_profiles = _profile_tuple(self.used_profiles, "used_profiles")
         remaining_profiles = _profile_tuple(self.remaining_profiles, "remaining_profiles")
-        if len(set(used_profiles)) != len(used_profiles):
-            raise ResearchStateError("used_profiles contains duplicate profiles")
-        if len(set(remaining_profiles)) != len(remaining_profiles):
-            raise ResearchStateError("remaining_profiles contains duplicate profiles")
-        if set(used_profiles) & set(remaining_profiles):
-            raise ResearchStateError("profiles cannot be both used and remaining")
         if self.iteration != len(used_profiles):
             raise ResearchStateError("iteration must equal the number of used_profiles")
 
@@ -313,7 +307,11 @@ def initialize_state(
 
     if not isinstance(config, ResearchLoopConfig):
         raise TypeError("config must be a ResearchLoopConfig")
-    remaining_profiles = config.profiles[: config.max_iterations]
+    remaining_profiles = (
+        _cycle_profiles(config.profiles, config.max_iterations)
+        if config.agent_proposals
+        else config.profiles[: config.max_iterations]
+    )
     return ResearchState(
         run_id=config.run_id,
         status="initialized",
@@ -497,6 +495,10 @@ def _advance_cycle(
         state.used_profiles + (profile,),
         state.remaining_profiles[1:],
     )
+
+
+def _cycle_profiles(profiles: tuple[str, ...], count: int) -> tuple[str, ...]:
+    return tuple(profiles[index % len(profiles)] for index in range(count))
 
 
 def _recorded_artifacts(
