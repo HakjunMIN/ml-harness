@@ -105,6 +105,19 @@ uv run python -m power_forecasting.cli all --output artifacts/demo --minimum-imp
 - `Ldaps`: LDAPS 형식의 예측 컬럼을 사용하는 선형 기준 모델입니다.
 - `SPOT`: 예측 기상, 용량, 위도, 경도를 사용하는 gradient-boosted 예측 시점 기준 모델입니다. AIDM은 피처 후보를 SPOT과 비교합니다.
 
+## 레거시 모델 교육 노트북
+
+운영 레거시 소스를 확보할 수 없는 경우에는
+[`notebooks/00_legacy_power_forecasting_models.ipynb`](notebooks/00_legacy_power_forecasting_models.ipynb)를 사용합니다.
+이 노트북은 합성 태양광 데이터에서 Mean, Weather, ForecastWeather, Ldaps, SPOT을
+독립적으로 구현하고 시간순 holdout으로 비교합니다. 실행하면
+`artifacts/legacy_notebook/`에 데이터셋, 모델별 지표, 발전소별 지표, SPOT holdout
+예측을 기록합니다.
+
+`legacy_predictions.csv`의 SPOT 결과는 이후 `aidm-experiment`에서 선택적 레거시
+비교 입력으로 사용할 수 있습니다. 합성 예제는 고객 운영 증거나 고객 모형과의 동등성을
+주장하지 않으며, Weather 결과는 예측 시점에 쓸 수 없는 실제 기상 기반 진단값입니다.
+
 ## 아키텍처 및 데이터 흐름
 
 ```text

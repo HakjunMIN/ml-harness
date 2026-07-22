@@ -8,10 +8,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK_DIR = ROOT / "notebooks"
 EXPECTED_NOTEBOOKS = (
+    "00_legacy_power_forecasting_models.ipynb",
     "01_legacy_baseline.ipynb",
     "02_aidm_feature_discovery.ipynb",
     "03_aidd_promotion.ipynb",
 )
+WORKFLOW_NOTEBOOKS = EXPECTED_NOTEBOOKS[1:]
+EDUCATIONAL_NOTEBOOK = EXPECTED_NOTEBOOKS[0]
 ALLOWED_CELL_TYPES = {"code", "markdown", "raw"}
 
 
@@ -20,7 +23,7 @@ def test_expected_notebooks_exist_with_no_extras():
 
 
 def test_notebooks_are_minimal_valid_nbformat_workflow_demos():
-    for name in EXPECTED_NOTEBOOKS:
+    for name in WORKFLOW_NOTEBOOKS:
         notebook = _read_notebook(NOTEBOOK_DIR / name)
 
         _assert_valid_nbformat4_notebook(notebook, name)
@@ -50,6 +53,26 @@ def test_notebooks_are_minimal_valid_nbformat_workflow_demos():
         forbidden = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
         assert not any(isinstance(node, forbidden) for node in ast.walk(tree)), name
         compile(tree, name, "exec")
+
+
+def test_educational_legacy_notebook_explains_models_and_exports_aidm_inputs():
+    notebook = _read_notebook(NOTEBOOK_DIR / EDUCATIONAL_NOTEBOOK)
+    _assert_valid_nbformat4_notebook(notebook, EDUCATIONAL_NOTEBOOK)
+    code = _notebook_code(NOTEBOOK_DIR / EDUCATIONAL_NOTEBOOK)
+
+    for model_name in ("Mean", "Weather", "ForecastWeather", "Ldaps", "SPOT"):
+        assert model_name in code
+    assert "chronological_holdout" in code
+    for artifact_name in (
+        "dataset.csv",
+        "legacy_predictions.csv",
+        "model_metrics.csv",
+        "per_plant_metrics.csv",
+    ):
+        assert artifact_name in code
+
+    tree = ast.parse(code or "\n", filename=EDUCATIONAL_NOTEBOOK)
+    compile(tree, EDUCATIONAL_NOTEBOOK, "exec")
 
 
 def test_notebooks_use_the_required_workflow_apis_without_running_them():
