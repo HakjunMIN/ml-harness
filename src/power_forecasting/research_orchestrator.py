@@ -683,7 +683,7 @@ def _advance(
         else None
     )
     try:
-        _append_journal(journal_path, events)
+        _append_journal(journal_path, events, trusted_root=run_dir)
     except Exception:
         _restore_file(journal_path, previous_journal, trusted_root=run_dir)
         raise
@@ -700,7 +700,7 @@ def _append_journal(
     path: Path,
     events: tuple[Mapping[str, object], ...],
     *,
-    trusted_root: Path | None = None,
+    trusted_root: Path,
 ) -> None:
     if not events:
         return
@@ -723,7 +723,7 @@ def _append_journal(
         raise
 
 
-def _ensure_journal_file(path: Path, *, trusted_root: Path | None = None) -> None:
+def _ensure_journal_file(path: Path, *, trusted_root: Path) -> None:
     descriptor = _open_journal(
         path,
         os.O_WRONLY | os.O_CREAT,
@@ -736,10 +736,9 @@ def _open_journal(
     path: Path,
     flags: int,
     *,
-    trusted_root: Path | None = None,
+    trusted_root: Path,
 ) -> int:
-    root = path.parent if trusted_root is None else trusted_root
-    with _open_journal_parent(path, root) as parent_descriptor:
+    with _open_journal_parent(path, trusted_root) as parent_descriptor:
         descriptor = os.open(
             path.name,
             flags | getattr(os, "O_NOFOLLOW", 0),
@@ -769,12 +768,15 @@ def _open_journal_parent(path: Path, trusted_root: Path) -> Iterator[int]:
     directory_flags |= getattr(os, "O_CLOEXEC", 0)
     descriptors: list[int] = []
     try:
-        descriptors.append(os.open(root, directory_flags))
-        current = descriptors[0]
-        for component in relative_parent.parts:
-            descriptor = os.open(component, directory_flags, dir_fd=current)
-            descriptors.append(descriptor)
-            current = descriptor
+        try:
+            descriptors.append(os.open(root, directory_flags))
+            current = descriptors[0]
+            for component in relative_parent.parts:
+                descriptor = os.open(component, directory_flags, dir_fd=current)
+                descriptors.append(descriptor)
+                current = descriptor
+        except OSError as exc:
+            raise OSError(f"journal path parent is not a trusted directory: {path}") from exc
         yield current
     finally:
         for descriptor in reversed(descriptors):
@@ -787,7 +789,7 @@ def _open_journal_parent(path: Path, trusted_root: Path) -> Iterator[int]:
 def _read_regular_bytes(
     path: Path,
     *,
-    trusted_root: Path | None = None,
+    trusted_root: Path,
 ) -> bytes:
     descriptor = _open_journal(path, os.O_RDONLY, trusted_root=trusted_root)
     try:

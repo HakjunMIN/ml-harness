@@ -431,6 +431,7 @@ def test_journal_append_rejects_preexisting_symlink(tmp_path):
                     "to_status": "diagnosed",
                 },
             ),
+            trusted_root=tmp_path,
         )
 
     assert target.read_text(encoding="utf-8") == "keep\n"
@@ -454,9 +455,30 @@ def test_journal_append_rejects_symlinked_parent(tmp_path):
                     "to_status": "diagnosed",
                 },
             ),
+            trusted_root=tmp_path,
         )
 
     assert not (real_parent / "journal.jsonl").exists()
+
+
+def test_advance_passes_trusted_run_dir_to_journal_append(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    original_append = orchestrator._append_journal
+    calls: list[Path | None] = []
+
+    def append_with_capture(path, events, *, trusted_root=None):
+        calls.append(trusted_root)
+        return original_append(path, events, trusted_root=trusted_root)
+
+    monkeypatch.setattr(orchestrator, "_append_journal", append_with_capture)
+    config = _config(tmp_path, ["safe_weather"], 1)
+
+    run_research_loop(config)
+
+    assert calls
+    assert all(root == _run_dir(tmp_path) for root in calls)
 
 
 def test_journal_recovery_rejects_malformed_tail_timestamp(tmp_path, monkeypatch):
@@ -495,11 +517,11 @@ def test_journal_recovery_rejects_partial_multi_artifact_group(tmp_path, monkeyp
     original_append = orchestrator._append_journal
     calls = {"count": 0}
 
-    def append_partial(path, events):
+    def append_partial(path, events, *, trusted_root):
         calls["count"] += 1
         if calls["count"] == 2:
-            return original_append(path, events[:1])
-        return original_append(path, events)
+            return original_append(path, events[:1], trusted_root=trusted_root)
+        return original_append(path, events, trusted_root=trusted_root)
 
     monkeypatch.setattr(orchestrator, "_append_journal", append_partial)
     config = _config(tmp_path, ["safe_weather"], 1)
@@ -883,7 +905,9 @@ def test_journal_append_failure_rolls_back_state_transition(tmp_path, monkeypatc
     monkeypatch.setattr(
         orchestrator,
         "_append_journal",
-        lambda path, events: (_ for _ in ()).throw(OSError("journal unavailable")),
+        lambda path, events, *, trusted_root: (_ for _ in ()).throw(
+            OSError("journal unavailable")
+        ),
     )
     config = _config(tmp_path, ["safe_weather"], 1)
     with pytest.raises(OSError, match="journal unavailable"):
