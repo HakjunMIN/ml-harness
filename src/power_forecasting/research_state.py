@@ -60,8 +60,8 @@ _STATUSES = frozenset(
 )
 _TERMINAL_STATUSES = frozenset({"ready_for_human_review", "exhausted", "failed"})
 _ALLOWED_TRANSITIONS = {
-    "initialized": frozenset({"diagnosed"}),
-    "diagnosed": frozenset({"proposed"}),
+    "initialized": frozenset({"diagnosed", "failed"}),
+    "diagnosed": frozenset({"proposed", "exhausted"}),
     "proposed": frozenset({"experimenting"}),
     "experimenting": frozenset({"verifying"}),
     "verifying": frozenset({"iterate", "ready_for_human_review", "exhausted", "failed"}),
@@ -444,6 +444,8 @@ def _advance_cycle(state: ResearchState, to_status: str) -> tuple[int, tuple[str
     if (state.status, to_status) not in {("initialized", "diagnosed"), ("verifying", "iterate")}:
         return state.iteration, state.used_profiles, state.remaining_profiles
     if not state.remaining_profiles:
+        if state.status == "initialized" and to_status == "diagnosed":
+            return state.iteration, state.used_profiles, state.remaining_profiles
         raise ResearchStateError("cannot iterate without a remaining profile")
     profile = state.remaining_profiles[0]
     return (
@@ -843,10 +845,16 @@ def _validate_transition_history(state: ResearchState) -> None:
         expected_remaining = remaining_profiles
         if (status, to_status) in {("initialized", "diagnosed"), ("verifying", "iterate")}:
             if not remaining_profiles:
-                raise ResearchStateError("transition history iterates without a remaining profile")
-            expected_iteration += 1
-            expected_used = used_profiles + (remaining_profiles[0],)
-            expected_remaining = remaining_profiles[1:]
+                if status == "initialized" and to_status == "diagnosed":
+                    expected_profile = None
+                else:
+                    raise ResearchStateError(
+                        "transition history iterates without a remaining profile"
+                    )
+            else:
+                expected_iteration += 1
+                expected_used = used_profiles + (remaining_profiles[0],)
+                expected_remaining = remaining_profiles[1:]
         expected_profile = expected_used[-1] if expected_used else None
 
         if event["iteration"] != expected_iteration or event["profile"] != expected_profile:

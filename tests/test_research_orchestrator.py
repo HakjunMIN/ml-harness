@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -104,16 +105,30 @@ def _fake_agents(monkeypatch, *, decisions: list[str]):
 
     def verifier(*, config, proposal, experiment, iteration):
         path = experiment.manifest_path.parent / "verification.json"
-        path.write_text("{}", encoding="utf-8")
         if decisions[iteration - 1] == "promote":
             checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
-            return VerificationResult(True, checks, (), path)
-        checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
-        checks["promoted"] = False
+            status = "pass"
+            reasons = ()
+            passed = True
+        else:
+            checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
+            checks["promoted"] = False
+            status = "reject"
+            reasons = ("experiment_rejected",)
+            passed = False
+        payload = {
+            "schema_version": "1",
+            "status": status,
+            "passed": passed,
+            "checks": checks,
+            "reasons": list(reasons),
+            "provenance": {"proposal_sha256": "0" * 64},
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
         return VerificationResult(
-            False,
+            passed,
             checks,
-            ("experiment_rejected",),
+            reasons,
             path,
         )
 
@@ -172,6 +187,35 @@ def test_partial_verifier_result_fails_closed(tmp_path, monkeypatch):
     assert "verification-failure.json" in json.dumps(result)
 
 
+def test_arbitrary_verifier_report_path_cannot_promote(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+
+    def arbitrary_verifier(*, config, proposal, experiment, iteration):
+        checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
+        path = Path(config.run_dir) / "outside-verification.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "status": "pass",
+                    "passed": True,
+                    "checks": checks,
+                    "reasons": [],
+                    "provenance": {"proposal_sha256": "0" * 64},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return VerificationResult(True, checks, (), path)
+
+    monkeypatch.setattr(orchestrator, "run_verifier_agent", arbitrary_verifier)
+    result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
+
+    assert result["status"] == "failed"
+
+
 def test_verifier_evidence_parse_error_persists_failed_state(tmp_path, monkeypatch):
     import power_forecasting.research_orchestrator as orchestrator
 
@@ -191,6 +235,62 @@ def test_verifier_evidence_parse_error_persists_failed_state(tmp_path, monkeypat
     assert result["status"] == "failed"
     state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "failed"
+
+
+def test_excluded_profiles_are_filtered_and_exhausted(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    calls = _fake_agents(monkeypatch, decisions=["promote"])
+    monkeypatch.setattr(
+        orchestrator,
+        "run_diagnostic_agent",
+        lambda config: replace(_diagnosis(), recommended_profiles=("safe_weather",)),
+    )
+    result = run_research_loop(_config(tmp_path, ["history_tree"], 1))
+
+    assert result["status"] == "exhausted"
+    assert result["iterations"] == 0
+    assert result["used_profiles"] == []
+    assert calls["experiment"] == 0
+
+
+def test_diagnostic_failure_persists_terminal_failed_state(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    monkeypatch.setattr(
+        orchestrator,
+        "run_diagnostic_agent",
+        lambda config: (_ for _ in ()).throw(ValueError("raw diagnostic detail")),
+    )
+    result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
+
+    assert result["status"] == "failed"
+    assert result["verifier"]["reasons"] == ["diagnostic_failed"]
+    state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "failed"
+
+
+def test_journal_append_failure_rolls_back_state_transition(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    original_append = orchestrator._append_journal
+    monkeypatch.setattr(
+        orchestrator,
+        "_append_journal",
+        lambda path, events: (_ for _ in ()).throw(OSError("journal unavailable")),
+    )
+    with pytest.raises(OSError, match="journal unavailable"):
+        run_research_loop(_config(tmp_path, ["safe_weather"], 1))
+
+    run_dir = tmp_path / "run"
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "initialized"
+    assert (run_dir / "journal.jsonl").read_text(encoding="utf-8") == ""
+
+    monkeypatch.setattr(orchestrator, "_append_journal", original_append)
+    result = run_research_loop(_config(tmp_path, ["safe_weather"], 1), resume=True)
+    assert result["status"] == "ready_for_human_review"
 
 
 def test_resume_rejects_effective_config_changes(tmp_path, monkeypatch):

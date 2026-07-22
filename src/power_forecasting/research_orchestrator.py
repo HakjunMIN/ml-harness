@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -77,6 +79,13 @@ _EXPECTED_VERIFIER_CHECKS = frozenset(
         "verification_report",
     }
 )
+_VERIFIER_REPORT_KEYS = frozenset(
+    {"schema_version", "status", "passed", "checks", "reasons", "provenance"}
+)
+_VERIFIER_PROVENANCE_KEYS = frozenset(
+    {"proposal_sha256", "manifest_sha256", "report_sha256", "database_sha256"}
+)
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ResearchOrchestratorError(RuntimeError):
@@ -119,6 +128,7 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
             config_payload,
             config_sha256,
         )
+        _verify_journal(run_dir, state)
         if state.status in _TERMINAL_STATUSES:
             raise ResearchStateError(f"cannot resume terminal state {state.status}")
         journal_count = len(state.transitions)
@@ -128,8 +138,8 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
         run_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_json(config_snapshot_path, config_payload)
         state = initialize_state(config, config_sha256=config_sha256)
-        _persist_state(run_dir, state)
         (run_dir / _JOURNAL_NAME).touch(exist_ok=True)
+        _persist_state(run_dir, state)
         journal_count = 0
 
     verifier_outcome = "pending"
@@ -138,9 +148,28 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
 
     while state.status not in _TERMINAL_STATUSES:
         if state.status == "initialized":
-            diagnosis = run_diagnostic_agent(config)
-            diagnosis_path = run_dir / _DIAGNOSIS_NAME
-            atomic_write_json(diagnosis_path, diagnosis.to_dict())
+            try:
+                diagnosis = run_diagnostic_agent(config)
+                diagnosis_path = run_dir / _DIAGNOSIS_NAME
+                atomic_write_json(diagnosis_path, diagnosis.to_dict())
+            except Exception:
+                failure_path = _write_failure(run_dir, state.iteration, "diagnostic_failed")
+                state, journal_count = _advance(
+                    run_dir,
+                    state,
+                    to_status="failed",
+                    artifact_paths={"failure": failure_path},
+                    journal_count=journal_count,
+                )
+                verifier_outcome = "invalid"
+                verifier_reasons = (_safe_reason("diagnostic_failed"),)
+                continue
+
+            recommended = set(diagnosis.recommended_profiles)
+            eligible = tuple(
+                profile for profile in state.remaining_profiles if profile in recommended
+            )
+            state = _with_remaining_profiles(state, eligible)
             state, journal_count = _advance(
                 run_dir,
                 state,
@@ -162,6 +191,22 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
             continue
 
         if state.status == "diagnosed":
+            if not state.used_profiles:
+                exhaustion_path = _write_exhaustion(
+                    run_dir,
+                    state.iteration,
+                    "no_recommended_profiles",
+                )
+                state, journal_count = _advance(
+                    run_dir,
+                    state,
+                    to_status="exhausted",
+                    artifact_paths={"exhaustion": exhaustion_path},
+                    journal_count=journal_count,
+                )
+                verifier_outcome = "reject"
+                verifier_reasons = (_safe_reason("no_recommended_profiles"),)
+                continue
             diagnosis = _load_diagnosis(_artifact_named(state, _DIAGNOSIS_NAME))
             profile = _current_profile(state)
             proposal = generate_profile_proposal(
@@ -301,7 +346,12 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                     experiment=experiment,
                     iteration=state.iteration,
                 )
-                _validate_verification_result(result)
+                _validate_verification_result(
+                    result,
+                    config=config,
+                    experiment=experiment,
+                    iteration=state.iteration,
+                )
                 classified = _classify_verification(result, experiment)
             except Exception:
                 failure_path = _write_failure(
@@ -455,14 +505,76 @@ def _advance(
         to_status=to_status,
         artifact_paths=artifact_paths,
     )
-    _persist_state(run_dir, next_state)
     events = next_state.transitions[journal_count:]
-    if events:
-        journal_path = run_dir / _JOURNAL_NAME
-        with journal_path.open("a", encoding="utf-8", newline="\n") as handle:
-            for event in events:
-                handle.write(json.dumps(dict(event), sort_keys=True) + "\n")
+    state_path = run_dir / _STATE_NAME
+    journal_path = run_dir / _JOURNAL_NAME
+    previous_state = state_path.read_bytes() if state_path.exists() else None
+    previous_journal = journal_path.read_bytes() if journal_path.exists() else None
+    try:
+        _append_journal(journal_path, events)
+    except Exception:
+        _restore_file(journal_path, previous_journal)
+        raise
+    try:
+        _persist_state(run_dir, next_state)
+    except Exception:
+        _restore_file(journal_path, previous_journal)
+        _restore_file(state_path, previous_state)
+        raise
     return next_state, len(next_state.transitions)
+
+
+def _append_journal(path: Path, events: tuple[Mapping[str, object], ...]) -> None:
+    if not events:
+        return
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for event in events:
+            handle.write(json.dumps(dict(event), sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _restore_file(path: Path, content: bytes | None) -> None:
+    if content is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.rollback.",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _verify_journal(run_dir: Path, state: ResearchState) -> None:
+    journal_path = run_dir / _JOURNAL_NAME
+    try:
+        lines = journal_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ResearchStateError("journal is missing or unreadable") from exc
+    try:
+        events = [
+            json.loads(line, object_pairs_hook=_strict_config_object)
+            for line in lines
+            if line
+        ]
+    except (_DuplicateConfigKey, json.JSONDecodeError) as exc:
+        raise ResearchStateError("journal JSON is invalid") from exc
+    if events != [dict(event) for event in state.transitions]:
+        raise ResearchStateError("journal does not match persisted state")
 
 
 def _current_profile(state: ResearchState) -> str:
@@ -472,6 +584,22 @@ def _current_profile(state: ResearchState) -> str:
     if not _PROFILE_PATTERN.fullmatch(profile):
         raise ResearchStateError("state contains an invalid profile")
     return profile
+
+
+def _with_remaining_profiles(
+    state: ResearchState,
+    remaining_profiles: tuple[str, ...],
+) -> ResearchState:
+    return ResearchState(
+        run_id=state.run_id,
+        status=state.status,
+        iteration=state.iteration,
+        used_profiles=state.used_profiles,
+        remaining_profiles=remaining_profiles,
+        artifacts=state.artifacts,
+        transitions=state.transitions,
+        config_sha256=state.config_sha256,
+    )
 
 
 def _iteration_directory(run_dir: Path, iteration: int, profile: str) -> Path:
@@ -553,7 +681,13 @@ def _load_experiment(state: ResearchState) -> ExperimentResult:
         raise ResearchStateError("recorded experiment evidence cannot be loaded") from exc
 
 
-def _validate_verification_result(result: object) -> None:
+def _validate_verification_result(
+    result: object,
+    *,
+    config: ResearchLoopConfig,
+    experiment: ExperimentResult,
+    iteration: int,
+) -> None:
     if not isinstance(result, VerificationResult):
         raise ResearchExecutionError("verifier result is malformed")
     if type(result.passed) is not bool or not isinstance(result.checks, Mapping):
@@ -566,8 +700,90 @@ def _validate_verification_result(result: object) -> None:
         type(reason) is not str for reason in result.reasons
     ):
         raise ResearchExecutionError("verifier reasons are malformed")
-    if not isinstance(result.report_path, Path) or not result.report_path.is_file():
+    expected_report = _expected_verification_path(config, experiment, iteration)
+    if (
+        not isinstance(result.report_path, Path)
+        or result.report_path != expected_report
+        or result.report_path.is_symlink()
+        or not result.report_path.is_file()
+    ):
         raise ResearchExecutionError("verifier report is missing")
+    _validate_verification_report(result, experiment)
+
+
+def _expected_verification_path(
+    config: ResearchLoopConfig,
+    experiment: ExperimentResult,
+    iteration: int,
+) -> Path:
+    manifest_path = Path(experiment.manifest_path)
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ResearchExecutionError("experiment manifest is not a regular file")
+    iteration_dir = manifest_path.parent
+    if iteration_dir.is_symlink():
+        raise ResearchExecutionError("iteration directory is a symlink")
+    resolved_iteration = iteration_dir.resolve()
+    iterations_root = (Path(config.run_dir).resolve() / "iterations").resolve()
+    try:
+        relative = resolved_iteration.relative_to(iterations_root)
+    except ValueError as exc:
+        raise ResearchExecutionError("verification report is outside the iteration directory") from exc
+    if not relative.parts or not relative.parts[0].startswith(f"{iteration:03d}-"):
+        raise ResearchExecutionError("verification report iteration is invalid")
+    return resolved_iteration / _VERIFICATION_NAME
+
+
+def _validate_verification_report(
+    result: VerificationResult,
+    experiment: ExperimentResult,
+) -> None:
+    try:
+        with result.report_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle, object_pairs_hook=_strict_config_object)
+    except (_DuplicateConfigKey, OSError, json.JSONDecodeError) as exc:
+        raise ResearchExecutionError("verification report JSON is invalid") from exc
+    if not isinstance(payload, Mapping) or set(payload) != _VERIFIER_REPORT_KEYS:
+        raise ResearchExecutionError("verification report schema is invalid")
+    if payload["schema_version"] != "1":
+        raise ResearchExecutionError("verification report schema is invalid")
+    if type(payload["passed"]) is not bool or payload["passed"] != result.passed:
+        raise ResearchExecutionError("verification report outcome is inconsistent")
+    checks = payload["checks"]
+    if (
+        not isinstance(checks, Mapping)
+        or set(checks) != _EXPECTED_VERIFIER_CHECKS
+        or any(type(value) is not bool for value in checks.values())
+        or dict(checks) != dict(result.checks)
+    ):
+        raise ResearchExecutionError("verification report checks are inconsistent")
+    reasons = payload["reasons"]
+    if (
+        not isinstance(reasons, list)
+        or any(type(reason) is not str for reason in reasons)
+        or reasons != list(result.reasons)
+    ):
+        raise ResearchExecutionError("verification report reasons are inconsistent")
+    provenance = payload["provenance"]
+    if not isinstance(provenance, Mapping) or set(provenance) - _VERIFIER_PROVENANCE_KEYS:
+        raise ResearchExecutionError("verification report provenance is invalid")
+    if (
+        "proposal_sha256" not in provenance
+        or any(
+            type(value) is not str or not _SHA256_PATTERN.fullmatch(value)
+            for value in provenance.values()
+        )
+    ):
+        raise ResearchExecutionError("verification report provenance is invalid")
+    normal_rejection = (
+        not result.passed
+        and experiment.run_state == "rejected"
+        and result.checks["promoted"] is False
+        and all(value for name, value in result.checks.items() if name != "promoted")
+        and result.reasons == ("experiment_rejected",)
+    )
+    expected_status = "pass" if result.passed else "reject" if normal_rejection else "invalid"
+    if payload["status"] != expected_status:
+        raise ResearchExecutionError("verification report status is inconsistent")
 
 
 def _classify_verification(
@@ -602,6 +818,20 @@ def _write_failure(run_dir: Path, iteration: int, reason: str) -> Path:
         {
             "schema_version": "1",
             "status": "failed",
+            "iteration": iteration,
+            "reason": _safe_reason(reason),
+        },
+    )
+    return path
+
+
+def _write_exhaustion(run_dir: Path, iteration: int, reason: str) -> Path:
+    path = run_dir / "exhaustion.json"
+    atomic_write_json(
+        path,
+        {
+            "schema_version": "1",
+            "status": "exhausted",
             "iteration": iteration,
             "reason": _safe_reason(reason),
         },
