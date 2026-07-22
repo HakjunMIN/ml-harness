@@ -7,6 +7,7 @@ import re
 import tempfile
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -631,6 +632,7 @@ def _reconcile_journal(run_dir: Path, state: ResearchState) -> ResearchState:
             not isinstance(event, Mapping)
             or set(event) != event_keys
             or type(event["timestamp"]) is not str
+            or not _canonical_timestamp(event["timestamp"])
             or (
                 event["artifact_path"] is not None
                 and type(event["artifact_path"]) is not str
@@ -645,6 +647,7 @@ def _reconcile_journal(run_dir: Path, state: ResearchState) -> ResearchState:
 
     recovered = state
     for group in _journal_groups(events[len(recorded) :]):
+        _validate_recovery_group(group)
         artifact_paths = {
             Path(event["artifact_path"]).name: Path(event["artifact_path"])
             for event in group
@@ -701,6 +704,62 @@ def _journal_groups(
     if current:
         groups.append(tuple(current))
     return tuple(groups)
+
+
+def _canonical_timestamp(value: str) -> bool:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.isoformat(timespec="microseconds") == value
+
+
+def _validate_recovery_group(group: tuple[Mapping[str, object], ...]) -> None:
+    if not group:
+        raise ResearchStateError("journal transition group is empty")
+    transition = (group[0]["from_status"], group[0]["to_status"])
+    if any(
+        (event["from_status"], event["to_status"]) != transition
+        or event["timestamp"] != group[0]["timestamp"]
+        or event["iteration"] != group[0]["iteration"]
+        or event["profile"] != group[0]["profile"]
+        for event in group
+    ):
+        raise ResearchStateError("journal transition group is inconsistent")
+    names = [
+        Path(event["artifact_path"]).name
+        for event in group
+        if event["artifact_path"] is not None
+    ]
+    if len(names) != len(set(names)):
+        raise ResearchStateError("journal transition group contains duplicate artifacts")
+    expected: frozenset[str] | None
+    if transition == ("initialized", "diagnosed") or transition == ("iterate", "diagnosed"):
+        expected = frozenset({_DIAGNOSIS_NAME})
+    elif transition == ("diagnosed", "proposed"):
+        expected = frozenset({_PROPOSAL_NAME, _NOTES_NAME, _CONFIG_NAME})
+    elif transition == ("proposed", "experimenting"):
+        expected = frozenset()
+    elif transition == ("experimenting", "verifying"):
+        expected = (
+            frozenset({"promotion_manifest.json", "performance_report.md", "experiments.db", _EVIDENCE_NAME})
+            if names != [_FAILURE_NAME]
+            else frozenset({_FAILURE_NAME})
+        )
+    elif transition == ("diagnosed", "exhausted"):
+        expected = frozenset({"exhaustion.json"})
+    elif transition[0] == "verifying" and transition[1] in {
+        "iterate",
+        "ready_for_human_review",
+        "exhausted",
+    }:
+        expected = frozenset({_VERIFICATION_NAME})
+    elif transition[1] == "failed":
+        expected = frozenset({_FAILURE_NAME, _VERIFICATION_NAME})
+    else:
+        expected = None
+    if expected is not None and frozenset(names) != expected:
+        raise ResearchStateError("journal transition group has incomplete artifacts")
 
 
 def _current_profile(state: ResearchState) -> str:

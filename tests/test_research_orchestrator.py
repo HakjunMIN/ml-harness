@@ -353,6 +353,68 @@ def test_journal_append_before_state_write_recovers_on_resume(tmp_path, monkeypa
     assert result["status"] == "ready_for_human_review"
 
 
+def test_journal_recovery_rejects_malformed_tail_timestamp(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    original_persist = orchestrator._persist_state
+    calls = {"count": 0}
+
+    def interrupt_after_initial(run_dir, state):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return original_persist(run_dir, state)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(orchestrator, "_persist_state", interrupt_after_initial)
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    run_dir = tmp_path / "run"
+    lines = (run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    tail = json.loads(lines[-1])
+    tail["timestamp"] = "not-an-iso-timestamp"
+    lines[-1] = json.dumps(tail)
+    (run_dir / "journal.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
+    with pytest.raises(ResearchStateError, match="journal"):
+        run_research_loop(config, resume=True)
+
+
+def test_journal_recovery_rejects_partial_multi_artifact_group(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    original_append = orchestrator._append_journal
+    calls = {"count": 0}
+
+    def append_partial(path, events):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            return original_append(path, events[:1])
+        return original_append(path, events)
+
+    monkeypatch.setattr(orchestrator, "_append_journal", append_partial)
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        # The partial append is followed by an explicit crash simulation.
+        original_persist = orchestrator._persist_state
+        orchestrator._persist_state = lambda run_dir, state: (
+            original_persist(run_dir, state)
+            if state.status in {"initialized", "diagnosed"}
+            else (_ for _ in ()).throw(KeyboardInterrupt())
+        )
+        try:
+            run_research_loop(config)
+        finally:
+            orchestrator._persist_state = original_persist
+
+    monkeypatch.setattr(orchestrator, "_append_journal", original_append)
+    with pytest.raises(ResearchStateError, match="incomplete artifacts"):
+        run_research_loop(config, resume=True)
+
+
 def test_excluded_profiles_are_filtered_and_exhausted(tmp_path, monkeypatch):
     import power_forecasting.research_orchestrator as orchestrator
 
