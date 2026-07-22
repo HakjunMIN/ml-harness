@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -73,8 +74,9 @@ def load_research_loop_config(
     legacy_manifest_path = _existing_input_path(
         value["legacy_manifest_path"], config_dir, "legacy_manifest_path"
     )
-    run_dir = _resolved_path(value["run_dir"], config_dir, "run_dir")
+    run_dir = _path_candidate(value["run_dir"], config_dir, "run_dir")
     _validate_run_dir(run_dir, root)
+    run_dir = run_dir.resolve()
 
     profiles = _profiles(value["profiles"])
     max_iterations = _bounded_integer(value["max_iterations"], "max_iterations")
@@ -138,11 +140,15 @@ def _nonblank_string(value: object, label: str) -> str:
 
 
 def _resolved_path(value: object, base: Path, label: str) -> Path:
+    return _path_candidate(value, base, label).resolve()
+
+
+def _path_candidate(value: object, base: Path, label: str) -> Path:
     raw_path = _nonblank_string(value, label)
     candidate = Path(raw_path)
     if not candidate.is_absolute():
         candidate = base / candidate
-    return candidate.resolve()
+    return Path(os.path.abspath(os.fspath(candidate)))
 
 
 def _existing_input_path(value: object, base: Path, label: str) -> Path:
@@ -214,27 +220,29 @@ def _aidm_threshold_value(value: object, label: str) -> float:
 
 
 def _validate_run_dir(run_dir: Path, repository_root: Path) -> None:
-    protected = tuple(repository_root / name for name in ("src", "tests", "docs"))
-    for protected_path in protected:
-        if _paths_overlap(run_dir, protected_path):
-            raise ResearchContractError(
-                f"run_dir overlaps protected repository content: {protected_path}"
-            )
-
     agents_root = repository_root / ".agents"
-    if not _paths_overlap(run_dir, agents_root):
-        return
-
     allowed_destinations = (agents_root / "runs", agents_root / "output")
-    if any(_is_within(run_dir, destination) for destination in allowed_destinations):
+    for path in (run_dir, *allowed_destinations):
+        symlink = _first_symlink_component(path)
+        if symlink is not None:
+            raise ResearchContractError(f"run_dir contains symlinked path component: {symlink}")
+
+    canonical_run_dir = run_dir.resolve()
+    canonical_destinations = tuple(destination.resolve() for destination in allowed_destinations)
+    if any(_is_within(canonical_run_dir, destination) for destination in canonical_destinations):
         return
     raise ResearchContractError(
-        "run_dir under repository .agents must be within .agents/runs or .agents/output"
+        "run_dir must be canonically contained in repository .agents/runs or .agents/output"
     )
 
 
-def _paths_overlap(left: Path, right: Path) -> bool:
-    return _is_within(left, right) or _is_within(right, left)
+def _first_symlink_component(path: Path) -> Path | None:
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        if current.is_symlink():
+            return current
+    return None
 
 
 def _is_within(path: Path, parent: Path) -> bool:

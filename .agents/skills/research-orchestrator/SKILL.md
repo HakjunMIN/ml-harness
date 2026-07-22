@@ -45,6 +45,9 @@ research-loop`. Orchestration is opt-in and stops before AIDD/code/deploy.
   JSON, incomplete journal groups, and terminal resume all fail closed.
 - State transitions are only `initialized -> diagnosed -> proposed -> experimenting -> verifying`
   and then `iterate`, `ready_for_human_review`, `exhausted`, or `failed`.
+  A diagnostic failure traverses the required internal states without allocating a profile,
+  selecting a proposal, running an experiment, or emitting `experiment-failure.json`; only
+  `verifying -> failed` is terminal failure evidence.
 - Logs and summary contain aggregate metadata and safe reason codes only; never customer rows,
   target/actual samples, secrets, tokens, credentials, or environment values.
 

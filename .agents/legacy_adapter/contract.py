@@ -32,7 +32,7 @@ HARNESS_ENV_KEYS = (
 
 
 class AdapterContractError(ValueError):
-    """Raised when an adapter manifest or execution violates the harness contract."""
+    """Raised when an adapter manifest or execution violates the adapter contract."""
 
 
 @dataclass(frozen=True)
@@ -306,7 +306,7 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python3 -m harness.contract")
+    parser = argparse.ArgumentParser(prog="python3 -m legacy_adapter.contract")
     parser.add_argument("--adapter", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--run-id")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,14 +20,19 @@ from power_forecasting.research_state import ResearchStateError
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _run_dir(tmp_path: Path) -> Path:
+    return ROOT / ".agents" / "output" / f"pytest-research-{tmp_path.name}"
+
+
 def _config(tmp_path: Path, profiles: list[str], max_iterations: int) -> Path:
+    shutil.rmtree(_run_dir(tmp_path), ignore_errors=True)
     config_path = tmp_path / "research-loop.json"
     payload = {
         "schema_version": "1",
         "run_id": "test-loop",
         "dataset_path": str(ROOT / ".agents/fixtures/valid-dataset.csv"),
         "legacy_manifest_path": str(ROOT / ".agents/fixtures/promoted-manifest.json"),
-        "run_dir": str(tmp_path / "run"),
+        "run_dir": str(_run_dir(tmp_path)),
         "profiles": profiles,
         "max_iterations": max_iterations,
         "fold_count": 1,
@@ -284,7 +290,7 @@ def test_verifier_evidence_parse_error_persists_failed_state(tmp_path, monkeypat
     result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
 
     assert result["status"] == "failed"
-    state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
+    state = json.loads((_run_dir(tmp_path) / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "failed"
 
 
@@ -301,7 +307,7 @@ def test_stale_cross_run_diagnosis_fails_before_proposal(tmp_path, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         run_research_loop(config)
 
-    run_dir = tmp_path / "run"
+    run_dir = _run_dir(tmp_path)
     diagnosis_path = run_dir / "diagnosis.json"
     diagnosis = json.loads(diagnosis_path.read_text(encoding="utf-8"))
     diagnosis["run_id"] = "different-run"
@@ -343,7 +349,7 @@ def test_journal_append_before_state_write_recovers_on_resume(tmp_path, monkeypa
     with pytest.raises(KeyboardInterrupt):
         run_research_loop(config)
 
-    run_dir = tmp_path / "run"
+    run_dir = _run_dir(tmp_path)
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "initialized"
     assert len((run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()) == 1
@@ -371,7 +377,7 @@ def test_journal_recovery_rejects_malformed_tail_timestamp(tmp_path, monkeypatch
     with pytest.raises(KeyboardInterrupt):
         run_research_loop(config)
 
-    run_dir = tmp_path / "run"
+    run_dir = _run_dir(tmp_path)
     lines = (run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()
     tail = json.loads(lines[-1])
     tail["timestamp"] = "not-an-iso-timestamp"
@@ -441,6 +447,8 @@ def test_journal_recovery_accepts_diagnostic_failure_group(tmp_path, monkeypatch
     monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
     result = run_research_loop(config, resume=True)
     assert result["status"] == "failed"
+    assert result["used_profiles"] == []
+    assert not list(_run_dir(tmp_path).rglob("experiment-failure.json"))
 
 
 def test_journal_recovery_accepts_verifier_report_failure_group(tmp_path, monkeypatch):
@@ -538,7 +546,7 @@ def test_journal_recovery_accepts_bound_experiment_failure_group(tmp_path, monke
     monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
     result = run_research_loop(config, resume=True)
     assert result["status"] == "failed"
-    state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
+    state = json.loads((_run_dir(tmp_path) / "state.json").read_text(encoding="utf-8"))
     failure_paths = [
         path for path in state["artifacts"] if path.endswith("experiment-failure.json")
     ]
@@ -587,7 +595,7 @@ def test_resume_rejects_tampered_experiment_failure_artifact(tmp_path, monkeypat
     with pytest.raises(KeyboardInterrupt):
         run_research_loop(config)
 
-    failure_path = next((tmp_path / "run").rglob("experiment-failure.json"))
+    failure_path = next(_run_dir(tmp_path).rglob("experiment-failure.json"))
     failure_path.write_text(failure_path.read_text(encoding="utf-8") + "tampered", encoding="utf-8")
     monkeypatch.setattr(orchestrator, "_persist_state", original_persist)
     with pytest.raises(ResearchStateError, match="checksum mismatch"):
@@ -624,7 +632,7 @@ def test_boolean_experiment_failure_iteration_fails_closed(tmp_path, monkeypatch
     result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
 
     assert result["status"] == "failed"
-    state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
+    state = json.loads((_run_dir(tmp_path) / "state.json").read_text(encoding="utf-8"))
     assert not any(path.endswith("experiment-failure.json") for path in state["artifacts"])
     assert any(path.endswith("verification-failure.json") for path in state["artifacts"])
 
@@ -670,7 +678,7 @@ def test_resume_rejects_nested_experiment_failure_artifact_path(tmp_path, monkey
     with pytest.raises(KeyboardInterrupt):
         run_research_loop(config)
 
-    run_dir = tmp_path / "run"
+    run_dir = _run_dir(tmp_path)
     canonical = next(run_dir.rglob("experiment-failure.json"))
     nested = canonical.parent / "nested" / canonical.name
     nested.parent.mkdir()
@@ -721,17 +729,32 @@ def test_excluded_profiles_are_filtered_and_exhausted(tmp_path, monkeypatch):
 def test_diagnostic_failure_persists_terminal_failed_state(tmp_path, monkeypatch):
     import power_forecasting.research_orchestrator as orchestrator
 
+    calls = {"experiment": 0}
+
     monkeypatch.setattr(
         orchestrator,
         "run_diagnostic_agent",
         lambda config: (_ for _ in ()).throw(ValueError("raw diagnostic detail")),
     )
+    monkeypatch.setattr(
+        orchestrator,
+        "run_experiment_agent",
+        lambda **kwargs: calls.__setitem__("experiment", calls["experiment"] + 1),
+    )
     result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
 
     assert result["status"] == "failed"
+    assert calls["experiment"] == 0
     assert result["verifier"]["reasons"] == ["diagnostic_failed"]
-    state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
+    state = json.loads((_run_dir(tmp_path) / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "failed"
+    assert state["used_profiles"] == []
+    assert state["remaining_profiles"] == ["safe_weather"]
+    assert [
+        Path(path).name for path in state["artifacts"]
+    ] == ["diagnostic-failure.json"]
+    assert not list(_run_dir(tmp_path).rglob("experiment-failure.json"))
+    assert not list(_run_dir(tmp_path).rglob("research-proposal.json"))
     assert [
         (event["from_status"], event["to_status"])
         for event in state["transitions"]
@@ -746,7 +769,7 @@ def test_diagnostic_failure_persists_terminal_failed_state(tmp_path, monkeypatch
         {
             "result": result,
             "state": state,
-            "journal": (tmp_path / "run" / "journal.jsonl").read_text(encoding="utf-8"),
+            "journal": (_run_dir(tmp_path) / "journal.jsonl").read_text(encoding="utf-8"),
         }
     )
     assert "raw diagnostic detail" not in persisted
@@ -762,16 +785,17 @@ def test_journal_append_failure_rolls_back_state_transition(tmp_path, monkeypatc
         "_append_journal",
         lambda path, events: (_ for _ in ()).throw(OSError("journal unavailable")),
     )
+    config = _config(tmp_path, ["safe_weather"], 1)
     with pytest.raises(OSError, match="journal unavailable"):
-        run_research_loop(_config(tmp_path, ["safe_weather"], 1))
+        run_research_loop(config)
 
-    run_dir = tmp_path / "run"
+    run_dir = _run_dir(tmp_path)
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "initialized"
     assert (run_dir / "journal.jsonl").read_text(encoding="utf-8") == ""
 
     monkeypatch.setattr(orchestrator, "_append_journal", original_append)
-    result = run_research_loop(_config(tmp_path, ["safe_weather"], 1), resume=True)
+    result = run_research_loop(config, resume=True)
     assert result["status"] == "ready_for_human_review"
 
 
@@ -856,7 +880,7 @@ def test_resume_requires_matching_artifacts_and_terminal_runs_cannot_resume(
     with pytest.raises(KeyboardInterrupt):
         run_research_loop(config)
 
-    proposal = next((tmp_path / "run").rglob("research-proposal.json"))
+    proposal = next(_run_dir(tmp_path).rglob("research-proposal.json"))
     original_proposal = proposal.read_bytes()
     proposal.write_text("tampered", encoding="utf-8")
     with pytest.raises(ResearchStateError, match="checksum mismatch"):

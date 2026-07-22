@@ -1,6 +1,6 @@
-# 발전량 예측 하니스
+# 발전량 예측 실험 워크플로
 
-발전량 예측 하니스는 AI 보조 발전량 예측을 위한 오프라인 데모입니다. 발전소/기상 테이블 데이터를 생성하거나 입력받아 레거시 기준 모델을 평가하고, AIDM으로 결정론적 피처 후보를 탐색하며, AIDD로 안전한 매니페스트를 승격하고 감사 가능한 산출물을 생성합니다.
+발전량 예측 실험 워크플로는 AI 보조 발전량 예측을 위한 오프라인 데모입니다. 발전소/기상 테이블 데이터를 생성하거나 입력받아 레거시 기준 모델을 평가하고, AIDM으로 결정론적 피처 후보를 탐색하며, AIDD로 안전한 매니페스트를 승격하고 감사 가능한 산출물을 생성합니다.
 
 ## 목표 및 안전 범위
 
@@ -263,9 +263,9 @@ uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
 
 대시보드는 로컬 산출물을 읽어 승격 결정, 우승 지표, AIDM 순위, 실험 실행, 보고서 텍스트, 선택 피처 명세, 발견된 산출물 경로를 표시합니다.
 
-## 코딩 에이전트에서 하니스와 스킬 사용
+## 코딩 에이전트에서 실험 워크플로와 스킬 사용
 
-이 저장소의 하니스는 CLI 명령으로 직접 실행할 수도 있고, 코딩 에이전트에게 저장소 로컬 스킬을 명시해 안전 절차를 맡길 수도 있습니다. 슬래시 명령을 지원하는 환경에서는 `/legacy-intake`, `/aidm-experiment`, `/aidd-promotion`, `/release-gate`처럼 요청할 수 있습니다. VS Code Copilot처럼 슬래시 스킬 호출이 고정되어 있지 않은 환경에서는 자연어로 스킬명을 명시하는 방식이 가장 명확합니다.
+이 저장소의 실험 워크플로는 CLI 명령으로 직접 실행할 수도 있고, 코딩 에이전트에게 저장소 로컬 스킬을 명시해 안전 절차를 맡길 수도 있습니다. 슬래시 명령을 지원하는 환경에서는 `/legacy-intake`, `/aidm-experiment`, `/aidd-promotion`, `/release-gate`, `/research-diagnostic`, `/research-proposal`, `/research-verification`, `/research-orchestrator`처럼 요청할 수 있습니다. VS Code Copilot처럼 슬래시 스킬 호출이 고정되어 있지 않은 환경에서는 자연어로 스킬명을 명시하는 방식이 가장 명확합니다.
 
 예시 요청:
 
@@ -276,9 +276,49 @@ aidd-promotion 스킬로 promoted manifest를 검증하고 생성 모듈 컴파�
 release-gate 스킬로 baseline, AIDM, AIDD, compile, human approval 증거를 판정해줘
 ```
 
+## 선택적 Stage 1 자율 연구 루프
+
+기존 수동 흐름은 변경되지 않습니다. `legacy-intake`로 baseline을 확인하고
+`aidm-experiment`에서 사람이 제안 JSON과 명령을 선택하는 방식은 여전히 기본 경로이며,
+이 루프를 실행하지 않아도 됩니다. 탐색 단계만 선택적으로 상태 머신으로 묶으려면 다음
+fixture 명령을 사용합니다.
+
+```bash
+.agents/scripts/run-research-loop.sh --config .agents/fixtures/research-loop.json
+```
+
+runner는 기존 프로젝트 안의 `--config` 파일만 읽고 저장소 루트에서 정확히
+`uv run python -m power_forecasting.cli research-loop`를 실행합니다. 설정의 입력 경로는
+설정 파일 디렉터리에 대해 해석되며, fixture는 합성 `valid-dataset.csv`와 baseline
+manifest만 사용하고 출력은 `.agents/runs/research-loop-fixture/` 아래에 둡니다. 환경
+비밀값을 export하거나 출력하지 않습니다. `--resume`은 동일한 설정과 체크섬을 가진
+비터미널 실행만 재개합니다.
+
+Stage 1은 한 프로필당 최대 한 번, 설정된 `max_iterations`(1~10)와 AIDM proposal/search
+budget(각 proposal budget 1~50) 안에서만 반복합니다. 각 run은
+`research-config.json`, `state.json`, `journal.jsonl`, iteration별
+`research-proposal.json`, `research-notes.json`, AIDM `promotion_manifest.json`,
+`experiments.db`, `performance_report.md`, `experiment-evidence.json`,
+`experiment-failure.json`(실험 실패 시), `verification.json`과 최종
+`research-summary.json`을 SHA-256으로 연결합니다. 성공한 진단만 `diagnosis.json`을 만들며,
+진단이 실패하면 프로필을 선택하거나 실험을 실행하지 않고 필요한 내부 상태 전이만 거쳐
+terminal `diagnostic-failure.json`(안전한 `rejected_conditions`)으로 대체합니다. 이 경로는
+`experiment-failure.json`을 만들지 않습니다. 검증기가 입력 evidence를 malformed로 판단하면 검증기가 `verification.json`에
+`status: "invalid"`로 fail-closed 기록을 남깁니다. 검증기 반환값/report가 malformed이거나
+orchestrator의 evidence 처리 자체가 실패하면 orchestrator가 별도의
+`verification-failure.json`(안전한 reason code만 포함)을 기록합니다. 두 경로 모두 raw
+evidence data를 기록하지 않으며 서로 대체 관계가 아닙니다. 상태는
+`ready_for_human_review`, `exhausted`, 또는 `failed`에서 멈추며, 터미널 상태는 재개하지 않습니다.
+
+이 루프의 경계는 AIDD 호출, 실행 가능한 코드 생성, merge, deploy 직전입니다.
+`research-summary.json`은 연구 진단/제안/검증 결과일 뿐 release 또는 deploy 승인 증거가
+아닙니다. 사람은 summary와 전체 증적을 검토한 뒤 기존 수동 AIDD 및 release gate 절차를
+별도로 실행해야 합니다. 루프는 source, fixture, 고객 데이터, gate 임계값을 수정하지
+않고 고객 행·target·secret을 기록하지 않습니다.
+
 ## 포함하지 않은 운영 마이그레이션 및 확장 지점
 
-이 저장소는 로컬 하니스이며 운영 플랫폼이 아닙니다. 다음은 확장 지점이며 포함하지 않습니다.
+이 저장소는 로컬 실험 환경이며 운영 플랫폼이 아닙니다. 다음은 확장 지점이며 포함하지 않습니다.
 
 - SQLite 대신 MLflow 또는 관리형 실험 추적 사용
 - 실시간 원천 시스템에 연결하는 고객 데이터 어댑터
@@ -337,14 +377,14 @@ PY
 - `generated/promoted_features.py` 누락: 매니페스트가 거부되었거나 AIDD 검증에 실패한 것입니다. 워크플로는 안전한 승격이 확인되기 전까지 코드를 생성하지 않습니다.
 - Streamlit import 오류: `uv sync --extra dashboard`로 dashboard extra를 설치합니다.
 
-## 레거시 외부 하니스(`.agents/`) 안전 사용
+## 레거시 어댑터 실행기(`.agents/`) 안전 사용
 
-`.agents/harness/contract.py`는 고객 레거시 예측기를 블랙박스 어댑터로 실행합니다. 어댑터 JSON은 `schema_version: "1"`, 비어 있지 않은 `legacy_command` argv, 매니페스트 디렉터리 아래의 상대 `input_dataset`/`predictions_output`, `required_prediction_columns`, `timeout_seconds(1..3600)`만 허용합니다. 명령은 shell 없이 실행되며 `HARNESS_INPUT_DATASET`, `HARNESS_PREDICTIONS_OUTPUT`, `HARNESS_RUN_DIR` 이름의 환경 변수만 전달합니다.
+`.agents/legacy_adapter/contract.py`는 고객 레거시 예측기를 블랙박스 어댑터로 실행합니다. 어댑터 JSON은 `schema_version: "1"`, 비어 있지 않은 `legacy_command` argv, 매니페스트 디렉터리 아래의 상대 `input_dataset`/`predictions_output`, `required_prediction_columns`, `timeout_seconds(1..3600)`만 허용합니다. 명령은 shell 없이 실행되며 `HARNESS_INPUT_DATASET`, `HARNESS_PREDICTIONS_OUTPUT`, `HARNESS_RUN_DIR` 이름의 환경 변수만 전달합니다. 이 환경 변수 이름은 레거시 어댑터 계약의 호환 API이며, 코딩 에이전트 하니스와는 관련이 없습니다.
 
 Fixture-first 순서:
 
 ```bash
-PYTHONPATH=.agents uv run python -m harness.contract --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/fixture
+PYTHONPATH=.agents uv run python -m legacy_adapter.contract --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/fixture
 .agents/scripts/run-legacy.sh --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/legacy
 .agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --run-dir .agents/runs/aidm --folds 1 --top-single-candidates 1
 cp .agents/fixtures/promoted-manifest.json .agents/runs/promotion/promotion_manifest.json
@@ -354,41 +394,3 @@ cp .agents/fixtures/promoted-manifest.json .agents/runs/promotion/promotion_mani
 증거 파일은 `legacy-evidence.json`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`, `promotion-evidence.json`입니다. 증거에는 체크섬과 상태만 남기며 입력 행 내용, 고객 데이터, 비밀, 환경 변수 값은 기록하지 않습니다. 경로 이탈, 빈 CSV, 필수 예측 컬럼 누락, `actual_*`/`generation_mw` 누수, `decision: reject`, 컴파일 실패는 모두 거부로 처리하고 성공 증거를 만들지 않습니다.
 
 실제 고객 데이터 또는 고객 시스템 실행은 사람이 명시적으로 승인하기 전까지 금지됩니다. AIDD가 생성한 코드는 human approval 이후 검토용 패치 요청으로만 다루며, 에이전트는 배포·머지·고객 시스템 편집을 수행하지 않습니다.
-## 선택적 Stage 1 자율 연구 루프
-
-기존 수동 흐름은 변경되지 않습니다. `legacy-intake`로 baseline을 확인하고
-`aidm-experiment`에서 사람이 제안 JSON과 명령을 선택하는 방식은 여전히 기본 경로이며,
-이 루프를 실행하지 않아도 됩니다. 탐색 단계만 선택적으로 상태 머신으로 묶으려면 다음
-fixture 명령을 사용합니다.
-
-```bash
-.agents/scripts/run-research-loop.sh --config .agents/fixtures/research-loop.json
-```
-
-runner는 기존 프로젝트 안의 `--config` 파일만 읽고 저장소 루트에서 정확히
-`uv run python -m power_forecasting.cli research-loop`를 실행합니다. 설정의 입력 경로는
-설정 파일 디렉터리에 대해 해석되며, fixture는 합성 `valid-dataset.csv`와 baseline
-manifest만 사용하고 출력은 `.agents/runs/research-loop-fixture/` 아래에 둡니다. 환경
-비밀값을 export하거나 출력하지 않습니다. `--resume`은 동일한 설정과 체크섬을 가진
-비터미널 실행만 재개합니다.
-
-Stage 1은 한 프로필당 최대 한 번, 설정된 `max_iterations`(1~10)와 AIDM proposal/search
-budget(각 proposal budget 1~50) 안에서만 반복합니다. 각 run은
-`research-config.json`, `state.json`, `journal.jsonl`, iteration별
-`research-proposal.json`, `research-notes.json`, AIDM `promotion_manifest.json`,
-`experiments.db`, `performance_report.md`, `experiment-evidence.json`,
-`experiment-failure.json`(실험 실패 시), `verification.json`과 최종
-`research-summary.json`을 SHA-256으로 연결합니다. 성공한 진단만 `diagnosis.json`을 만들며,
-진단이 실패하면 terminal `diagnostic-failure.json`(안전한 `rejected_conditions`)으로
-대체합니다. 검증기가 입력 evidence를 malformed로 판단하면 검증기가 `verification.json`에
-`status: "invalid"`로 fail-closed 기록을 남깁니다. 검증기 반환값/report가 malformed이거나
-orchestrator의 evidence 처리 자체가 실패하면 orchestrator가 별도의
-`verification-failure.json`(안전한 reason code만 포함)을 기록합니다. 두 경로 모두 raw
-evidence data를 기록하지 않으며 서로 대체 관계가 아닙니다. 상태는
-`ready_for_human_review`, `exhausted`, 또는 `failed`에서 멈추며, 터미널 상태는 재개하지 않습니다.
-
-이 루프의 경계는 AIDD 호출, 실행 가능한 코드 생성, merge, deploy 직전입니다.
-`research-summary.json`은 연구 진단/제안/검증 결과일 뿐 release 또는 deploy 승인 증거가
-아닙니다. 사람은 summary와 전체 증적을 검토한 뒤 기존 수동 AIDD 및 release gate 절차를
-별도로 실행해야 합니다. 루프는 source, fixture, 고객 데이터, gate 임계값을 수정하지
-않고 고객 행·target·secret을 기록하지 않습니다.

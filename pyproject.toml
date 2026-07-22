@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "power-forecasting"
 version = "0.1.0"
-description = "AI-driven power forecasting harness."
+description = "AI-driven power forecasting experiment workflow."
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.24,<3",

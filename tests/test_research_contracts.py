@@ -175,7 +175,9 @@ def test_config_rejects_run_directories_overlapping_protected_repository_content
 @pytest.mark.parametrize(
     ("run_dir", "is_allowed"),
     [
+        ("../.agents/runs", True),
         ("../.agents/runs/run_001", True),
+        ("../.agents/output", True),
         ("../.agents/output/run_001", True),
         ("../.agents/cache/run_001", False),
         ("../.agents/research-output", False),
@@ -191,6 +193,63 @@ def test_config_permits_only_designated_repository_agents_destinations(
     else:
         with pytest.raises(ResearchContractError, match=r"\.agents"):
             _load(payload, contract_paths)
+
+
+@pytest.mark.parametrize(
+    "run_dir",
+    [
+        "..",
+        "../.git",
+        "../.agents",
+        "/outside/research-run",
+    ],
+)
+def test_config_rejects_repository_root_git_and_external_run_directories(
+    contract_paths: dict[str, Path], run_dir: str
+) -> None:
+    with pytest.raises(ResearchContractError, match="run_dir"):
+        _load(_payload(run_dir=run_dir), contract_paths)
+
+
+def test_config_rejects_symlinked_run_destination_and_parent(
+    contract_paths: dict[str, Path], tmp_path: Path
+) -> None:
+    agents = contract_paths["repository_root"] / ".agents"
+    runs = agents / "runs"
+    runs.mkdir(parents=True)
+
+    destination = runs / "linked-destination"
+    destination.symlink_to(tmp_path / "destination", target_is_directory=True)
+    with pytest.raises(ResearchContractError, match="symlink"):
+        _load(_payload(run_dir="../.agents/runs/linked-destination"), contract_paths)
+
+    parent = agents / "linked-parent"
+    parent.symlink_to(runs, target_is_directory=True)
+    with pytest.raises(ResearchContractError, match="symlink"):
+        _load(_payload(run_dir="../.agents/linked-parent/run"), contract_paths)
+
+
+def test_config_rejects_symlinked_allowed_root(
+    contract_paths: dict[str, Path], tmp_path: Path
+) -> None:
+    agents = contract_paths["repository_root"] / ".agents"
+    (agents / "runs").symlink_to(tmp_path, target_is_directory=True)
+
+    with pytest.raises(ResearchContractError, match="symlink"):
+        _load(_payload(run_dir="../.agents/runs/run_001"), contract_paths)
+
+
+def test_config_requires_explicit_run_dir(contract_paths: dict[str, Path]) -> None:
+    with pytest.raises(ResearchContractError, match="missing keys"):
+        _load(_payload_without("run_dir"), contract_paths)
+    with pytest.raises(ResearchContractError, match="run_dir"):
+        _load(_payload(run_dir=""), contract_paths)
+
+
+def _payload_without(key: str) -> dict[str, object]:
+    payload = _payload()
+    del payload[key]
+    return payload
 
 
 def _config_for_state(contract_paths: dict[str, Path]):

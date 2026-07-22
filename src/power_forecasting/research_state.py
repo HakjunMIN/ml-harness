@@ -69,6 +69,7 @@ _ALLOWED_TRANSITIONS = {
 }
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _EXPERIMENT_ID_PATTERN = _SHA256_PATTERN
+_DIAGNOSTIC_FAILURE_NAME = "diagnostic-failure.json"
 _EXPERIMENT_FAILURE_NAME = "experiment-failure.json"
 _SENSITIVE_TEXT_PATTERN = re.compile(
     r"""(?ix)
@@ -352,7 +353,14 @@ def transition_state(
     for artifact_path, checksum in recorded_artifacts:
         artifacts[artifact_path] = checksum
 
-    iteration, used_profiles, remaining_profiles = _advance_cycle(state, to_status)
+    diagnostic_failure = to_status == "diagnosed" and any(
+        path.name == _DIAGNOSTIC_FAILURE_NAME for path in artifact_paths.values()
+    )
+    iteration, used_profiles, remaining_profiles = _advance_cycle(
+        state,
+        to_status,
+        skip_profile=diagnostic_failure,
+    )
     profile = used_profiles[-1] if used_profiles else None
     timestamp = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     events = list(state.transitions)
@@ -457,7 +465,14 @@ def atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
         os.close(directory_fd)
 
 
-def _advance_cycle(state: ResearchState, to_status: str) -> tuple[int, tuple[str, ...], tuple[str, ...]]:
+def _advance_cycle(
+    state: ResearchState,
+    to_status: str,
+    *,
+    skip_profile: bool = False,
+) -> tuple[int, tuple[str, ...], tuple[str, ...]]:
+    if skip_profile:
+        return state.iteration, state.used_profiles, state.remaining_profiles
     if (state.status, to_status) not in {("initialized", "diagnosed"), ("verifying", "iterate")}:
         return state.iteration, state.used_profiles, state.remaining_profiles
     if not state.remaining_profiles:
@@ -902,7 +917,15 @@ def _validate_transition_history(state: ResearchState) -> None:
         expected_iteration = iteration
         expected_used = used_profiles
         expected_remaining = remaining_profiles
-        if (status, to_status) in {("initialized", "diagnosed"), ("verifying", "iterate")}:
+        diagnostic_failure = to_status == "diagnosed" and any(
+            artifact_event["artifact_path"] is not None
+            and Path(str(artifact_event["artifact_path"])).name == _DIAGNOSTIC_FAILURE_NAME
+            for artifact_event in events
+        )
+        if (
+            (status, to_status) in {("initialized", "diagnosed"), ("verifying", "iterate")}
+            and not diagnostic_failure
+        ):
             if not remaining_profiles:
                 if status == "initialized" and to_status == "diagnosed":
                     expected_profile = None
