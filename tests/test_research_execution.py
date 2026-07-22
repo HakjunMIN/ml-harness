@@ -692,6 +692,55 @@ def test_verifier_rejects_tampered_baseline_sqlite_parameters(
     assert "check_failed:baseline_provenance" in verification.reasons
 
 
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    (
+        ("schema_version", "tampered"),
+        ("seed", 99),
+        ("model", "Recipe:tampered:model"),
+    ),
+)
+def test_verifier_rejects_tampered_selected_proposal_sqlite_parameters(
+    parameter: str,
+    value: object,
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    iteration_dir = experiment.manifest_path.parent
+    evidence = json.loads(
+        (iteration_dir / "experiment-evidence.json").read_text(encoding="utf-8")
+    )
+    with sqlite3.connect(iteration_dir / "experiments.db") as connection:
+        row = connection.execute(
+            "SELECT params_json FROM runs WHERE id = ?",
+            (evidence["selected_candidate"]["database_run_id"],),
+        ).fetchone()
+        assert row is not None
+        params = json.loads(row[0])
+        params[parameter] = value
+        connection.execute(
+            "UPDATE runs SET params_json = ? WHERE id = ?",
+            (
+                json.dumps(params),
+                evidence["selected_candidate"]["database_run_id"],
+            ),
+        )
+    _update_evidence_checksum(experiment, "database_sha256", iteration_dir / "experiments.db")
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["proposal_runs"] is False
+    assert "check_failed:proposal_runs" in verification.reasons
+
+
 def test_verifier_binds_report_content_to_manifest_evidence(
     execution_config: ResearchLoopConfig,
     proposal,

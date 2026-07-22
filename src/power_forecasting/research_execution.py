@@ -26,6 +26,7 @@ from power_forecasting.aidm import (
 from power_forecasting.cli import run_aidm_workflow, run_legacy
 from power_forecasting.data import DataContractError, parse_timestamps, validate_dataset
 from power_forecasting.features import FeatureSpec
+from power_forecasting.models import model_definition_from_recipe
 from power_forecasting.proposals import (
     ProposalValidationError,
     ResearchProposal,
@@ -1017,8 +1018,9 @@ def _proposal_runs_are_complete(
 ) -> bool:
     if rows is None:
         return False
-    expected = _expected_proposal_runs(proposal)
     try:
+        aidm_config = _research_aidm_config(config)
+        expected = _expected_proposal_runs(proposal)
         proposal_rows = [
             row
             for row in rows
@@ -1037,6 +1039,10 @@ def _proposal_runs_are_complete(
                 row["status"] != "completed"
                 or params.get("proposal") != proposal_payload
                 or params.get("folds") != config.fold_count
+                or type(params.get("seed")) is not int
+                or params["seed"] != aidm_config.seed
+                or params.get("schema_version") != _SCHEMA_VERSION
+                or params.get("model") != expected_run["model"]
                 or params.get("specs") != expected_run["specs"]
                 or not isinstance(summary, Mapping)
                 or summary.get("name") != candidate_name
@@ -1070,6 +1076,7 @@ def _expected_proposal_runs(proposal: ResearchProposal) -> dict[str, dict[str, A
             expected[candidate_name] = {
                 "kind": "direct",
                 "recipe": recipe.to_dict(),
+                "model": model_definition_from_recipe(recipe).name,
                 "specs": specs,
             }
         if proposal.search is None:
@@ -1080,6 +1087,7 @@ def _expected_proposal_runs(proposal: ResearchProposal) -> dict[str, dict[str, A
                 "kind": "trial",
                 "feature_index": feature_index,
                 "feature_set": feature_set.name,
+                "model": f"Recipe:lightgbm:optuna_lightgbm_{trial_number}",
                 "specs": specs,
                 "trial_number": trial_number,
             }
@@ -1088,6 +1096,7 @@ def _expected_proposal_runs(proposal: ResearchProposal) -> dict[str, dict[str, A
             "kind": "selected",
             "feature_index": feature_index,
             "feature_set": feature_set.name,
+            "model": "Recipe:lightgbm:selected_lightgbm",
             "specs": specs,
         }
     return expected
