@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -12,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 
+from power_forecasting.data import REQUIRED_COLUMNS
 from power_forecasting.research_contracts import (
     ResearchContractError,
     ResearchLoopConfig,
@@ -123,6 +125,11 @@ _DIAGNOSTIC_KEYS = frozenset(
         "legacy_evidence",
         "legacy_evidence_reference",
         "legacy_evidence_sha256",
+        "missingness",
+        "drift_summary",
+        "residual_summary",
+        "leakage_checks",
+        "recommended_profiles",
         "warnings",
         "rejected_conditions",
     }
@@ -155,6 +162,24 @@ _TIME_COVERAGE_KEYS = frozenset({"start", "end", "time_start", "time_end"})
 _FOLD_FEASIBILITY_KEYS = frozenset({"requested", "available", "fold_count", "feasible", "reason"})
 _HISTORY_FEASIBILITY_KEYS = frozenset({"feasible", "reason", "available_rows", "minimum_rows"})
 _EVIDENCE_REFERENCE_KEYS = frozenset({"path", "sha256", "checksum", "status"})
+_MISSINGNESS_KEYS = frozenset(REQUIRED_COLUMNS)
+_DRIFT_SUMMARY_KEYS = frozenset(
+    column
+    for column in REQUIRED_COLUMNS
+    if column.startswith(("forecast_", "ldaps_"))
+)
+_RESIDUAL_SUMMARY_KEYS = frozenset(
+    {"capacity_utilization_mean", "zero_baseline_nmae"}
+)
+_LEAKAGE_CHECK_KEYS = frozenset(
+    {
+        "dataset_schema_valid",
+        "history_features_strict_prior",
+        "prediction_inputs_exclude_actual",
+        "prediction_inputs_exclude_target",
+    }
+)
+_PROFILE_ORDER = ("safe_weather", "history_tree", "bounded_search")
 
 
 class ResearchStateError(ValueError):
@@ -540,6 +565,21 @@ def _validate_diagnostic_field(field: str, value: object) -> None:
     if field in _DIAGNOSTIC_INPUT_KEYS:
         _validate_prediction_time_inputs(value, field)
         return
+    if field == "missingness":
+        _validate_ratio_summary(value, field, _MISSINGNESS_KEYS)
+        return
+    if field == "drift_summary":
+        _validate_ratio_summary(value, field, _DRIFT_SUMMARY_KEYS)
+        return
+    if field == "residual_summary":
+        _validate_ratio_summary(value, field, _RESIDUAL_SUMMARY_KEYS)
+        return
+    if field == "leakage_checks":
+        _validate_leakage_checks(value)
+        return
+    if field == "recommended_profiles":
+        _validate_recommended_profiles(value)
+        return
     if field in {"warnings", "rejected_conditions"}:
         _validate_diagnostic_codes(value, field)
         return
@@ -597,6 +637,57 @@ def _validate_history_feasibility(value: object) -> None:
             _diagnostic_count(field_value, f"history_feature_feasibility.{field}")
         else:
             _diagnostic_code(field_value, "history_feature_feasibility.reason")
+
+
+def _validate_ratio_summary(
+    value: object,
+    label: str,
+    expected_keys: frozenset[str],
+) -> None:
+    mapping = _diagnostic_mapping(value, expected_keys, f"diagnostic {label}")
+    if set(mapping) != set(expected_keys):
+        raise ResearchStateError(
+            f"diagnostic {label} must contain its exact aggregate keys"
+        )
+    for key, field_value in mapping.items():
+        if isinstance(field_value, bool) or not isinstance(field_value, (int, float)):
+            raise ResearchStateError(f"diagnostic {label}.{key} must be numeric")
+        number = float(field_value)
+        if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+            raise ResearchStateError(
+                f"diagnostic {label}.{key} must be finite and between 0 and 1"
+            )
+
+
+def _validate_leakage_checks(value: object) -> None:
+    mapping = _diagnostic_mapping(
+        value,
+        _LEAKAGE_CHECK_KEYS,
+        "diagnostic leakage_checks",
+    )
+    if set(mapping) != set(_LEAKAGE_CHECK_KEYS):
+        raise ResearchStateError(
+            "diagnostic leakage_checks must contain its exact aggregate keys"
+        )
+    for key, field_value in mapping.items():
+        if type(field_value) is not bool:
+            raise ResearchStateError(f"diagnostic leakage_checks.{key} must be a boolean")
+
+
+def _validate_recommended_profiles(value: object) -> None:
+    if not isinstance(value, (list, tuple)):
+        raise ResearchStateError("diagnostic recommended_profiles must be a list")
+    if len(set(value)) != len(value):
+        raise ResearchStateError("diagnostic recommended_profiles contains duplicates")
+    if any(type(profile) is not str or profile not in SUPPORTED_PROFILES for profile in value):
+        raise ResearchStateError(
+            "diagnostic recommended_profiles contains an unsupported profile"
+        )
+    expected = tuple(profile for profile in _PROFILE_ORDER if profile in value)
+    if tuple(value) != expected:
+        raise ResearchStateError(
+            "diagnostic recommended_profiles must use deterministic supported ordering"
+        )
 
 
 def _validate_evidence_reference(value: object, label: str) -> None:
