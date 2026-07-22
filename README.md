@@ -14,6 +14,8 @@ diagnosis -> bounded proposal -> AIDM -> evidence verification -> human review
 
 기본 경로에서는 사람이 데이터셋, 제안 JSON, 명령, 다음 단계를 선택합니다. 선택적 Stage 1 research loop는 연구 단계만 제한적으로 자동화하며 AIDD, 고객 시스템 변경, 병합, 배포 이전에 멈춥니다.
 
+이 두 경로는 [데모 노트북](#데모-노트북-레거시에서-개선까지)에서 바로 실행해 볼 수 있습니다. `01`은 개선 전 레거시 기준선, `02`는 사람이 통제하는 수동 경로, `03`은 자동 연구 경로입니다.
+
 ## 목표 및 안전 범위
 
 데이터 계약부터 보고 가능한 산출물까지 반복 가능한 예측 워크플로를 보여주는 것이 목표입니다. 안전 범위는 의도적으로 제한합니다.
@@ -117,18 +119,24 @@ uv run python -m power_forecasting.cli all --output artifacts/demo --minimum-imp
 - `Ldaps`: LDAPS 형식의 예측 컬럼을 사용하는 선형 기준 모델입니다.
 - `SPOT`: 예측 기상, 용량, 위도, 경도를 사용하는 gradient-boosted 예측 시점 기준 모델입니다. AIDM은 피처 후보를 SPOT과 비교합니다.
 
-## 레거시 모델 교육 노트북
+## 데모 노트북: 레거시에서 개선까지
 
-운영 레거시 소스를 확보할 수 없는 경우에는
-[`notebooks/00_legacy_power_forecasting_models.ipynb`](notebooks/00_legacy_power_forecasting_models.ipynb)를 사용합니다.
-이 노트북은 합성 태양광 데이터에서 Mean, Weather, ForecastWeather, Ldaps, SPOT을
-독립적으로 구현하고 시간순 holdout으로 비교합니다. 실행하면
-`artifacts/legacy_notebook/`에 데이터셋, 모델별 지표, 발전소별 지표, SPOT holdout
-예측을 기록합니다.
+`notebooks/`의 네 노트북은 하나의 스토리를 이룹니다. 데모를 보는 사람은 레거시를
+**자기 시스템**으로 보고, `02` 또는 `03`을 통해 코딩 에이전트와 이 저장소 `.agents`
+하네스의 가치를 확인합니다. 모두 저장소 루트에서 실행하며 산출물은 `artifacts/demo/`
+또는 `.agents/runs/`에 남습니다.
 
-`legacy_predictions.csv`의 SPOT 결과는 이후 `aidm-experiment`에서 선택적 레거시
-비교 입력으로 사용할 수 있습니다. 합성 예제는 고객 운영 증거나 고객 모형과의 동등성을
-주장하지 않으며, Weather 결과는 예측 시점에 쓸 수 없는 실제 기상 기반 진단값입니다.
+| 노트북 | 역할 | 실행 내용 |
+| --- | --- | --- |
+| [`00_legacy_power_forecasting_models.ipynb`](notebooks/00_legacy_power_forecasting_models.ipynb) | 참조·설명 | 확보할 수 없는 운영 코드 대신 Mean, Weather, ForecastWeather, Ldaps, SPOT을 합성 데이터로 재구성하고, 제한된 피처·모델 연구까지 담은 이미 개선된 결과를 설명합니다. |
+| [`01_legacy_baseline.ipynb`](notebooks/01_legacy_baseline.ipynb) | 개선 전 기준선 | 같은 합성 데이터로 레거시 모델을 평가하고 예측 시점 기준선 `SPOT` NMAE를 고정합니다. 이것이 개선 대상입니다. |
+| [`02_manual_skill_path.ipynb`](notebooks/02_manual_skill_path.ipynb) | 사람이 통제하는 기본 경로 | `legacy-intake -> AIDM experiment -> AIDD promotion -> human review`. 제한된 JSON 제안으로 `SPOT`을 넘어서는 후보를 찾고, 게이트를 통과하면 결정론적 피처 모듈을 생성한 뒤 사람 검토 경계에서 멈춥니다. |
+| [`03_auto_research_path.ipynb`](notebooks/03_auto_research_path.ipynb) | 선택적 자동 연구 경로 | `diagnosis -> bounded proposal -> AIDM -> evidence verification -> human review`. Stage 1 연구 루프가 진단·제안·실험·검증을 자동 수행한 뒤 `ready_for_human_review`에서 멈추며, AIDD·배포는 하지 않습니다. |
+
+각 데모 노트북은 문서가 아니라 실제 하네스 코드를 실행해 검증 가능한 증적
+(`promotion_manifest.json`, `generated/promoted_features.py`, `research-summary.json` 등)을
+남깁니다. 합성 예제는 고객 운영 증거나 고객 모형과의 동등성을 주장하지 않으며,
+`Weather`는 예측 시점에 쓸 수 없는 실제 기상 기반 진단값입니다.
 
 ## 아키텍처 및 데이터 흐름
 
@@ -272,15 +280,9 @@ artifacts/demo/
 
 거부된 경우에도 `dataset.csv`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`는 진단에 유용합니다. `generated/promoted_features.py`는 승격 매니페스트가 AIDD 검증을 통과한 뒤에만 생성됩니다.
 
-## Notebook 및 대시보드
+## 대시보드
 
-`notebooks/`의 Notebook은 `Path("artifacts/demo")`를 가정한 간단한 워크플로 예제입니다.
-
-- `01_legacy_baseline.ipynb`
-- `02_aidm_feature_discovery.ipynb`
-- `03_aidd_promotion.ipynb`
-
-산출물을 생성한 뒤 대시보드를 실행합니다.
+데모 노트북이나 CLI로 산출물을 생성한 뒤 대시보드를 실행합니다.
 
 ```bash
 uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
@@ -288,9 +290,9 @@ uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
 
 대시보드는 로컬 산출물을 읽어 승격 결정, 우승 지표, AIDM 순위, 실험 실행, 보고서 텍스트, 선택 피처 명세, 발견된 산출물 경로를 표시합니다.
 
-## 코딩 에이전트에서 실험 워크플로와 스킬 사용
+## 코딩 에이전트에서 스킬 중심 실행
 
-이 저장소의 실험 워크플로는 CLI 명령으로 직접 실행할 수도 있고, 코딩 에이전트에게 저장소 로컬 스킬을 명시해 안전 절차를 맡길 수도 있습니다. 슬래시 명령을 지원하는 환경에서는 `/legacy-intake`, `/aidm-experiment`, `/aidd-promotion`, `/release-gate`, `/research-diagnostic`, `/research-proposal`, `/research-verification`, `/research-orchestrator`처럼 요청할 수 있습니다. VS Code Copilot처럼 슬래시 스킬 호출이 고정되어 있지 않은 환경에서는 자연어로 스킬명을 명시하는 방식이 가장 명확합니다.
+기본 실행 경로는 코딩 에이전트에게 저장소 로컬 스킬을 명시하는 방식입니다. `02`·`03` 데모 노트북이 이 스킬들을 실제로 호출하는 예시입니다. CLI는 자동화·CI·재현 실행을 위한 동등한 경로로 유지합니다. 슬래시 명령을 지원하는 환경에서는 `/legacy-intake`, `/aidm-experiment`, `/aidd-promotion`, `/release-gate`, `/research-diagnostic`, `/research-proposal`, `/research-verification`, `/research-orchestrator`처럼 요청할 수 있습니다. VS Code Copilot처럼 슬래시 스킬 호출이 고정되어 있지 않은 환경에서는 자연어로 스킬명을 명시하는 방식이 가장 명확합니다.
 
 | 스킬 | 역할 | 반드시 멈추는 경계 |
 | --- | --- | --- |

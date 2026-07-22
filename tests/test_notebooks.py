@@ -7,52 +7,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK_DIR = ROOT / "notebooks"
-EXPECTED_NOTEBOOKS = (
-    "00_legacy_power_forecasting_models.ipynb",
+EDUCATIONAL_NOTEBOOK = "00_legacy_power_forecasting_models.ipynb"
+DEMO_NOTEBOOKS = (
     "01_legacy_baseline.ipynb",
-    "02_aidm_feature_discovery.ipynb",
-    "03_aidd_promotion.ipynb",
+    "02_manual_skill_path.ipynb",
+    "03_auto_research_path.ipynb",
 )
-WORKFLOW_NOTEBOOKS = EXPECTED_NOTEBOOKS[1:]
-EDUCATIONAL_NOTEBOOK = EXPECTED_NOTEBOOKS[0]
+EXPECTED_NOTEBOOKS = (EDUCATIONAL_NOTEBOOK, *DEMO_NOTEBOOKS)
 ALLOWED_CELL_TYPES = {"code", "markdown", "raw"}
 
 
 def test_expected_notebooks_exist_with_no_extras():
     assert sorted(path.name for path in NOTEBOOK_DIR.glob("*.ipynb")) == sorted(EXPECTED_NOTEBOOKS)
-
-
-def test_notebooks_are_minimal_valid_nbformat_workflow_demos():
-    for name in WORKFLOW_NOTEBOOKS:
-        notebook = _read_notebook(NOTEBOOK_DIR / name)
-
-        _assert_valid_nbformat4_notebook(notebook, name)
-        assert notebook["nbformat"] == 4
-        assert isinstance(notebook.get("nbformat_minor"), int)
-        if notebook["nbformat_minor"] >= 5:
-            assert all("id" in cell for cell in notebook["cells"]), name
-        assert isinstance(notebook["cells"], list)
-
-        markdown_cells = [cell for cell in notebook["cells"] if cell.get("cell_type") == "markdown"]
-        code_cells = [cell for cell in notebook["cells"] if cell.get("cell_type") == "code"]
-        assert len(markdown_cells) == 1, name
-        assert len(code_cells) <= 4, name
-
-        markdown = "\n".join(_source(cell) for cell in markdown_cells)
-        assert markdown.lstrip().startswith("#"), name
-        assert "Purpose:" in markdown, name
-        assert "Assumption:" in markdown, name
-
-        code = "\n".join(_source(cell) for cell in code_cells)
-        code_lines = [line for line in code.splitlines() if line.strip()]
-        assert len(code_lines) <= 20, name
-        assert "power_forecasting" in code, name
-        assert 'Path("artifacts/demo")' in code, name
-
-        tree = ast.parse(code or "\n", filename=name)
-        forbidden = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        assert not any(isinstance(node, forbidden) for node in ast.walk(tree)), name
-        compile(tree, name, "exec")
 
 
 def test_educational_legacy_notebook_explains_models_and_exports_aidm_inputs():
@@ -75,17 +41,39 @@ def test_educational_legacy_notebook_explains_models_and_exports_aidm_inputs():
     compile(tree, EDUCATIONAL_NOTEBOOK, "exec")
 
 
-def test_notebooks_use_the_required_workflow_apis_without_running_them():
-    expected_snippets = {
-        "01_legacy_baseline.ipynb": ("run_generate_data", "run_legacy"),
-        "02_aidm_feature_discovery.ipynb": ("AIDMConfig", "run_aidm_workflow"),
-        "03_aidd_promotion.ipynb": ("json.loads", "run_aidd_workflow"),
-    }
-
-    for name, snippets in expected_snippets.items():
+def test_demo_notebooks_are_valid_and_compile():
+    for name in DEMO_NOTEBOOKS:
+        notebook = _read_notebook(NOTEBOOK_DIR / name)
+        _assert_valid_nbformat4_notebook(notebook, name)
+        assert any(cell.get("cell_type") == "markdown" for cell in notebook["cells"]), name
         code = _notebook_code(NOTEBOOK_DIR / name)
-        for snippet in snippets:
-            assert snippet in code, name
+        tree = ast.parse(code or "\n", filename=name)
+        compile(tree, name, "exec")
+
+
+def test_demo_notebooks_tell_the_three_path_story():
+    baseline_code = _notebook_code(NOTEBOOK_DIR / "01_legacy_baseline.ipynb")
+    assert "run_legacy" in baseline_code
+    assert "SPOT" in baseline_code
+
+    manual_code = _notebook_code(NOTEBOOK_DIR / "02_manual_skill_path.ipynb")
+    assert "run_aidm_workflow" in manual_code
+    assert "run_aidd_workflow" in manual_code
+    manual_markdown = _notebook_markdown(NOTEBOOK_DIR / "02_manual_skill_path.ipynb")
+    for skill in ("legacy-intake", "aidm-experiment", "aidd-promotion", "release-gate"):
+        assert skill in manual_markdown
+
+    auto_code = _notebook_code(NOTEBOOK_DIR / "03_auto_research_path.ipynb")
+    assert "run-research-loop.sh" in auto_code
+    auto_markdown = _notebook_markdown(NOTEBOOK_DIR / "03_auto_research_path.ipynb")
+    assert "ready_for_human_review" in auto_markdown
+    for skill in (
+        "research-orchestrator",
+        "research-diagnostic",
+        "research-proposal",
+        "research-verification",
+    ):
+        assert skill in auto_markdown
 
 
 def _read_notebook(path: Path) -> dict:
@@ -97,6 +85,13 @@ def _notebook_code(path: Path) -> str:
     notebook = _read_notebook(path)
     return "\n".join(
         _source(cell) for cell in notebook["cells"] if cell.get("cell_type") == "code"
+    )
+
+
+def _notebook_markdown(path: Path) -> str:
+    notebook = _read_notebook(path)
+    return "\n".join(
+        _source(cell) for cell in notebook["cells"] if cell.get("cell_type") == "markdown"
     )
 
 

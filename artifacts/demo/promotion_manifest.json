@@ -1,44 +1,99 @@
 {
   "baseline": {
     "metrics": {
-      "mae": 0.969006447598503,
-      "nmae": 0.015756202399975657,
-      "rmse": 1.9150720674916668
+      "mae": 0.9447471523887536,
+      "nmae": 0.015361742315264286,
+      "r2": 0.9714850041070051,
+      "rmse": 1.871010045038017
     },
     "model": "SPOT",
-    "run_id": "14112d9f-6cb1-5333-85ad-935bede3d6ed"
+    "run_id": "d68fdf34-7594-5f79-853f-694c4af0bcd0"
   },
   "decision": "promote",
   "failed_gates": [],
-  "improvement_ratio": 0.257571794429,
+  "improvement_ratio": 0.088361348948,
+  "legacy_baseline": null,
   "per_plant_deltas": {
-    "plant_01": -0.003190231495,
-    "plant_02": -0.005707353733,
-    "plant_03": -0.003259019445
+    "plant_01": -0.000196371467,
+    "plant_02": -0.002476488874,
+    "plant_03": -0.001144828419
+  },
+  "proposal": {
+    "baseline": {
+      "model": "SPOT"
+    },
+    "budget": {
+      "max_evaluations": 4,
+      "top_feature_groups": 2
+    },
+    "feature_sets": [
+      {
+        "name": "calendar_physics",
+        "rationale": "Forecast-time solar physics plus daily calendar signals.",
+        "specs": [
+          {
+            "inputs": [
+              "timestamp"
+            ],
+            "name": "hour_sin",
+            "parameters": {},
+            "rationale": "Daily cycle sine.",
+            "transform": "cyclic_hour",
+            "version": "1"
+          },
+          {
+            "inputs": [
+              "timestamp"
+            ],
+            "name": "hour_cos",
+            "parameters": {},
+            "rationale": "Daily cycle cosine.",
+            "transform": "cyclic_hour",
+            "version": "1"
+          },
+          {
+            "inputs": [
+              "forecast_irradiance",
+              "forecast_cloud_cover"
+            ],
+            "name": "effective_irradiance",
+            "parameters": {},
+            "rationale": "Cloud-adjusted forecast irradiance.",
+            "transform": "effective_irradiance",
+            "version": "1"
+          }
+        ]
+      }
+    ],
+    "model_recipes": [
+      {
+        "name": "hgb_demo",
+        "parameters": {
+          "learning_rate": 0.1,
+          "max_iter": 200,
+          "max_leaf_nodes": 31
+        },
+        "rationale": "Bounded deterministic boosted trees.",
+        "recipe": "hist_gradient_boosting"
+      }
+    ],
+    "proposal_id": "manual-demo-calendar-physics",
+    "rationale": "Prediction-time calendar and solar-physics features with a bounded boosted-tree recipe.",
+    "schema_version": "1"
   },
   "schema_version": "1",
   "seed": 42,
+  "selected_model_recipe": {
+    "name": "hgb_demo",
+    "parameters": {
+      "learning_rate": 0.1,
+      "max_iter": 200,
+      "max_leaf_nodes": 31
+    },
+    "rationale": "Bounded deterministic boosted trees.",
+    "recipe": "hist_gradient_boosting"
+  },
   "selected_specs": [
-    {
-      "inputs": [
-        "timestamp"
-      ],
-      "name": "doy_cos",
-      "parameters": {},
-      "rationale": "",
-      "transform": "cyclic_day_of_year",
-      "version": "1"
-    },
-    {
-      "inputs": [
-        "timestamp"
-      ],
-      "name": "doy_sin",
-      "parameters": {},
-      "rationale": "",
-      "transform": "cyclic_day_of_year",
-      "version": "1"
-    },
     {
       "inputs": [
         "forecast_irradiance",
@@ -46,7 +101,7 @@
       ],
       "name": "effective_irradiance",
       "parameters": {},
-      "rationale": "",
+      "rationale": "Cloud-adjusted forecast irradiance.",
       "transform": "effective_irradiance",
       "version": "1"
     },
@@ -56,7 +111,7 @@
       ],
       "name": "hour_cos",
       "parameters": {},
-      "rationale": "",
+      "rationale": "Daily cycle cosine.",
       "transform": "cyclic_hour",
       "version": "1"
     },
@@ -66,7 +121,7 @@
       ],
       "name": "hour_sin",
       "parameters": {},
-      "rationale": "",
+      "rationale": "Daily cycle sine.",
       "transform": "cyclic_hour",
       "version": "1"
     }
@@ -77,11 +132,12 @@
   },
   "winner": {
     "metrics": {
-      "mae": 0.7194177180769481,
-      "nmae": 0.01169784907442192,
-      "rmse": 1.4359852353012215
+      "mae": 0.8612680195884709,
+      "nmae": 0.014004358042088957,
+      "r2": 0.9759210341716041,
+      "rmse": 1.7193265816972754
     },
-    "name": "doy_cos+doy_sin+effective_irradiance+hour_cos+hour_sin",
-    "run_id": "bab8e090-5441-5e61-b986-ece8c6805dd9"
+    "name": "hgb_demo:calendar_physics",
+    "run_id": "d095f105-aed3-5932-bb23-99c47709c504"
   }
 }
