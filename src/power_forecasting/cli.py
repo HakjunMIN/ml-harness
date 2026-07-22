@@ -218,6 +218,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             for key, path in paths.items():
                 print(f"{key}: {path}")
+        elif args.command == "research-loop":
+            from power_forecasting.research_orchestrator import run_research_loop
+
+            summary = run_research_loop(args.config, resume=args.resume)
+            print(json.dumps(summary, sort_keys=True))
+            if summary.get("status") != "ready_for_human_review":
+                return 2
         else:
             raise ValueError(f"unknown command: {args.command}")
     except (
@@ -281,6 +288,10 @@ def _build_parser() -> argparse.ArgumentParser:
     all_parser.add_argument(
         "--max-plant-regression", type=float, default=default_aidm.max_plant_regression
     )
+
+    research = subparsers.add_parser("research-loop")
+    research.add_argument("--config", required=True, type=Path)
+    research.add_argument("--resume", action="store_true")
     return parser
 
 
