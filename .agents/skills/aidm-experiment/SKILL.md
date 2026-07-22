@@ -8,6 +8,9 @@ description: Use when an agent has baseline legacy evidence and needs to run bou
 ## Overview
 Run AIDM only after baseline evidence exists. Agentic experiments are proposal-first: agents may submit bounded JSON feature/model hypotheses, but must never submit estimator code, arbitrary search logic, callbacks, or gate changes to force promotion.
 
+The reusable research orchestrator is optional. The manual workflow below remains valid and is
+the default when a human wants to choose each proposal and command.
+
 ## Prerequisites
 - `legacy-evidence.json` exists with `status: success`, or an explicit legacy prediction CSV is available for optional second-baseline comparison.
 - Dataset path is explicit and passes the existing project data contract.
@@ -25,6 +28,14 @@ Run AIDM only after baseline evidence exists. Agentic experiments are proposal-f
 6. Inspect `experiments.db`, `promotion_manifest.json`, and `performance_report.md`.
 7. Report selected winner, rejected candidates, failed gates, legacy-regression checks, trial evidence, selected re-evaluation evidence, and rejected ideas.
 8. Stop if the manifest decision is `reject`; do not edit generated code or bypass AIDD.
+
+## Optional Stage 1 Orchestration
+- To opt in to the bounded Stage 1 loop, run `.agents/scripts/run-research-loop.sh --config .agents/fixtures/research-loop.json`.
+- The loop may diagnose, create one bounded JSON proposal per profile, run AIDM, and verify evidence.
+- It stops at `ready_for_human_review`, `exhausted`, or `failed`; it never invokes AIDD, edits source,
+  deploys, merges, or changes gates. Resume only with `--resume` and the unchanged configuration.
+- Running the manual steps above remains a supported, equivalent entry point; no orchestration is
+  required for AIDM.
 
 ## Proposal-First Model Search Contract
 - Schema version is exactly `"1"`; top-level keys are `schema_version`, `proposal_id`, `rationale`, `baseline`, `feature_sets`, `model_recipes`, `budget`, and optional `search`.

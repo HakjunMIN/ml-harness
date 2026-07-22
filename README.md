@@ -354,3 +354,35 @@ cp .agents/fixtures/promoted-manifest.json .agents/runs/promotion/promotion_mani
 증거 파일은 `legacy-evidence.json`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`, `promotion-evidence.json`입니다. 증거에는 체크섬과 상태만 남기며 입력 행 내용, 고객 데이터, 비밀, 환경 변수 값은 기록하지 않습니다. 경로 이탈, 빈 CSV, 필수 예측 컬럼 누락, `actual_*`/`generation_mw` 누수, `decision: reject`, 컴파일 실패는 모두 거부로 처리하고 성공 증거를 만들지 않습니다.
 
 실제 고객 데이터 또는 고객 시스템 실행은 사람이 명시적으로 승인하기 전까지 금지됩니다. AIDD가 생성한 코드는 human approval 이후 검토용 패치 요청으로만 다루며, 에이전트는 배포·머지·고객 시스템 편집을 수행하지 않습니다.
+## 선택적 Stage 1 자율 연구 루프
+
+기존 수동 흐름은 변경되지 않습니다. `legacy-intake`로 baseline을 확인하고
+`aidm-experiment`에서 사람이 제안 JSON과 명령을 선택하는 방식은 여전히 기본 경로이며,
+이 루프를 실행하지 않아도 됩니다. 탐색 단계만 선택적으로 상태 머신으로 묶으려면 다음
+fixture 명령을 사용합니다.
+
+```bash
+.agents/scripts/run-research-loop.sh --config .agents/fixtures/research-loop.json
+```
+
+runner는 기존 프로젝트 안의 `--config` 파일만 읽고 저장소 루트에서 정확히
+`uv run python -m power_forecasting.cli research-loop`를 실행합니다. 설정의 입력 경로는
+설정 파일 디렉터리에 대해 해석되며, fixture는 합성 `valid-dataset.csv`와 baseline
+manifest만 사용하고 출력은 `.agents/runs/research-loop-fixture/` 아래에 둡니다. 환경
+비밀값을 export하거나 출력하지 않습니다. `--resume`은 동일한 설정과 체크섬을 가진
+비터미널 실행만 재개합니다.
+
+Stage 1은 한 프로필당 최대 한 번, 설정된 `max_iterations`(1~10)와 AIDM proposal/search
+budget(각 proposal budget 1~50) 안에서만 반복합니다. 각 run은
+`research-config.json`, `state.json`, `journal.jsonl`, `diagnosis.json`, iteration별
+`research-proposal.json`, `research-notes.json`, AIDM `promotion_manifest.json`,
+`experiments.db`, `performance_report.md`, `experiment-evidence.json`,
+`verification.json`(또는 `verification-failure.json`)과 최종 `research-summary.json`을
+SHA-256으로 연결합니다. 상태는 `ready_for_human_review`, `exhausted`, 또는 `failed`에서
+멈추며, 터미널 상태는 재개하지 않습니다.
+
+이 루프의 경계는 AIDD 호출, 실행 가능한 코드 생성, merge, deploy 직전입니다.
+`research-summary.json`은 연구 진단/제안/검증 결과일 뿐 release 또는 deploy 승인 증거가
+아닙니다. 사람은 summary와 전체 증적을 검토한 뒤 기존 수동 AIDD 및 release gate 절차를
+별도로 실행해야 합니다. 루프는 source, fixture, 고객 데이터, gate 임계값을 수정하지
+않고 고객 행·target·secret을 기록하지 않습니다.
