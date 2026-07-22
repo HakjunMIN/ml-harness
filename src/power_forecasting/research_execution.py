@@ -26,7 +26,7 @@ from power_forecasting.aidm import (
 from power_forecasting.cli import run_aidm_workflow, run_legacy
 from power_forecasting.data import DataContractError, parse_timestamps, validate_dataset
 from power_forecasting.features import FeatureSpec
-from power_forecasting.models import model_definition_from_recipe
+from power_forecasting.models import SUPPORTED_MODEL_NAMES, model_definition_from_recipe
 from power_forecasting.proposals import (
     ProposalValidationError,
     ResearchProposal,
@@ -81,6 +81,29 @@ _REUSED_SEARCH_RUN_ARTIFACT_KEYS = frozenset(
         "reused_from_candidate_name",
     }
 )
+_MANIFEST_KEYS = frozenset(
+    {
+        "schema_version",
+        "seed",
+        "baseline",
+        "winner",
+        "selected_specs",
+        "per_plant_deltas",
+        "thresholds",
+        "improvement_ratio",
+        "decision",
+        "failed_gates",
+        "legacy_baseline",
+        "proposal",
+        "selected_model_recipe",
+    }
+)
+_MANIFEST_BASELINE_KEYS = frozenset({"model", "metrics", "run_id"})
+_MANIFEST_WINNER_KEYS = frozenset({"name", "metrics", "run_id"})
+_BASELINE_SUMMARY_KEYS = frozenset(
+    {"name", "specs", "metrics", "per_plant", "run_id"}
+)
+_PROPOSAL_SUMMARY_KEYS = _BASELINE_SUMMARY_KEYS | frozenset({"model_recipe"})
 _VERIFICATION_CHECKS = (
     "experiment_identity",
     "artifact_paths",
@@ -744,21 +767,7 @@ def _load_proposal_safely(value: object) -> ResearchProposal | None:
 def _basic_manifest_is_valid(manifest: object) -> bool:
     if not isinstance(manifest, Mapping):
         return False
-    required = {
-        "schema_version",
-        "seed",
-        "baseline",
-        "winner",
-        "selected_specs",
-        "per_plant_deltas",
-        "thresholds",
-        "improvement_ratio",
-        "decision",
-        "failed_gates",
-        "proposal",
-        "selected_model_recipe",
-    }
-    if not required.issubset(manifest):
+    if set(manifest) != _MANIFEST_KEYS:
         return False
     if manifest["schema_version"] != _SCHEMA_VERSION:
         return False
@@ -784,9 +793,11 @@ def _basic_manifest_is_valid(manifest: object) -> bool:
         manifest["selected_model_recipe"], Mapping
     ):
         return False
-    return all(
-        key in manifest["baseline"] for key in ("model", "metrics", "run_id")
-    ) and all(key in manifest["winner"] for key in ("name", "metrics", "run_id"))
+    return (
+        _has_exact_keys(manifest["baseline"], _MANIFEST_BASELINE_KEYS)
+        and _has_exact_keys(manifest["winner"], _MANIFEST_WINNER_KEYS)
+        and manifest["legacy_baseline"] is None
+    )
 
 
 def _thresholds_match(manifest: Mapping[str, Any], config: ResearchLoopConfig) -> bool:
@@ -963,6 +974,185 @@ def _report_matches_manifest(report: str | None, manifest: Mapping[str, Any]) ->
         and winner_marker in report
         and "## Selected feature specs\n" in report
         and all(marker in report for marker in spec_markers)
+        and _report_has_only_allowed_content(report, manifest)
+    )
+
+
+def _report_has_only_allowed_content(report: str, manifest: Mapping[str, Any]) -> bool:
+    proposal = _load_proposal_safely(manifest.get("proposal"))
+    if proposal is None or not report.endswith("\n"):
+        return False
+    try:
+        headings = (
+            "# Forecasting Performance Report",
+            "## Data summary",
+            "## Legacy model comparison",
+            "## Ranked AIDM candidates",
+            "## Promotion decision",
+            "### Thresholds",
+            "### Per-plant deltas",
+            "## Failed gates",
+            "## Selected feature specs",
+            "## Artifact paths",
+        )
+        table_headers = {
+            "## Data summary": ("Field", "Value"),
+            "## Legacy model comparison": ("Model", "MAE", "RMSE", "NMAE"),
+            "## Ranked AIDM candidates": ("Rank", "Candidate", "MAE", "RMSE", "NMAE"),
+            "### Thresholds": ("Threshold", "Value"),
+            "### Per-plant deltas": ("Plant", "NMAE delta"),
+            "## Failed gates": ("Gate",),
+            "## Selected feature specs": (
+                "Name",
+                "Transform",
+                "Inputs",
+                "Parameters",
+                "Version",
+                "Rationale",
+            ),
+            "## Artifact paths": ("Artifact", "Path"),
+        }
+        expected_rows = {
+            "## Data summary": frozenset({"Rows", "Plants", "Time range"}),
+            "## Legacy model comparison": frozenset(SUPPORTED_MODEL_NAMES),
+            "## Ranked AIDM candidates": frozenset(
+                _report_table_key(candidate_name)
+                for candidate_name, expected in _expected_proposal_runs(
+                    proposal
+                ).items()
+                if expected["kind"] in {"direct", "selected"}
+            ),
+            "### Thresholds": frozenset(
+                _report_table_key(key) for key in manifest["thresholds"]
+            ),
+            "### Per-plant deltas": frozenset(
+                _report_table_key(plant_id)
+                for plant_id in manifest["per_plant_deltas"]
+            ),
+            "## Failed gates": frozenset(
+                _report_table_key(gate) for gate in manifest["failed_gates"]
+            ),
+            "## Selected feature specs": frozenset(
+                _report_table_key(spec["name"])
+                for spec in manifest["selected_specs"]
+            ),
+            "## Artifact paths": frozenset({"database", "manifest", "proposal"}),
+        }
+        decision_lines = {
+            f"Promotion decision: {manifest['decision']}",
+            f"Improvement ratio: {_report_number(manifest['improvement_ratio'])}",
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    if not _report_blank_layout_is_valid(report, frozenset(headings)):
+        return False
+
+    heading_index = -1
+    active_heading: str | None = None
+    table_phase: dict[str, int] = {}
+    seen_rows = {heading: set() for heading in table_headers}
+    none_sections: set[str] = set()
+    seen_decision_lines: set[str] = set()
+
+    for line in report.splitlines():
+        if not line:
+            continue
+        if line in headings:
+            if (
+                heading_index + 1 >= len(headings)
+                or line != headings[heading_index + 1]
+            ):
+                return False
+            heading_index += 1
+            active_heading = line
+            continue
+        if active_heading == "## Promotion decision" and line in decision_lines:
+            if line in seen_decision_lines:
+                return False
+            seen_decision_lines.add(line)
+            continue
+        if (
+            active_heading in expected_rows
+            and not expected_rows[active_heading]
+            and line == "None"
+        ):
+            if active_heading in none_sections or active_heading in table_phase:
+                return False
+            none_sections.add(active_heading)
+            continue
+
+        cells = _report_table_cells(line)
+        if cells is None or active_heading not in table_headers:
+            return False
+        header = table_headers[active_heading]
+        phase = table_phase.get(active_heading, 0)
+        if phase == 0:
+            if cells != header:
+                return False
+            table_phase[active_heading] = 1
+            continue
+        if phase == 1:
+            if cells != ("---",) * len(header):
+                return False
+            table_phase[active_heading] = 2
+            continue
+        if len(cells) != len(header):
+            return False
+        key = (
+            cells[1]
+            if active_heading == "## Ranked AIDM candidates"
+            else cells[0]
+        )
+        if key not in expected_rows[active_heading] or key in seen_rows[active_heading]:
+            return False
+        if active_heading == "## Ranked AIDM candidates":
+            rank = cells[0]
+            if not rank.isdecimal() or int(rank) < 1:
+                return False
+        seen_rows[active_heading].add(key)
+
+    if heading_index != len(headings) - 1 or seen_decision_lines != decision_lines:
+        return False
+    for heading, expected in expected_rows.items():
+        if expected:
+            if table_phase.get(heading) != 2 or seen_rows[heading] != expected:
+                return False
+        elif heading not in none_sections:
+            return False
+    return True
+
+
+def _report_table_cells(line: str) -> tuple[str, ...] | None:
+    if not line.startswith("| ") or not line.endswith(" |"):
+        return None
+    return tuple(line[2:-2].split(" | "))
+
+
+def _report_blank_layout_is_valid(report: str, headings: frozenset[str]) -> bool:
+    previous: str | None = None
+    blank_lines = 0
+    for line in report.splitlines():
+        if not line:
+            blank_lines += 1
+            continue
+        separator_required = previous is not None and (
+            previous in headings or line in headings
+        )
+        if blank_lines != int(separator_required):
+            return False
+        previous = line
+        blank_lines = 0
+    return previous is not None and blank_lines == 0
+
+
+def _report_table_key(value: object) -> str:
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "<br>")
     )
 
 
@@ -1084,7 +1274,7 @@ def _proposal_runs_are_complete(
                 or params.get("schema_version") != _SCHEMA_VERSION
                 or params.get("model") != expected_run["model"]
                 or params.get("specs") != expected_run["specs"]
-                or not isinstance(summary, Mapping)
+                or not _has_exact_keys(summary, _PROPOSAL_SUMMARY_KEYS)
                 or summary.get("name") != candidate_name
                 or summary.get("specs") != expected_run["specs"]
                 or summary.get("model_recipe") != params.get("model_recipe")
@@ -1160,9 +1350,13 @@ def _matches_any_key_set(
     value: object,
     expected_key_sets: tuple[frozenset[str], ...],
 ) -> bool:
-    return isinstance(value, Mapping) and any(
-        set(value) == expected_keys for expected_keys in expected_key_sets
+    return any(
+        _has_exact_keys(value, expected_keys) for expected_keys in expected_key_sets
     )
+
+
+def _has_exact_keys(value: object, expected_keys: frozenset[str]) -> bool:
+    return isinstance(value, Mapping) and set(value) == expected_keys
 
 
 def _search_run_is_bounded(
@@ -1239,7 +1433,10 @@ def _candidate_matches_manifest(
     candidate = evidence["selected_candidate"]
     winner = manifest.get("winner")
     summary = candidate_row["artifacts"].get("summary")
-    if not isinstance(winner, Mapping) or not isinstance(summary, Mapping):
+    if (
+        not isinstance(winner, Mapping)
+        or not _has_exact_keys(summary, _PROPOSAL_SUMMARY_KEYS)
+    ):
         return False
     return (
         candidate["id"] == winner.get("name")
@@ -1266,7 +1463,8 @@ def _baseline_matches_manifest(
     expected_run_id = _expected_manifest_run_id("baseline", candidate, aidm_config)
     if (
         not isinstance(baseline, Mapping)
-        or not isinstance(summary, Mapping)
+        or not _has_exact_keys(baseline, _MANIFEST_BASELINE_KEYS)
+        or not _has_exact_keys(summary, _BASELINE_SUMMARY_KEYS)
         or candidate is None
         or expected_run_id is None
     ):
@@ -1311,7 +1509,7 @@ def _winner_run_identity_matches(
     expected_run_id = _expected_manifest_run_id("winner", candidate, aidm_config)
     return (
         isinstance(winner, Mapping)
-        and isinstance(summary, Mapping)
+        and _has_exact_keys(summary, _PROPOSAL_SUMMARY_KEYS)
         and candidate is not None
         and expected_run_id is not None
         and summary.get("run_id") == candidate_row["id"]

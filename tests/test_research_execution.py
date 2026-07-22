@@ -796,6 +796,123 @@ def test_verifier_rejects_unexpected_selected_proposal_evidence(
     assert "check_failed:proposal_runs" in verification.reasons
 
 
+def test_verifier_rejects_unexpected_top_level_manifest_field(
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    manifest = json.loads(experiment.manifest_path.read_text(encoding="utf-8"))
+    manifest["unexpected"] = "untrusted"
+    experiment.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _update_evidence_checksum(experiment, "manifest_sha256", experiment.manifest_path)
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["manifest_schema"] is False
+    assert "check_failed:manifest_schema" in verification.reasons
+
+
+@pytest.mark.parametrize(
+    "unexpected_content",
+    ("untrusted report content\n", "| unexpected | untrusted |\n"),
+)
+def test_verifier_rejects_unexpected_report_content(
+    unexpected_content: str,
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    experiment.report_path.write_text(
+        experiment.report_path.read_text(encoding="utf-8") + unexpected_content,
+        encoding="utf-8",
+    )
+    _update_evidence_checksum(experiment, "report_sha256", experiment.report_path)
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["report_evidence"] is False
+    assert "check_failed:report_evidence" in verification.reasons
+
+
+@pytest.mark.parametrize(
+    ("target", "check_name"),
+    (
+        ("baseline", "manifest_schema"),
+        ("legacy_baseline", "manifest_schema"),
+        ("baseline_summary", "baseline_provenance"),
+        ("selected_summary", "proposal_runs"),
+    ),
+)
+def test_verifier_rejects_unexpected_nested_evidence_field(
+    target: str,
+    check_name: str,
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    iteration_dir = experiment.manifest_path.parent
+    if target in {"baseline", "legacy_baseline"}:
+        manifest = json.loads(experiment.manifest_path.read_text(encoding="utf-8"))
+        if target == "baseline":
+            manifest["baseline"]["unexpected"] = "untrusted"
+        else:
+            manifest["legacy_baseline"] = {"unexpected": "untrusted"}
+        experiment.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        _update_evidence_checksum(experiment, "manifest_sha256", experiment.manifest_path)
+    else:
+        evidence = json.loads(
+            (iteration_dir / "experiment-evidence.json").read_text(encoding="utf-8")
+        )
+        run_id = (
+            evidence["baseline_database_run_id"]
+            if target == "baseline_summary"
+            else evidence["selected_candidate"]["database_run_id"]
+        )
+        with sqlite3.connect(iteration_dir / "experiments.db") as connection:
+            row = connection.execute(
+                "SELECT artifacts_json FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            assert row is not None
+            artifacts = json.loads(row[0])
+            artifacts["summary"]["unexpected"] = "untrusted"
+            connection.execute(
+                "UPDATE runs SET artifacts_json = ? WHERE id = ?",
+                (json.dumps(artifacts), run_id),
+            )
+        _update_evidence_checksum(
+            experiment,
+            "database_sha256",
+            iteration_dir / "experiments.db",
+        )
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks[check_name] is False
+    assert f"check_failed:{check_name}" in verification.reasons
+
+
 def test_verifier_binds_report_content_to_manifest_evidence(
     execution_config: ResearchLoopConfig,
     proposal,
