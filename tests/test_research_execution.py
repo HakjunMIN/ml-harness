@@ -126,6 +126,51 @@ def _run_fast_experiment(
     return run_experiment_agent(config=config, proposal=proposal, iteration=1)
 
 
+def _run_fast_search_experiment(
+    config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    payload = proposal_to_dict(proposal)
+    payload["budget"]["max_evaluations"] = 5
+    payload["search"] = {
+        "sampler": "tpe",
+        "seed": 7,
+        "n_trials": 2,
+        "spaces": {
+            "lightgbm": {
+                "n_estimators": [100, 300],
+                "learning_rate": [0.03, 0.1],
+                "num_leaves": [15, 31],
+                "min_child_samples": [10, 20],
+            }
+        },
+    }
+    search_proposal = load_proposal(payload)
+    _install_fake_optuna(monkeypatch)
+
+    def fake_evaluate(frame: pd.DataFrame, definition, feature_specs, folds: int):
+        del feature_specs, folds
+        if definition.name == "SPOT":
+            return _evaluation(frame, 0.20)
+        if definition.name == "Recipe:lightgbm:selected_lightgbm":
+            return _evaluation(frame, 0.05)
+        if definition.name.startswith("Recipe:lightgbm:optuna_lightgbm_"):
+            return _evaluation(frame, 0.08)
+        return _evaluation(frame, 0.10)
+
+    import power_forecasting.research_execution as execution
+
+    monkeypatch.setattr(aidm, "evaluate_model", fake_evaluate)
+    monkeypatch.setattr(execution, "run_legacy", lambda *args, **kwargs: _legacy_results())
+    experiment = run_experiment_agent(
+        config=config,
+        proposal=search_proposal,
+        iteration=1,
+    )
+    return search_proposal, experiment
+
+
 def _install_fake_optuna(monkeypatch: pytest.MonkeyPatch) -> None:
     class TPESampler:
         def __init__(self, *, seed: int):
@@ -853,6 +898,7 @@ def test_verifier_rejects_unexpected_report_content(
     (
         ("| Rows |", 1, "999"),
         ("| Mean |", 1, "generation_mw: secret"),
+        ("| Mean |", 1, "25.000001"),
         ("| 2 |", 2, "99.000000"),
         ("| plant-a |", 1, "0.000000"),
         ("| effective_irradiance |", 5, "generation_mw: secret"),
@@ -1199,3 +1245,117 @@ def test_verifier_validates_bounded_search_provenance_without_optional_packages(
 
     assert tampered.passed is False
     assert tampered.checks["proposal_runs"] is False
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "missing_candidate_name",
+        "extra_field",
+        "trial_number",
+        "candidate_name",
+        "run_id",
+        "parameters",
+    ),
+)
+def test_verifier_rejects_tampered_selected_trial_evidence(
+    tamper: str,
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    search_proposal, experiment = _run_fast_search_experiment(
+        execution_config,
+        proposal,
+        monkeypatch,
+    )
+    iteration_dir = experiment.manifest_path.parent
+    with sqlite3.connect(iteration_dir / "experiments.db") as connection:
+        row = connection.execute(
+            """
+            SELECT id, artifacts_json
+            FROM runs
+            WHERE name = 'aidm-selected-lightgbm-safe_solar'
+            """
+        ).fetchone()
+        assert row is not None
+        run_id, artifacts_json = row
+        artifacts = json.loads(artifacts_json)
+        selected_from_trial = artifacts["selected_from_trial"]
+        if tamper == "missing_candidate_name":
+            selected_from_trial.pop("candidate_name")
+        elif tamper == "extra_field":
+            selected_from_trial["unexpected"] = "untrusted"
+        elif tamper == "trial_number":
+            selected_from_trial["trial_number"] = 99
+        elif tamper == "candidate_name":
+            selected_from_trial["candidate_name"] = "optuna_lightgbm_999:safe_solar"
+        elif tamper == "run_id":
+            selected_from_trial["run_id"] = "not-a-recorded-trial"
+        else:
+            selected_from_trial["parameters"] = {"n_estimators": 999}
+        connection.execute(
+            "UPDATE runs SET artifacts_json = ? WHERE id = ?",
+            (json.dumps(artifacts), run_id),
+        )
+    _update_evidence_checksum(experiment, "database_sha256", iteration_dir / "experiments.db")
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=search_proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["proposal_runs"] is False
+    assert "check_failed:proposal_runs" in verification.reasons
+
+
+def test_verifier_crosschecks_referenced_selected_trial_evidence(
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    search_proposal, experiment = _run_fast_search_experiment(
+        execution_config,
+        proposal,
+        monkeypatch,
+    )
+    iteration_dir = experiment.manifest_path.parent
+    with sqlite3.connect(iteration_dir / "experiments.db") as connection:
+        selected = connection.execute(
+            """
+            SELECT artifacts_json
+            FROM runs
+            WHERE name = 'aidm-selected-lightgbm-safe_solar'
+            """
+        ).fetchone()
+        assert selected is not None
+        selected_artifacts = json.loads(selected[0])
+        trial_run_id = selected_artifacts["selected_from_trial"]["run_id"]
+        trial = connection.execute(
+            "SELECT params_json, artifacts_json FROM runs WHERE id = ?",
+            (trial_run_id,),
+        ).fetchone()
+        assert trial is not None
+        trial_params = json.loads(trial[0])
+        trial_artifacts = json.loads(trial[1])
+        trial_params["model_recipe"]["parameters"]["n_estimators"] = 999
+        trial_artifacts["summary"]["model_recipe"] = trial_params["model_recipe"]
+        connection.execute(
+            "UPDATE runs SET params_json = ?, artifacts_json = ? WHERE id = ?",
+            (json.dumps(trial_params), json.dumps(trial_artifacts), trial_run_id),
+        )
+    _update_evidence_checksum(experiment, "database_sha256", iteration_dir / "experiments.db")
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=search_proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["proposal_runs"] is False
+    assert "check_failed:proposal_runs" in verification.reasons

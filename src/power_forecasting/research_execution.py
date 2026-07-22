@@ -72,6 +72,9 @@ _PROPOSAL_RUN_ARTIFACT_KEYS = frozenset(
 _SELECTED_SEARCH_RUN_ARTIFACT_KEYS = _PROPOSAL_RUN_ARTIFACT_KEYS | frozenset(
     {"selected_from_trial"}
 )
+_SELECTED_FROM_TRIAL_KEYS = frozenset(
+    {"trial_number", "candidate_name", "run_id", "parameters"}
+)
 _REUSED_SEARCH_RUN_ARTIFACT_KEYS = frozenset(
     {
         "summary",
@@ -963,11 +966,13 @@ def _expected_report_rows(
 ) -> dict[str, tuple[tuple[str, ...], ...]] | None:
     proposal = _load_proposal_safely(manifest.get("proposal"))
     dataset_summary = _safe_dataset_summary(Path(config.dataset_path))
+    legacy_rows = _expected_legacy_report_rows(config, iteration_dir)
     candidate_rows = _expected_report_candidate_rows(experiment_runs, proposal)
     spec_rows = _expected_report_spec_rows(manifest.get("selected_specs"))
     if (
         proposal is None
         or dataset_summary is None
+        or legacy_rows is None
         or candidate_rows is None
         or spec_rows is None
     ):
@@ -994,9 +999,7 @@ def _expected_report_rows(
                     ),
                 ),
             ),
-            "## Legacy model comparison": tuple(
-                (model_name,) for model_name in SUPPORTED_MODEL_NAMES
-            ),
+            "## Legacy model comparison": legacy_rows,
             "## Ranked AIDM candidates": candidate_rows,
             "### Thresholds": tuple(
                 (
@@ -1038,6 +1041,47 @@ def _expected_report_rows(
 def _safe_dataset_summary(dataset_path: Path) -> dict[str, object] | None:
     try:
         return _dataset_summary(dataset_path)
+    except (
+        DataContractError,
+        OSError,
+        UnicodeDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        OverflowError,
+    ):
+        return None
+
+
+def _expected_legacy_report_rows(
+    config: ResearchLoopConfig,
+    iteration_dir: Path,
+) -> tuple[tuple[str, ...], ...] | None:
+    try:
+        legacy_results = run_legacy(
+            iteration_dir,
+            dataset=Path(config.dataset_path),
+            folds=config.fold_count,
+        )
+        if not isinstance(legacy_results, Mapping) or set(legacy_results) != set(
+            SUPPORTED_MODEL_NAMES
+        ):
+            return None
+        rows = []
+        for model_name in SUPPORTED_MODEL_NAMES:
+            metrics = getattr(legacy_results[model_name], "metrics", None)
+            if not isinstance(metrics, Mapping):
+                return None
+            report_metrics = _report_metrics(metrics)
+            rows.append(
+                (
+                    model_name,
+                    _report_table_key(_report_number(report_metrics["mae"])),
+                    _report_table_key(_report_number(report_metrics["rmse"])),
+                    _report_table_key(_report_number(report_metrics["nmae"])),
+                )
+            )
+        return tuple(rows)
     except (
         DataContractError,
         OSError,
@@ -1270,36 +1314,9 @@ def _report_has_only_allowed_content(
                 return False
         elif table_phase.get(heading) != 2:
             return False
-        elif heading == "## Legacy model comparison":
-            if not _legacy_report_rows_are_canonical(observed_rows[heading], expected):
-                return False
         elif tuple(observed_rows[heading]) != expected:
             return False
     return True
-
-
-def _legacy_report_rows_are_canonical(
-    rows: list[tuple[str, ...]],
-    expected: tuple[tuple[str, ...], ...],
-) -> bool:
-    return (
-        len(rows) == len(expected)
-        and all(
-            len(row) == 4
-            and row[0] == expected_row[0]
-            and all(_is_canonical_report_number(value) for value in row[1:])
-            for row, expected_row in zip(rows, expected)
-        )
-    )
-
-
-def _is_canonical_report_number(value: object) -> bool:
-    if type(value) is not str:
-        return False
-    try:
-        return value == _report_number(float(value))
-    except (ValueError, OverflowError):
-        return False
 
 
 def _finite_report_value(value: object) -> float:
@@ -1435,6 +1452,9 @@ def _proposal_runs_are_complete(
         actual_names = [row["params"].get("candidate_name") for row in proposal_rows]
         if len(proposal_rows) != len(expected) or set(actual_names) != set(expected):
             return False
+        rows_by_candidate_name = {
+            row["params"]["candidate_name"]: row for row in proposal_rows
+        }
         for row in proposal_rows:
             params = row["params"]
             artifacts = row["artifacts"]
@@ -1472,6 +1492,12 @@ def _proposal_runs_are_complete(
                 params,
                 expected_run,
                 proposal.search,
+            ):
+                return False
+            if expected_run["kind"] == "selected" and not _selected_trial_is_linked(
+                row,
+                rows_by_candidate_name,
+                expected_run,
             ):
                 return False
     except (KeyError, TypeError, ValueError, OverflowError):
@@ -1582,6 +1608,107 @@ def _search_run_is_bounded(
         == f"optuna_lightgbm_{selected_trial}:{expected['feature_set']}"
         and provenance.get("selected_trial_parameters") == recipe.get("parameters")
     )
+
+
+def _selected_trial_is_linked(
+    selected_row: Mapping[str, Any],
+    rows_by_candidate_name: Mapping[str, Mapping[str, Any]],
+    expected: Mapping[str, Any],
+) -> bool:
+    selected_params = selected_row.get("params")
+    selected_artifacts = selected_row.get("artifacts")
+    if not isinstance(selected_params, Mapping) or not isinstance(
+        selected_artifacts, Mapping
+    ):
+        return False
+    selected_recipe = selected_params.get("model_recipe")
+    selected_search = selected_params.get("search")
+    selected_from_trial = selected_artifacts.get("selected_from_trial")
+    if (
+        not isinstance(selected_recipe, Mapping)
+        or not isinstance(selected_search, Mapping)
+        or not _has_exact_keys(selected_from_trial, _SELECTED_FROM_TRIAL_KEYS)
+    ):
+        return False
+    try:
+        trial_number = selected_search["selected_trial_number"]
+        selected_parameters = selected_search["selected_trial_parameters"]
+        feature_set = expected["feature_set"]
+        if (
+            type(trial_number) is not int
+            or not isinstance(selected_parameters, Mapping)
+            or type(feature_set) is not str
+        ):
+            return False
+        expected_trial_name = f"optuna_lightgbm_{trial_number}:{feature_set}"
+        trial_row = rows_by_candidate_name.get(expected_trial_name)
+        if trial_row is None:
+            return False
+        trial_params = trial_row["params"]
+        trial_artifacts = trial_row["artifacts"]
+        trial_recipe = trial_params.get("model_recipe")
+        trial_search = trial_params.get("search")
+        trial_summary = trial_artifacts.get("summary")
+        if (
+            not isinstance(trial_params, Mapping)
+            or not _has_exact_keys(trial_artifacts, _PROPOSAL_RUN_ARTIFACT_KEYS)
+            or not isinstance(trial_recipe, Mapping)
+            or not isinstance(trial_search, Mapping)
+            or not _has_exact_keys(trial_summary, _PROPOSAL_SUMMARY_KEYS)
+        ):
+            return False
+        shared_provenance = (
+            "schema_version",
+            "proposal_id",
+            "proposal",
+            "folds",
+            "seed",
+            "specs",
+        )
+        shared_search_provenance = (
+            "sampler",
+            "seed",
+            "n_trials",
+            "space",
+            "feature_set",
+        )
+        return (
+            selected_params.get("candidate_name") == f"selected_lightgbm:{feature_set}"
+            and selected_from_trial["trial_number"] == trial_number
+            and selected_from_trial["candidate_name"] == expected_trial_name
+            and selected_from_trial["run_id"] == trial_row["id"]
+            and selected_from_trial["parameters"] == selected_parameters
+            and selected_recipe.get("name") == "selected_lightgbm"
+            and selected_recipe.get("recipe") == "lightgbm"
+            and selected_recipe.get("parameters") == selected_parameters
+            and selected_recipe.get("search") == selected_search
+            and selected_search.get("selected_trial_candidate_name")
+            == expected_trial_name
+            and trial_row["status"] == "completed"
+            and trial_row["name"]
+            == f"aidm-optuna-lightgbm-{feature_set}-trial-{trial_number}"
+            and trial_params.get("candidate_name") == expected_trial_name
+            and trial_params.get("model")
+            == f"Recipe:lightgbm:optuna_lightgbm_{trial_number}"
+            and trial_recipe.get("name") == f"optuna_lightgbm_{trial_number}"
+            and trial_recipe.get("recipe") == "lightgbm"
+            and trial_recipe.get("parameters") == selected_parameters
+            and trial_recipe.get("search") == trial_search
+            and trial_summary.get("name") == expected_trial_name
+            and trial_summary.get("run_id") == trial_row["id"]
+            and trial_summary.get("model_recipe") == trial_recipe
+            and all(
+                trial_params.get(key) == selected_params.get(key)
+                for key in shared_provenance
+            )
+            and all(
+                trial_search.get(key) == selected_search.get(key)
+                for key in shared_search_provenance
+            )
+            and trial_search.get("trial_number") == trial_number
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
 
 
 def _decode_run_row(row: sqlite3.Row) -> dict[str, Any] | None:

@@ -230,6 +230,12 @@ def test_lightgbm_optuna_search_selects_best_trial_with_deterministic_provenance
         "trial_number": 1,
         "candidate_name": "optuna_lightgbm_1:safe_solar",
         "run_id": trial_runs[1]["id"],
+        "parameters": {
+            "n_estimators": 300,
+            "learning_rate": 0.1,
+            "num_leaves": 31,
+            "min_child_samples": 20,
+        },
     }
     assert result.winner.run_id == selected_runs[0]["id"]
     assert calls[0][0] == "Recipe:ridge:ridge_low"
