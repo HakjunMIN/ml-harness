@@ -1,6 +1,18 @@
-# 발전량 예측 실험 워크플로
+# 코딩 에이전트용 발전량 예측 ML 개선 하네스
 
-발전량 예측 실험 워크플로는 AI 보조 발전량 예측을 위한 오프라인 데모입니다. 발전소/기상 테이블 데이터를 생성하거나 입력받아 레거시 기준 모델을 평가하고, AIDM으로 결정론적 피처 후보를 탐색하며, AIDD로 안전한 매니페스트를 승격하고 감사 가능한 산출물을 생성합니다.
+이 저장소는 기존 고객의 발전량 예측 ML을 안전하게 개선하기 위한 로컬 코딩 에이전트 하네스입니다. 고객 레거시 예측기를 블랙박스 기준선으로 연결하고, 검증 가능한 AIDM 실험으로 피처·모델 후보를 비교한 뒤, 사람의 검토가 필요한 AIDD 산출물과 증적을 준비합니다. 합성 데이터와 fixture로 전체 흐름을 재현할 수 있지만, 고객 시스템 실행·수정은 명시적인 사람 승인이 있어야 합니다.
+
+## 하네스의 두 실행 경로
+
+```text
+사람이 통제하는 기본 경로
+legacy-intake -> AIDM experiment -> AIDD promotion -> human review
+
+선택적 자동 Stage 1 연구 경로
+diagnosis -> bounded proposal -> AIDM -> evidence verification -> human review
+```
+
+기본 경로에서는 사람이 데이터셋, 제안 JSON, 명령, 다음 단계를 선택합니다. 선택적 Stage 1 research loop는 연구 단계만 제한적으로 자동화하며 AIDD, 고객 시스템 변경, 병합, 배포 이전에 멈춥니다.
 
 ## 목표 및 안전 범위
 
@@ -280,6 +292,17 @@ uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
 
 이 저장소의 실험 워크플로는 CLI 명령으로 직접 실행할 수도 있고, 코딩 에이전트에게 저장소 로컬 스킬을 명시해 안전 절차를 맡길 수도 있습니다. 슬래시 명령을 지원하는 환경에서는 `/legacy-intake`, `/aidm-experiment`, `/aidd-promotion`, `/release-gate`, `/research-diagnostic`, `/research-proposal`, `/research-verification`, `/research-orchestrator`처럼 요청할 수 있습니다. VS Code Copilot처럼 슬래시 스킬 호출이 고정되어 있지 않은 환경에서는 자연어로 스킬명을 명시하는 방식이 가장 명확합니다.
 
+| 스킬 | 역할 | 반드시 멈추는 경계 |
+| --- | --- | --- |
+| `legacy-intake` | fixture-first 레거시 어댑터 계약과 기준선 증적을 검증합니다. | 사람 승인 전에는 고객 시스템이나 실제 고객 데이터를 실행하지 않습니다. |
+| `aidm-experiment` | 제한된 JSON 제안으로 피처·개별 모델 후보를 평가하고 승격 게이트를 비교합니다. | `decision: reject`를 우회하지 않으며 AIDD를 호출하지 않습니다. |
+| `aidd-promotion` | 승격 매니페스트를 검증하고 결정론적 피처 모듈 및 사람 검토용 요청을 생성합니다. | 고객 저장소 수정, 병합, 배포를 수행하지 않습니다. |
+| `release-gate` | legacy, AIDM, AIDD, compile, 사람 승인 증적을 fail-closed로 판정합니다. | 명시적 사람 승인 없이 release나 배포를 허용하지 않습니다. |
+| `research-diagnostic` | 집계 데이터 품질·누수·프로필 적합성을 진단합니다. | 후보를 발명하거나 AIDM·AIDD를 실행하지 않습니다. |
+| `research-proposal` | 진단 결과에서 하나의 제한된 선언형 AIDM 제안을 만듭니다. | 코드·임의 탐색·게이트 변경을 만들지 않습니다. |
+| `research-verification` | AIDM iteration의 증적·체크섬·게이트를 재검증합니다. | AIDM 재실행, release 승인, AIDD 호출을 하지 않습니다. |
+| `research-orchestrator` | Stage 1의 진단·제안·AIDM·검증 상태 머신을 조정합니다. | AIDD, 코드 생성, 고객 시스템 변경, 병합, 배포 전에 종료합니다. |
+
 예시 요청:
 
 ```text
@@ -295,6 +318,15 @@ release-gate 스킬로 baseline, AIDM, AIDD, compile, human approval 증거를 �
 `aidm-experiment`에서 사람이 제안 JSON과 명령을 선택하는 방식은 여전히 기본 경로이며,
 이 루프를 실행하지 않아도 됩니다. 탐색 단계만 선택적으로 상태 머신으로 묶으려면 다음
 fixture 명령을 사용합니다.
+
+research loop가 자동화하는 범위는 다음으로 제한됩니다.
+
+- 집계 전용 데이터 진단과 누수 검사
+- `safe_weather`, `history_tree`, `bounded_search` 고정 프로필에서의 예측 시점 피처 후보 선택
+- 제한된 개별 모델 후보 비교와, 설정된 경우 bounded LightGBM Optuna TPE 하이퍼파라미터 탐색
+- AIDM 실험 증적 생성과 체크섬으로 연결된 검증
+
+반대로 이 루프는 AIDD 호출, 실행 가능한 코드 생성, 고객 시스템 수정, 병합, 배포, 게이트 변경, 여러 모델 예측을 조합하는 앙상블을 수행하지 않습니다. `RandomForest`와 `HistGradientBoosting`은 비교 대상인 개별 모델 유형이며, 여러 후보 예측을 결합하는 자동 앙상블 기능이 아닙니다. 다중 모델 예측 앙상블은 증적 계약과 게이트를 별도로 설계해야 하는 향후 확장 지점입니다.
 
 ```bash
 .agents/scripts/run-research-loop.sh --config .agents/fixtures/research-loop.json
