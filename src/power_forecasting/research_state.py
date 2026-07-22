@@ -285,7 +285,10 @@ def transition_state(
 
     verify_recorded_artifacts(state, artifact_paths={})
     artifacts = dict(state.artifacts)
-    recorded_artifacts = _recorded_artifacts(artifact_paths)
+    recorded_artifacts = _recorded_artifacts(
+        artifact_paths,
+        validate_diagnostic=to_status == "diagnosed",
+    )
     for artifact_path, checksum in recorded_artifacts:
         artifacts[artifact_path] = checksum
 
@@ -341,6 +344,7 @@ def verify_recorded_artifacts(
         raise TypeError("state must be a ResearchState")
     supplied_artifacts = _recorded_artifacts(artifact_paths)
     recorded_paths = set(state.artifacts)
+    diagnostic_paths = _diagnostic_artifact_paths(state)
 
     for artifact_path, _ in supplied_artifacts:
         if artifact_path not in recorded_paths:
@@ -353,6 +357,8 @@ def verify_recorded_artifacts(
         actual_checksum = _sha256_file(path)
         if actual_checksum != expected_checksum:
             raise ResearchStateError(f"recorded artifact checksum mismatch: {artifact_path}")
+        if artifact_path in diagnostic_paths:
+            _validate_diagnostic_artifact(path)
 
 
 def atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
@@ -399,7 +405,11 @@ def _advance_cycle(state: ResearchState, to_status: str) -> tuple[int, tuple[str
     )
 
 
-def _recorded_artifacts(artifact_paths: Mapping[str, Path]) -> tuple[tuple[str, str], ...]:
+def _recorded_artifacts(
+    artifact_paths: Mapping[str, Path],
+    *,
+    validate_diagnostic: bool = False,
+) -> tuple[tuple[str, str], ...]:
     if not isinstance(artifact_paths, Mapping):
         raise TypeError("artifact_paths must be a mapping")
 
@@ -416,7 +426,7 @@ def _recorded_artifacts(artifact_paths: Mapping[str, Path]) -> tuple[tuple[str, 
             raise ResearchStateError(f"duplicate artifact path: {artifact_path}")
         if not resolved_path.exists() or not resolved_path.is_file():
             raise ResearchStateError(f"artifact path must be an existing file: {artifact_path}")
-        if _is_diagnostic_artifact(name):
+        if validate_diagnostic or _is_diagnostic_artifact(name):
             _validate_diagnostic_artifact(resolved_path)
         paths_seen.add(artifact_path)
         recorded.append((artifact_path, _sha256_file(resolved_path)))
@@ -434,6 +444,17 @@ def _sha256_file(path: Path) -> str:
 def _is_diagnostic_artifact(name: str) -> bool:
     segments = re.split(r"[^a-z0-9]+", name.casefold())
     return bool(_DIAGNOSTIC_ARTIFACT_NAMES & set(segments))
+
+
+def _diagnostic_artifact_paths(state: ResearchState) -> frozenset[str]:
+    paths: set[str] = set()
+    for event in state.transitions:
+        if event["to_status"] != "diagnosed":
+            continue
+        artifact_path = event["artifact_path"]
+        if artifact_path is not None:
+            paths.add(artifact_path)
+    return frozenset(paths)
 
 
 def _validate_diagnostic_artifact(path: Path) -> None:

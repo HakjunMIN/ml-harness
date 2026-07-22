@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import replace
@@ -339,6 +340,55 @@ def test_diagnostic_artifact_rejects_rows_samples_secrets_and_environment_values
             to_status="diagnosed",
             artifact_paths={"diagnosis": artifact},
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rows", [{"plant_id": "plant_01", "generation_mw": 42}]),
+        ("secret_values", {"api_key": "not-safe"}),
+    ],
+)
+def test_diagnosed_transition_validates_every_artifact_independent_of_key(
+    contract_paths: dict[str, Path], tmp_path: Path, field: str, value: object
+) -> None:
+    artifact = _diagnosis_artifact(tmp_path, **{field: value})
+
+    with pytest.raises(ResearchStateError, match=field):
+        transition_state(
+            initialize_state(_config_for_state(contract_paths)),
+            to_status="diagnosed",
+            artifact_paths={"report": artifact},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rows", [{"plant_id": "plant_01", "generation_mw": 42}]),
+        ("secret_values", {"api_key": "not-safe"}),
+    ],
+)
+def test_resume_revalidates_diagnosed_artifacts_independent_of_original_key(
+    contract_paths: dict[str, Path], tmp_path: Path, field: str, value: object
+) -> None:
+    artifact = _diagnosis_artifact(tmp_path)
+    state = transition_state(
+        initialize_state(_config_for_state(contract_paths)),
+        to_status="diagnosed",
+        artifact_paths={"report": artifact},
+    )
+    artifact.write_text(json.dumps(_diagnosis_payload(**{field: value})), encoding="utf-8")
+    checksum = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    payload = state.to_dict()
+    artifact_path = str(artifact.resolve())
+    payload["artifacts"][artifact_path] = checksum
+    payload["transitions"][0]["sha256"] = checksum
+    state_path = tmp_path / "forged-diagnosed-state.json"
+    atomic_write_json(state_path, payload)
+
+    with pytest.raises(ResearchStateError, match=field):
+        load_state(state_path)
 
 
 def test_diagnostic_artifact_requires_strict_json(
