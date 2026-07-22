@@ -43,3 +43,5 @@ run_outputs/
 
 # Local documentation
 docs/
+
+.DS_Store
