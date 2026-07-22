@@ -277,17 +277,93 @@ def test_iterate_explicitly_allocates_next_bounded_profile(
     assert iterating.iteration == 2
     assert iterating.used_profiles == ("safe_weather", "history_tree")
     assert iterating.remaining_profiles == ()
-    assert transition_state(iterating, to_status="diagnosed", artifact_paths={}).iteration == 2
+
+    with pytest.raises(ResearchStateError, match="diagnosed.*artifact"):
+        transition_state(iterating, to_status="diagnosed", artifact_paths={})
 
 
 @pytest.mark.parametrize("terminal_status", ["ready_for_human_review", "exhausted", "failed"])
 def test_terminal_states_are_immutable(
-    contract_paths: dict[str, Path], terminal_status: str
+    contract_paths: dict[str, Path], tmp_path: Path, terminal_status: str
 ) -> None:
-    state = replace(initialize_state(_config_for_state(contract_paths)), status=terminal_status)
+    state = transition_state(
+        _state_at_verifying(contract_paths, tmp_path),
+        to_status=terminal_status,
+        artifact_paths={},
+    )
 
     with pytest.raises(ResearchStateError, match="terminal"):
         transition_state(state, to_status="diagnosed", artifact_paths={})
+
+
+def test_diagnosed_transition_requires_diagnostic_artifact(contract_paths: dict[str, Path]) -> None:
+    with pytest.raises(ResearchStateError, match="diagnosed.*artifact"):
+        transition_state(
+            initialize_state(_config_for_state(contract_paths)),
+            to_status="diagnosed",
+            artifact_paths={},
+        )
+
+
+def test_resume_rejects_diagnosed_transition_without_artifact_evidence(
+    contract_paths: dict[str, Path], tmp_path: Path
+) -> None:
+    payload = initialize_state(_config_for_state(contract_paths)).to_dict()
+    payload["status"] = "diagnosed"
+    payload["iteration"] = 1
+    payload["used_profiles"] = ["safe_weather"]
+    payload["remaining_profiles"] = ["history_tree"]
+    payload["transitions"] = [
+        {
+            "timestamp": "2026-07-22T00:00:00+00:00",
+            "from_status": "initialized",
+            "to_status": "diagnosed",
+            "iteration": 1,
+            "profile": "safe_weather",
+            "artifact_path": None,
+            "sha256": None,
+        }
+    ]
+    state_path = tmp_path / "diagnosed-without-artifact.json"
+    atomic_write_json(state_path, payload)
+
+    with pytest.raises(ResearchStateError, match="diagnosed.*artifact"):
+        load_state(state_path)
+
+
+def test_transition_rejects_forged_current_status_and_history(
+    contract_paths: dict[str, Path], tmp_path: Path
+) -> None:
+    forged = replace(_state_at_verifying(contract_paths, tmp_path), status="proposed")
+
+    with pytest.raises(ResearchStateError, match="history"):
+        transition_state(forged, to_status="experimenting", artifact_paths={})
+
+
+def test_atomic_write_json_rejects_final_target_symlink(tmp_path: Path) -> None:
+    protected = tmp_path / "protected.json"
+    protected.write_text('{"keep":true}\n', encoding="utf-8")
+    target = tmp_path / "state.json"
+    target.symlink_to(protected)
+
+    with pytest.raises(ResearchStateError, match="symlink"):
+        atomic_write_json(target, {"replace": True})
+
+    assert target.is_symlink()
+    assert protected.read_text(encoding="utf-8") == '{"keep":true}\n'
+
+
+def test_atomic_write_json_rejects_parent_directory_symlink(tmp_path: Path) -> None:
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    link_parent = tmp_path / "link-parent"
+    link_parent.symlink_to(protected, target_is_directory=True)
+    target = link_parent / "state.json"
+
+    with pytest.raises(ResearchStateError, match="symlink"):
+        atomic_write_json(target, {"replace": True})
+
+    assert not (protected / "state.json").exists()
 
 
 def test_state_records_only_checksum_metadata_for_diagnostic_artifacts(

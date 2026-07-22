@@ -4,7 +4,8 @@ import hashlib
 import json
 import os
 import re
-import tempfile
+import secrets
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -276,6 +277,7 @@ def transition_state(
 
     if not isinstance(state, ResearchState):
         raise TypeError("state must be a ResearchState")
+    _validate_transition_history(state)
     if state.status in _TERMINAL_STATUSES:
         raise ResearchStateError(f"terminal state {state.status} is immutable")
     if type(to_status) is not str or to_status not in _STATUSES:
@@ -289,6 +291,8 @@ def transition_state(
         artifact_paths,
         validate_diagnostic=to_status == "diagnosed",
     )
+    if to_status == "diagnosed" and not recorded_artifacts:
+        raise ResearchStateError("diagnosed transition requires at least one artifact")
     for artifact_path, checksum in recorded_artifacts:
         artifacts[artifact_path] = checksum
 
@@ -364,32 +368,32 @@ def verify_recorded_artifacts(
 def atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
     """Atomically replace *path* with finite, canonical JSON written beside it."""
 
-    target = _path_argument(path, "path")
+    target = _atomic_destination(path, "path")
     if not isinstance(value, Mapping):
         raise TypeError("value must be a mapping")
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    temporary_path: Path | None = None
+    directory_fd, target_name = _open_destination_directory(target)
+    temporary_name: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            dir=target.parent,
-            prefix=f".{target.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
+        _reject_final_target_symlink(directory_fd, target_name)
+        temporary_name, temporary_fd = _open_atomic_temporary_file(directory_fd, target_name)
+        with os.fdopen(temporary_fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(value, handle, allow_nan=False, sort_keys=True, separators=(",", ":"))
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, target)
-        temporary_path = None
+        _reject_final_target_symlink(directory_fd, target_name)
+        os.replace(
+            temporary_name,
+            target_name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        os.fsync(directory_fd)
+        temporary_name = None
     finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+        if temporary_name is not None:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+        os.close(directory_fd)
 
 
 def _advance_cycle(state: ResearchState, to_status: str) -> tuple[int, tuple[str, ...], tuple[str, ...]]:
@@ -746,6 +750,10 @@ def _validate_transition_history(state: ResearchState) -> None:
                 if state.artifacts.get(artifact_path) != checksum:
                     raise ResearchStateError("transition artifact checksum does not match state")
                 recorded_paths.add(artifact_path)
+        if to_status == "diagnosed" and not any(
+            artifact_event["artifact_path"] is not None for artifact_event in events
+        ):
+            raise ResearchStateError("diagnosed transition requires artifact evidence")
 
         status = to_status
         iteration = expected_iteration
@@ -877,6 +885,77 @@ def _path_argument(value: Path, label: str) -> Path:
     if not isinstance(value, Path):
         raise TypeError(f"{label} must be a Path")
     return value.resolve()
+
+
+def _atomic_destination(value: Path, label: str) -> Path:
+    if not isinstance(value, Path):
+        raise TypeError(f"{label} must be a Path")
+    return value if value.is_absolute() else Path.cwd() / value
+
+
+def _open_destination_directory(target: Path) -> tuple[int, str]:
+    if not target.is_absolute() or not target.name or target.name in {".", ".."}:
+        raise ResearchStateError("atomic JSON destination must name a file")
+    if any(component == ".." for component in target.parts):
+        raise ResearchStateError("atomic JSON destination must not contain parent traversal")
+
+    directory_fd = os.open(target.anchor, _directory_open_flags())
+    try:
+        for component in target.parts[1:-1]:
+            child_fd = _open_or_create_directory(directory_fd, component)
+            os.close(directory_fd)
+            directory_fd = child_fd
+    except (OSError, ResearchStateError):
+        os.close(directory_fd)
+        raise
+    return directory_fd, target.name
+
+
+def _directory_open_flags() -> int:
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise ResearchStateError("atomic JSON symlink protection is unavailable")
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_or_create_directory(parent_fd: int, name: str) -> int:
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if stat.S_ISLNK(info.st_mode):
+        raise ResearchStateError(f"atomic JSON destination contains a symlink: {name}")
+    if not stat.S_ISDIR(info.st_mode):
+        raise ResearchStateError(f"atomic JSON destination parent is not a directory: {name}")
+    return os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+
+
+def _reject_final_target_symlink(directory_fd: int, target_name: str) -> None:
+    try:
+        info = os.stat(target_name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        raise ResearchStateError(f"atomic JSON destination contains a symlink: {target_name}")
+
+
+def _open_atomic_temporary_file(directory_fd: int, target_name: str) -> tuple[str, int]:
+    for _ in range(10):
+        temporary_name = f".{target_name}.{secrets.token_hex(16)}.tmp"
+        try:
+            temporary_fd = os.open(
+                temporary_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                mode=0o600,
+                dir_fd=directory_fd,
+            )
+        except FileExistsError:
+            continue
+        return temporary_name, temporary_fd
+    raise ResearchStateError("unable to create atomic JSON temporary file")
 
 
 __all__ = [
