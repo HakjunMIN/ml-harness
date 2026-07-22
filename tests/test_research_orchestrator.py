@@ -436,6 +436,29 @@ def test_journal_append_rejects_preexisting_symlink(tmp_path):
     assert target.read_text(encoding="utf-8") == "keep\n"
 
 
+def test_journal_append_rejects_symlinked_parent(tmp_path):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    real_parent = tmp_path / "real"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises(OSError, match="journal"):
+        orchestrator._append_journal(
+            linked_parent / "journal.jsonl",
+            (
+                {
+                    "timestamp": "2026-01-01T00:00:00+00:00",
+                    "from_status": "initialized",
+                    "to_status": "diagnosed",
+                },
+            ),
+        )
+
+    assert not (real_parent / "journal.jsonl").exists()
+
+
 def test_journal_recovery_rejects_malformed_tail_timestamp(tmp_path, monkeypatch):
     import power_forecasting.research_orchestrator as orchestrator
 

@@ -58,9 +58,7 @@ validate_legacy_output_dir() {
     "$repository_root"/src|"$repository_root"/src/*|\
     "$repository_root"/tests|"$repository_root"/tests/*|\
     "$repository_root"/docs|"$repository_root"/docs/*|\
-    "$repository_root"/.agents/scripts|"$repository_root"/.agents/scripts/*|\
-    "$repository_root"/.agents/skills|"$repository_root"/.agents/skills/*|\
-    "$repository_root"/.agents/legacy_adapter|"$repository_root"/.agents/legacy_adapter/*)
+    "$repository_root"/.agents)
       echo "run-dir targets protected repository content: $supplied" >&2
       return 2
       ;;
@@ -76,13 +74,17 @@ validate_legacy_output_dir() {
         "$canonical" == "$repository_root"/.git/* || "$canonical" == "$repository_root"/src || \
         "$canonical" == "$repository_root"/src/* || "$canonical" == "$repository_root"/tests || \
         "$canonical" == "$repository_root"/tests/* || "$canonical" == "$repository_root"/docs || \
-        "$canonical" == "$repository_root"/docs/* || "$canonical" == "$repository_root"/.agents/scripts || \
-        "$canonical" == "$repository_root"/.agents/scripts/* || "$canonical" == "$repository_root"/.agents/skills || \
-        "$canonical" == "$repository_root"/.agents/skills/* || \
-        "$canonical" == "$repository_root"/.agents/legacy_adapter || \
-        "$canonical" == "$repository_root"/.agents/legacy_adapter/* ]]; then
-    echo "run-dir targets protected repository content: $supplied" >&2
-    return 2
+        "$canonical" == "$repository_root"/docs/* || "$canonical" == "$repository_root"/.agents || \
+        "$canonical" == "$repository_root"/.agents/* ]]; then
+    case "$canonical" in
+      "$repository_root"/.agents/runs|"$repository_root"/.agents/runs/*|\
+      "$repository_root"/.agents/output|"$repository_root"/.agents/output/*)
+        ;;
+      *)
+        echo "run-dir targets protected repository content: $supplied" >&2
+        return 2
+        ;;
+    esac
   fi
 
   VALIDATED_OUTPUT_DIR="$canonical"

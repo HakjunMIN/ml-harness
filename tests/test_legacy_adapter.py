@@ -305,6 +305,7 @@ def test_output_scripts_allow_legacy_local_run_directories(
         "/",
         ROOT / ".git",
         ROOT / "src",
+        ROOT / ".agents" / "harness",
         ROOT / "src" / ".." / "legacy-protected",
     ],
 )
@@ -339,6 +340,25 @@ def test_output_scripts_reject_unsafe_legacy_destinations_before_side_effects(
 
     assert completed.returncode == 2
     assert "run-dir" in completed.stderr
+
+
+def test_verify_promotion_rejects_harness_source_before_side_effects() -> None:
+    harness_dir = ROOT / ".agents" / "harness"
+    generated = harness_dir / "generated" / "promoted_features.py"
+    evidence = harness_dir / "promotion-evidence.json"
+
+    completed = subprocess.run(
+        [str(SCRIPTS / "verify-promotion.sh"), "--run-dir", str(harness_dir)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "protected repository content" in completed.stderr
+    assert not generated.exists()
+    assert not evidence.exists()
 
 
 @pytest.mark.parametrize("script_name", ["run-legacy.sh", "run-aidm.sh", "verify-promotion.sh"])

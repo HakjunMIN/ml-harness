@@ -6,7 +6,9 @@ import os
 import re
 import stat
 import tempfile
-from collections.abc import Mapping
+import uuid
+from contextlib import contextmanager
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -147,7 +149,7 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
         run_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_json(config_snapshot_path, config_payload)
         state = initialize_state(config, config_sha256=config_sha256)
-        _ensure_journal_file(run_dir / _JOURNAL_NAME)
+        _ensure_journal_file(run_dir / _JOURNAL_NAME, trusted_root=run_dir)
         _persist_state(run_dir, state)
         journal_count = 0
 
@@ -675,25 +677,38 @@ def _advance(
     state_path = run_dir / _STATE_NAME
     journal_path = run_dir / _JOURNAL_NAME
     previous_state = state_path.read_bytes() if state_path.exists() else None
-    previous_journal = _read_regular_bytes(journal_path) if journal_path.exists() else None
+    previous_journal = (
+        _read_regular_bytes(journal_path, trusted_root=run_dir)
+        if journal_path.exists()
+        else None
+    )
     try:
         _append_journal(journal_path, events)
     except Exception:
-        _restore_file(journal_path, previous_journal)
+        _restore_file(journal_path, previous_journal, trusted_root=run_dir)
         raise
     try:
         _persist_state(run_dir, next_state)
     except Exception:
-        _restore_file(journal_path, previous_journal)
+        _restore_file(journal_path, previous_journal, trusted_root=run_dir)
         _restore_file(state_path, previous_state)
         raise
     return next_state, len(next_state.transitions)
 
 
-def _append_journal(path: Path, events: tuple[Mapping[str, object], ...]) -> None:
+def _append_journal(
+    path: Path,
+    events: tuple[Mapping[str, object], ...],
+    *,
+    trusted_root: Path | None = None,
+) -> None:
     if not events:
         return
-    descriptor = _open_journal(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    descriptor = _open_journal(
+        path,
+        os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+        trusted_root=trusted_root,
+    )
     try:
         with os.fdopen(descriptor, "a", encoding="utf-8", newline="\n") as handle:
             for event in events:
@@ -708,20 +723,29 @@ def _append_journal(path: Path, events: tuple[Mapping[str, object], ...]) -> Non
         raise
 
 
-def _ensure_journal_file(path: Path) -> None:
-    descriptor = _open_journal(path, os.O_WRONLY | os.O_CREAT)
+def _ensure_journal_file(path: Path, *, trusted_root: Path | None = None) -> None:
+    descriptor = _open_journal(
+        path,
+        os.O_WRONLY | os.O_CREAT,
+        trusted_root=trusted_root,
+    )
     os.close(descriptor)
 
 
-def _open_journal(path: Path, flags: int) -> int:
-    symlink = _first_journal_symlink(path)
-    if symlink is not None:
-        raise OSError(f"journal path must not contain a symlink: {symlink}")
-    descriptor = os.open(
-        path,
-        flags | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
+def _open_journal(
+    path: Path,
+    flags: int,
+    *,
+    trusted_root: Path | None = None,
+) -> int:
+    root = path.parent if trusted_root is None else trusted_root
+    with _open_journal_parent(path, root) as parent_descriptor:
+        descriptor = os.open(
+            path.name,
+            flags | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise OSError(f"journal path must be a regular file: {path}")
@@ -731,19 +755,41 @@ def _open_journal(path: Path, flags: int) -> int:
     return descriptor
 
 
-def _first_journal_symlink(path: Path) -> Path | None:
-    current = Path(path.anchor) if path.anchor else Path(".")
-    for component in path.parts:
-        if component in {"", path.anchor}:
-            continue
-        current /= component
-        if current.is_symlink():
-            return current
-    return None
+@contextmanager
+def _open_journal_parent(path: Path, trusted_root: Path) -> Iterator[int]:
+    root = Path(os.path.abspath(os.fspath(trusted_root)))
+    target_parent = Path(os.path.abspath(os.fspath(path.parent)))
+    try:
+        relative_parent = target_parent.relative_to(root)
+    except ValueError as exc:
+        raise OSError(f"journal path is outside trusted run directory: {path}") from exc
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    directory_flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptors: list[int] = []
+    try:
+        descriptors.append(os.open(root, directory_flags))
+        current = descriptors[0]
+        for component in relative_parent.parts:
+            descriptor = os.open(component, directory_flags, dir_fd=current)
+            descriptors.append(descriptor)
+            current = descriptor
+        yield current
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
-def _read_regular_bytes(path: Path) -> bytes:
-    descriptor = _open_journal(path, os.O_RDONLY)
+def _read_regular_bytes(
+    path: Path,
+    *,
+    trusted_root: Path | None = None,
+) -> bytes:
+    descriptor = _open_journal(path, os.O_RDONLY, trusted_root=trusted_root)
     try:
         with os.fdopen(descriptor, "rb") as handle:
             return handle.read()
@@ -755,7 +801,15 @@ def _read_regular_bytes(path: Path) -> bytes:
         raise
 
 
-def _restore_file(path: Path, content: bytes | None) -> None:
+def _restore_file(
+    path: Path,
+    content: bytes | None,
+    *,
+    trusted_root: Path | None = None,
+) -> None:
+    if trusted_root is not None:
+        _restore_journal_file(path, content, trusted_root=trusted_root)
+        return
     if content is None:
         try:
             path.unlink()
@@ -780,10 +834,65 @@ def _restore_file(path: Path, content: bytes | None) -> None:
             pass
 
 
+def _restore_journal_file(path: Path, content: bytes | None, *, trusted_root: Path) -> None:
+    with _open_journal_parent(path, trusted_root) as parent_descriptor:
+        if content is None:
+            try:
+                os.unlink(path.name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+            return
+
+        temporary_name: str | None = None
+        temporary_descriptor: int | None = None
+        for _ in range(10):
+            candidate = f".{path.name}.rollback.{uuid.uuid4().hex}"
+            try:
+                temporary_descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
+            except FileExistsError:
+                continue
+            temporary_name = candidate
+            break
+        if temporary_descriptor is None or temporary_name is None:
+            raise OSError("could not allocate journal rollback file")
+        try:
+            with os.fdopen(temporary_descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            try:
+                os.fsync(parent_descriptor)
+            except OSError:
+                pass
+        finally:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+
+
 def _reconcile_journal(run_dir: Path, state: ResearchState) -> ResearchState:
     journal_path = run_dir / _JOURNAL_NAME
     try:
-        lines = _read_regular_bytes(journal_path).decode("utf-8").splitlines()
+        lines = _read_regular_bytes(
+            journal_path,
+            trusted_root=run_dir,
+        ).decode("utf-8").splitlines()
     except (OSError, UnicodeDecodeError) as exc:
         raise ResearchStateError("journal is missing or unreadable") from exc
     try:

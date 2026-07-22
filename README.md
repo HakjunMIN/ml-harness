@@ -391,6 +391,6 @@ cp .agents/fixtures/promoted-manifest.json .agents/runs/promotion/promotion_mani
 .agents/scripts/verify-promotion.sh --run-dir .agents/runs/promotion
 ```
 
-증거 파일은 `legacy-evidence.json`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`, `promotion-evidence.json`입니다. 레거시 세 스크립트는 기존처럼 `.agents/` 밖의 로컬 출력 경로도 허용하지만 파일시스템 루트, `.git`, 소스·문서 디렉터리와 심볼릭 링크 경로는 거부합니다. 증거에는 체크섬과 상태만 남기며 입력 행 내용, 고객 데이터, 비밀, 환경 변수 값은 기록하지 않습니다. 경로 이탈, 빈 CSV, 필수 예측 컬럼 누락, `actual_*`/`generation_mw` 누수, `decision: reject`, 컴파일 실패는 모두 거부로 처리하고 성공 증거를 만들지 않습니다.
+증거 파일은 `legacy-evidence.json`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`, `promotion-evidence.json`입니다. 레거시 세 스크립트는 기존처럼 `.agents/` 밖의 로컬 출력 경로도 허용하지만 파일시스템 루트, `.git`, 소스·문서 디렉터리, `.agents/`의 보호된 자산과 심볼릭 링크 경로는 거부합니다(`.agents/runs`와 `.agents/output` 및 하위 경로는 허용). 증거에는 체크섬과 상태만 남기며 입력 행 내용, 고객 데이터, 비밀, 환경 변수 값은 기록하지 않습니다. 경로 이탈, 빈 CSV, 필수 예측 컬럼 누락, `actual_*`/`generation_mw` 누수, `decision: reject`, 컴파일 실패는 모두 거부로 처리하고 성공 증거를 만들지 않습니다.
 
 실제 고객 데이터 또는 고객 시스템 실행은 사람이 명시적으로 승인하기 전까지 금지됩니다. AIDD가 생성한 코드는 human approval 이후 검토용 패치 요청으로만 다루며, 에이전트는 배포·머지·고객 시스템 편집을 수행하지 않습니다.
