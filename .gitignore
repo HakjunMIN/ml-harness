@@ -40,3 +40,6 @@ run_outputs/
 # Local agent harness outputs
 .agents/runs/
 .agents/output/
+
+# Local documentation
+docs/
