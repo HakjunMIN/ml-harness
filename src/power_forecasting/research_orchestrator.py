@@ -43,11 +43,13 @@ _STATE_NAME = "state.json"
 _JOURNAL_NAME = "journal.jsonl"
 _CONFIG_NAME = "research-config.json"
 _DIAGNOSIS_NAME = "diagnosis.json"
+_DIAGNOSTIC_FAILURE_NAME = "diagnostic-failure.json"
 _NOTES_NAME = "research-notes.json"
 _PROPOSAL_NAME = "research-proposal.json"
 _EVIDENCE_NAME = "experiment-evidence.json"
 _VERIFICATION_NAME = "verification.json"
 _FAILURE_NAME = "verification-failure.json"
+_EXHAUSTION_NAME = "exhaustion.json"
 _SUMMARY_NAME = "research-summary.json"
 _PROFILE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_:-]{0,127}$")
@@ -174,16 +176,16 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 )
                 atomic_write_json(diagnosis_path, diagnosis_payload)
             except Exception:
-                failure_path = _write_failure(run_dir, state.iteration, "diagnostic_failed")
+                failure_path = _write_diagnostic_failure(run_dir, state.iteration)
                 state, journal_count = _advance(
                     run_dir,
                     state,
-                    to_status="failed",
-                    artifact_paths={"failure": failure_path},
+                    to_status="diagnosed",
+                    artifact_paths={"diagnostic_failure": failure_path},
                     journal_count=journal_count,
                 )
                 verifier_outcome = "invalid"
-                verifier_reasons = (_safe_reason("diagnostic_failed"),)
+                verifier_reasons = (_diagnostic_failure_reason(state),)
                 continue
 
             recommended = set(diagnosis.recommended_profiles)
@@ -212,6 +214,16 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
             continue
 
         if state.status == "diagnosed":
+            if any(Path(path).name == _DIAGNOSTIC_FAILURE_NAME for path in state.artifacts):
+                diagnostic_failure_path = _artifact_named(state, _DIAGNOSTIC_FAILURE_NAME)
+                state, journal_count = _advance(
+                    run_dir,
+                    state,
+                    to_status="proposed",
+                    artifact_paths={"diagnostic_failure": diagnostic_failure_path},
+                    journal_count=journal_count,
+                )
+                continue
             if not state.used_profiles:
                 exhaustion_path = _write_exhaustion(
                     run_dir,
@@ -221,7 +233,7 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 state, journal_count = _advance(
                     run_dir,
                     state,
-                    to_status="exhausted",
+                    to_status="proposed",
                     artifact_paths={"exhaustion": exhaustion_path},
                     journal_count=journal_count,
                 )
@@ -235,7 +247,7 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                     config_payload=config_payload,
                 )
             except Exception:
-                failure_path = _write_failure(
+                failure_path = _write_diagnostic_failure(
                     run_dir,
                     state.iteration,
                     "diagnosis_binding_invalid",
@@ -243,8 +255,8 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 state, journal_count = _advance(
                     run_dir,
                     state,
-                    to_status="failed",
-                    artifact_paths={"failure": failure_path},
+                    to_status="proposed",
+                    artifact_paths={"diagnostic_failure": failure_path},
                     journal_count=journal_count,
                 )
                 verifier_outcome = "invalid"
@@ -298,6 +310,18 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
             continue
 
         if state.status == "experimenting":
+            if any(
+                Path(path).name in {_DIAGNOSTIC_FAILURE_NAME, _EXHAUSTION_NAME}
+                for path in state.artifacts
+            ):
+                state, journal_count = _advance(
+                    run_dir,
+                    state,
+                    to_status="verifying",
+                    artifact_paths={},
+                    journal_count=journal_count,
+                )
+                continue
             if resume and initial_status == "experimenting":
                 failure_path = _write_failure(
                     run_dir,
@@ -368,6 +392,30 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
             continue
 
         if state.status == "verifying":
+            if any(Path(path).name == _DIAGNOSTIC_FAILURE_NAME for path in state.artifacts):
+                diagnostic_failure_path = _artifact_named(state, _DIAGNOSTIC_FAILURE_NAME)
+                state, journal_count = _advance(
+                    run_dir,
+                    state,
+                    to_status="failed",
+                    artifact_paths={"diagnostic_failure": diagnostic_failure_path},
+                    journal_count=journal_count,
+                )
+                verifier_outcome = "invalid"
+                verifier_reasons = (_diagnostic_failure_reason(state),)
+                continue
+            if any(Path(path).name == _EXHAUSTION_NAME for path in state.artifacts):
+                exhaustion_path = _artifact_named(state, _EXHAUSTION_NAME)
+                state, journal_count = _advance(
+                    run_dir,
+                    state,
+                    to_status="exhausted",
+                    artifact_paths={"exhaustion": exhaustion_path},
+                    journal_count=journal_count,
+                )
+                verifier_outcome = "reject"
+                verifier_reasons = (_safe_reason("no_recommended_profiles"),)
+                continue
             if any(Path(path).name == _FAILURE_NAME for path in state.artifacts):
                 state, journal_count = _advance(
                     run_dir,
@@ -737,32 +785,48 @@ def _validate_recovery_group(group: tuple[Mapping[str, object], ...]) -> None:
     expected: frozenset[str] | None
     if transition == ("initialized", "diagnosed") or transition == ("iterate", "diagnosed"):
         expected = frozenset({_DIAGNOSIS_NAME})
+        if names == [_DIAGNOSTIC_FAILURE_NAME]:
+            expected = frozenset({_DIAGNOSTIC_FAILURE_NAME})
     elif transition == ("diagnosed", "proposed"):
-        expected = frozenset({_PROPOSAL_NAME, _NOTES_NAME, _CONFIG_NAME})
+        if names == [_DIAGNOSTIC_FAILURE_NAME]:
+            expected = frozenset({_DIAGNOSTIC_FAILURE_NAME})
+        elif names == [_EXHAUSTION_NAME]:
+            expected = frozenset({_EXHAUSTION_NAME})
+        else:
+            expected = frozenset({_PROPOSAL_NAME, _NOTES_NAME, _CONFIG_NAME})
     elif transition == ("proposed", "experimenting"):
         expected = frozenset()
     elif transition == ("experimenting", "verifying"):
-        expected = (
-            frozenset({"promotion_manifest.json", "performance_report.md", "experiments.db", _EVIDENCE_NAME})
-            if names != [_FAILURE_NAME]
-            else frozenset({_FAILURE_NAME})
-        )
-    elif transition == ("diagnosed", "exhausted"):
-        expected = frozenset({"exhaustion.json"})
+        if not names:
+            expected = frozenset()
+        elif names == [_FAILURE_NAME]:
+            expected = frozenset({_FAILURE_NAME})
+        else:
+            expected = frozenset(
+                {
+                    "promotion_manifest.json",
+                    "performance_report.md",
+                    "experiments.db",
+                    _EVIDENCE_NAME,
+                }
+            )
     elif transition[0] == "verifying" and transition[1] in {
         "iterate",
         "ready_for_human_review",
         "exhausted",
     }:
-        expected = frozenset({_VERIFICATION_NAME})
-    elif transition == ("initialized", "failed") or transition == ("diagnosed", "failed"):
-        expected = frozenset({_FAILURE_NAME})
+        expected = (
+            frozenset({_VERIFICATION_NAME})
+            if names != [_EXHAUSTION_NAME]
+            else frozenset({_EXHAUSTION_NAME})
+        )
     elif transition == ("verifying", "failed"):
         expected = frozenset(names)
         if expected not in {
             frozenset(),
             frozenset({_FAILURE_NAME}),
             frozenset({_VERIFICATION_NAME}),
+            frozenset({_DIAGNOSTIC_FAILURE_NAME}),
         }:
             raise ResearchStateError("journal failure transition artifacts are invalid")
     else:
@@ -1083,8 +1147,34 @@ def _write_failure(run_dir: Path, iteration: int, reason: str) -> Path:
     return path
 
 
+def _write_diagnostic_failure(run_dir: Path, iteration: int, reason: str = "diagnostic_failed") -> Path:
+    path = run_dir / "iterations" / f"{iteration:03d}-failure" / _DIAGNOSTIC_FAILURE_NAME
+    atomic_write_json(
+        path,
+        {
+            "schema_version": "1",
+            "status": "failed",
+            "rejected_conditions": [_safe_reason(reason)],
+        },
+    )
+    return path
+
+
+def _diagnostic_failure_reason(state: ResearchState) -> str:
+    try:
+        path = _artifact_named(state, _DIAGNOSTIC_FAILURE_NAME)
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        reasons = payload.get("rejected_conditions", ())
+        if isinstance(reasons, list) and len(reasons) == 1:
+            return _safe_reason(reasons[0])
+    except (AttributeError, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return _safe_reason("diagnostic_failed")
+
+
 def _write_exhaustion(run_dir: Path, iteration: int, reason: str) -> Path:
-    path = run_dir / "exhaustion.json"
+    path = run_dir / _EXHAUSTION_NAME
     atomic_write_json(
         path,
         {

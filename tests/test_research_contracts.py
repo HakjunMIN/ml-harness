@@ -245,6 +245,19 @@ def test_state_rejects_transitions_outside_graph(contract_paths: dict[str, Path]
         transition_state(state, to_status="proposed", artifact_paths={})
 
 
+def test_state_graph_is_exact() -> None:
+    import power_forecasting.research_state as research_state
+
+    assert research_state._ALLOWED_TRANSITIONS == {
+        "initialized": frozenset({"diagnosed"}),
+        "diagnosed": frozenset({"proposed"}),
+        "proposed": frozenset({"experimenting"}),
+        "experimenting": frozenset({"verifying"}),
+        "verifying": frozenset({"iterate", "ready_for_human_review", "exhausted", "failed"}),
+        "iterate": frozenset({"diagnosed"}),
+    }
+
+
 @pytest.mark.parametrize("source_status", ["initialized", "diagnosed", "proposed", "experimenting", "iterate"])
 def test_only_verifying_may_transition_to_failed(
     contract_paths: dict[str, Path], source_status: str

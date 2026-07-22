@@ -557,6 +557,24 @@ def test_diagnostic_failure_persists_terminal_failed_state(tmp_path, monkeypatch
     assert result["verifier"]["reasons"] == ["diagnostic_failed"]
     state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "failed"
+    assert [
+        (event["from_status"], event["to_status"])
+        for event in state["transitions"]
+    ] == [
+        ("initialized", "diagnosed"),
+        ("diagnosed", "proposed"),
+        ("proposed", "experimenting"),
+        ("experimenting", "verifying"),
+        ("verifying", "failed"),
+    ]
+    persisted = json.dumps(
+        {
+            "result": result,
+            "state": state,
+            "journal": (tmp_path / "run" / "journal.jsonl").read_text(encoding="utf-8"),
+        }
+    )
+    assert "raw diagnostic detail" not in persisted
 
 
 def test_journal_append_failure_rolls_back_state_transition(tmp_path, monkeypatch):
