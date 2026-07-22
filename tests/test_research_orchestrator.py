@@ -106,10 +106,13 @@ def _fake_agents(monkeypatch, *, decisions: list[str]):
         path = experiment.manifest_path.parent / "verification.json"
         path.write_text("{}", encoding="utf-8")
         if decisions[iteration - 1] == "promote":
-            return VerificationResult(True, {"promoted": True}, (), path)
+            checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
+            return VerificationResult(True, checks, (), path)
+        checks = {name: True for name in orchestrator._EXPECTED_VERIFIER_CHECKS}
+        checks["promoted"] = False
         return VerificationResult(
             False,
-            {"promoted": False, "evidence": True},
+            checks,
             ("experiment_rejected",),
             path,
         )
@@ -151,6 +154,102 @@ def test_malformed_verifier_fails_closed(tmp_path, monkeypatch):
     assert result["verifier"]["outcome"] == "invalid"
 
 
+def test_partial_verifier_result_fails_closed(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+
+    def partial_verifier(*, config, proposal, experiment, iteration):
+        path = experiment.manifest_path.parent / "verification.json"
+        path.write_text("{}", encoding="utf-8")
+        return VerificationResult(True, {"promoted": True}, (), path)
+
+    monkeypatch.setattr(orchestrator, "run_verifier_agent", partial_verifier)
+    result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
+
+    assert result["status"] == "failed"
+    assert result["verifier"]["outcome"] == "invalid"
+    assert "verification-failure.json" in json.dumps(result)
+
+
+def test_verifier_evidence_parse_error_persists_failed_state(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    original_experiment = orchestrator.run_experiment_agent
+
+    def malformed_experiment(**kwargs):
+        result = original_experiment(**kwargs)
+        result.manifest_path.parent.joinpath("experiment-evidence.json").write_text(
+            "{not-json", encoding="utf-8"
+        )
+        return result
+
+    monkeypatch.setattr(orchestrator, "run_experiment_agent", malformed_experiment)
+    result = run_research_loop(_config(tmp_path, ["safe_weather"], 1))
+
+    assert result["status"] == "failed"
+    state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "failed"
+
+
+def test_resume_rejects_effective_config_changes(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    monkeypatch.setattr(
+        orchestrator,
+        "run_experiment_agent",
+        lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    payload["objective"] = "MAE"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ResearchStateError, match="configuration changed"):
+        run_research_loop(config, resume=True)
+
+
+def test_resume_experimenting_fails_without_rerunning_experiment(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    calls = _fake_agents(monkeypatch, decisions=["promote"])
+    monkeypatch.setattr(
+        orchestrator,
+        "run_experiment_agent",
+        lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    config = _config(tmp_path, ["safe_weather"], 1)
+    with pytest.raises(KeyboardInterrupt):
+        run_research_loop(config)
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    result = run_research_loop(config, resume=True)
+    assert result["status"] == "failed"
+    assert calls["experiment"] == 0
+
+
+def test_config_json_rejects_duplicate_top_level_and_nested_keys(tmp_path):
+    config = _config(tmp_path, ["safe_weather"], 1)
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    fields = [
+        f'"{key}": {json.dumps(value)}'
+        for key, value in payload.items()
+    ]
+    duplicate_top_level = "{" + ",".join(fields + [f'"objective": "NMAE"']) + "}"
+    config.write_text(duplicate_top_level, encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate key"):
+        run_research_loop(config)
+
+    nested = ",".join(fields + ['"extra": {"key": 1, "key": 2}'])
+    config.write_text("{" + nested + "}", encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate key"):
+        run_research_loop(config)
+
+
 def test_cli_research_loop_prints_summary_and_returns_success(tmp_path, monkeypatch, capsys):
     _fake_agents(monkeypatch, decisions=["promote"])
     config = _config(tmp_path, ["safe_weather"], 1)
@@ -182,9 +281,8 @@ def test_resume_requires_matching_artifacts_and_terminal_runs_cannot_resume(
         run_research_loop(config, resume=True)
 
     proposal.write_bytes(original_proposal)
-    _fake_agents(monkeypatch, decisions=["promote"])
     result = run_research_loop(config, resume=True)
-    assert result["status"] == "ready_for_human_review"
+    assert result["status"] == "failed"
     with pytest.raises(ResearchStateError, match="run state already exists"):
         run_research_loop(config)
     with pytest.raises(ResearchStateError, match="terminal state"):

@@ -22,7 +22,7 @@ from power_forecasting.research_contracts import (
 )
 
 
-_STATE_KEYS = frozenset(
+_STATE_REQUIRED_KEYS = frozenset(
     {
         "run_id",
         "status",
@@ -33,6 +33,7 @@ _STATE_KEYS = frozenset(
         "transitions",
     }
 )
+_STATE_KEYS = _STATE_REQUIRED_KEYS | frozenset({"config_sha256"})
 _EVENT_KEYS = frozenset(
     {
         "timestamp",
@@ -199,9 +200,15 @@ class ResearchState:
     remaining_profiles: tuple[str, ...]
     artifacts: Mapping[str, str]
     transitions: tuple[Mapping[str, object], ...]
+    config_sha256: str | None = None
 
     def __post_init__(self) -> None:
         _state_run_id(self.run_id)
+        if self.config_sha256 is not None and (
+            type(self.config_sha256) is not str
+            or not _SHA256_PATTERN.fullmatch(self.config_sha256)
+        ):
+            raise ResearchStateError("config_sha256 must be a lowercase SHA-256 string")
         if type(self.status) is not str or self.status not in _STATUSES:
             raise ResearchStateError("status is not in the research-loop state graph")
         if isinstance(self.iteration, bool) or not isinstance(self.iteration, int):
@@ -228,7 +235,7 @@ class ResearchState:
         object.__setattr__(self, "transitions", transitions)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        value: dict[str, object] = {
             "run_id": self.run_id,
             "status": self.status,
             "iteration": self.iteration,
@@ -237,6 +244,9 @@ class ResearchState:
             "artifacts": dict(self.artifacts),
             "transitions": [dict(event) for event in self.transitions],
         }
+        if self.config_sha256 is not None:
+            value["config_sha256"] = self.config_sha256
+        return value
 
 
 def load_state(path: Path) -> ResearchState:
@@ -251,7 +261,9 @@ def load_state(path: Path) -> ResearchState:
 
     if not isinstance(value, Mapping):
         raise ResearchStateError("state must be a JSON object")
-    _exact_keys(value, _STATE_KEYS, "state")
+    actual_keys = set(value)
+    if actual_keys not in {_STATE_REQUIRED_KEYS, _STATE_KEYS}:
+        _exact_keys(value, _STATE_KEYS, "state")
     if not isinstance(value["used_profiles"], list):
         raise ResearchStateError("used_profiles must be a list")
     if not isinstance(value["remaining_profiles"], list):
@@ -269,13 +281,18 @@ def load_state(path: Path) -> ResearchState:
         remaining_profiles=tuple(value["remaining_profiles"]),
         artifacts=value["artifacts"],
         transitions=tuple(value["transitions"]),
+        config_sha256=value.get("config_sha256"),
     )
     _validate_transition_history(state)
     verify_recorded_artifacts(state, artifact_paths={})
     return state
 
 
-def initialize_state(config: ResearchLoopConfig) -> ResearchState:
+def initialize_state(
+    config: ResearchLoopConfig,
+    *,
+    config_sha256: str | None = None,
+) -> ResearchState:
     """Create an initial state with an explicit profile/iteration budget."""
 
     if not isinstance(config, ResearchLoopConfig):
@@ -289,6 +306,7 @@ def initialize_state(config: ResearchLoopConfig) -> ResearchState:
         remaining_profiles=remaining_profiles,
         artifacts={},
         transitions=(),
+        config_sha256=config_sha256,
     )
 
 
@@ -359,6 +377,7 @@ def transition_state(
         remaining_profiles=remaining_profiles,
         artifacts=artifacts,
         transitions=tuple(events),
+        config_sha256=state.config_sha256,
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping
@@ -36,6 +37,7 @@ from power_forecasting.research_state import (
 
 _STATE_NAME = "state.json"
 _JOURNAL_NAME = "journal.jsonl"
+_CONFIG_NAME = "research-config.json"
 _DIAGNOSIS_NAME = "diagnosis.json"
 _NOTES_NAME = "research-notes.json"
 _PROPOSAL_NAME = "research-proposal.json"
@@ -46,10 +48,52 @@ _SUMMARY_NAME = "research-summary.json"
 _PROFILE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_:-]{0,127}$")
 _CANDIDATE_CAP = 3
+_EXPECTED_VERIFIER_CHECKS = frozenset(
+    {
+        "experiment_identity",
+        "artifact_paths",
+        "evidence_schema",
+        "proposal_artifact",
+        "proposal_checksum",
+        "manifest_checksum",
+        "report_checksum",
+        "database_checksum",
+        "manifest_schema",
+        "thresholds",
+        "seed_provenance",
+        "baseline_provenance",
+        "bounded_proposal",
+        "selected_candidate",
+        "winner_provenance",
+        "selected_specs",
+        "selected_recipe",
+        "sqlite_runs",
+        "proposal_runs",
+        "metrics_provenance",
+        "gate_outcome",
+        "report_evidence",
+        "promotion_provenance",
+        "promoted",
+        "verification_report",
+    }
+)
 
 
 class ResearchOrchestratorError(RuntimeError):
     """Raised when a research-loop stage cannot fail closed safely."""
+
+
+class _DuplicateConfigKey(ValueError):
+    """Raised when strict configuration JSON contains a duplicate key."""
+
+
+def _strict_config_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _DuplicateConfigKey(f"config contains duplicate key: {key}")
+        value[key] = item
+    return value
 
 
 def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str, object]:
@@ -59,6 +103,9 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
     config = _read_config(config_file)
     run_dir = Path(config.run_dir)
     state_path = run_dir / _STATE_NAME
+    config_payload = _effective_config(config)
+    config_sha256 = _canonical_sha256(config_payload)
+    config_snapshot_path = run_dir / _CONFIG_NAME
 
     if resume:
         if not state_path.is_file():
@@ -66,6 +113,12 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
         state = load_state(state_path)
         if state.run_id != config.run_id:
             raise ResearchStateError("state run_id does not match configuration")
+        _verify_resume_config(
+            state,
+            config_snapshot_path,
+            config_payload,
+            config_sha256,
+        )
         if state.status in _TERMINAL_STATUSES:
             raise ResearchStateError(f"cannot resume terminal state {state.status}")
         journal_count = len(state.transitions)
@@ -73,13 +126,15 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
         if state_path.exists():
             raise ResearchStateError("run state already exists; use --resume")
         run_dir.mkdir(parents=True, exist_ok=True)
-        state = initialize_state(config)
+        atomic_write_json(config_snapshot_path, config_payload)
+        state = initialize_state(config, config_sha256=config_sha256)
         _persist_state(run_dir, state)
         (run_dir / _JOURNAL_NAME).touch(exist_ok=True)
         journal_count = 0
 
     verifier_outcome = "pending"
     verifier_reasons: tuple[str, ...] = ()
+    initial_status = state.status
 
     while state.status not in _TERMINAL_STATUSES:
         if state.status == "initialized":
@@ -136,7 +191,11 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 run_dir,
                 state,
                 to_status="proposed",
-                artifact_paths={"proposal": proposal_path, "notes": notes_path},
+                artifact_paths={
+                    "proposal": proposal_path,
+                    "notes": notes_path,
+                    "config": config_snapshot_path,
+                },
                 journal_count=journal_count,
             )
             continue
@@ -152,9 +211,25 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
             continue
 
         if state.status == "experimenting":
-            proposal = _load_proposal(_artifact_named(state, _PROPOSAL_NAME))
-            profile = _current_profile(state)
+            if resume and initial_status == "experimenting":
+                failure_path = _write_failure(
+                    run_dir,
+                    state.iteration,
+                    "interrupted_experiment",
+                )
+                state, journal_count = _advance(
+                    run_dir,
+                    state,
+                    to_status="verifying",
+                    artifact_paths={"failure": failure_path},
+                    journal_count=journal_count,
+                )
+                verifier_outcome = "invalid"
+                verifier_reasons = (_safe_reason("interrupted_experiment"),)
+                continue
             try:
+                proposal = _load_proposal(_artifact_named(state, _PROPOSAL_NAME))
+                _current_profile(state)
                 experiment = run_experiment_agent(
                     config=config,
                     proposal=proposal,
@@ -174,7 +249,8 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                     journal_count=journal_count,
                 )
                 verifier_outcome = "invalid"
-                verifier_reasons = (_safe_reason("experiment_failed"),)
+                if not verifier_reasons:
+                    verifier_reasons = (_safe_reason("experiment_failed"),)
                 continue
 
             try:
@@ -216,9 +292,9 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                 verifier_outcome = "invalid"
                 verifier_reasons = (_safe_reason("experiment_failed"),)
                 continue
-            proposal = _load_proposal(_artifact_named(state, _PROPOSAL_NAME))
-            experiment = _load_experiment(state)
             try:
+                proposal = _load_proposal(_artifact_named(state, _PROPOSAL_NAME))
+                experiment = _load_experiment(state)
                 result = run_verifier_agent(
                     config=config,
                     proposal=proposal,
@@ -226,12 +302,12 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                     iteration=state.iteration,
                 )
                 _validate_verification_result(result)
-            except (ResearchExecutionError, OSError, TypeError, ValueError) as exc:
-                _ = exc
+                classified = _classify_verification(result, experiment)
+            except Exception:
                 failure_path = _write_failure(
                     run_dir,
                     state.iteration,
-                    "malformed_verifier",
+                    "verifier_evidence_invalid",
                 )
                 state, journal_count = _advance(
                     run_dir,
@@ -241,10 +317,10 @@ def run_research_loop(config_path: Path, *, resume: bool = False) -> Mapping[str
                     journal_count=journal_count,
                 )
                 verifier_outcome = "invalid"
-                verifier_reasons = (_safe_reason("malformed_verifier"),)
+                verifier_reasons = (_safe_reason("verifier_evidence_invalid"),)
                 continue
 
-            verifier_outcome, verifier_reasons = _classify_verification(result, experiment)
+            verifier_outcome, verifier_reasons = classified
             if verifier_outcome == "pass":
                 state, journal_count = _advance(
                     run_dir,
@@ -301,9 +377,11 @@ def _read_config(config_path: Path) -> ResearchLoopConfig:
     config_file = config_path.resolve()
     try:
         with config_file.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+            payload = json.load(handle, object_pairs_hook=_strict_config_object)
     except FileNotFoundError:
         raise
+    except _DuplicateConfigKey as exc:
+        raise ResearchContractError(str(exc)) from None
     except (OSError, json.JSONDecodeError) as exc:
         raise ResearchContractError("config must contain valid JSON") from exc
     repository_root = Path(__file__).resolve().parents[2]
@@ -312,6 +390,52 @@ def _read_config(config_path: Path) -> ResearchLoopConfig:
         config_path=config_file,
         repository_root=repository_root,
     )
+
+
+def _effective_config(config: ResearchLoopConfig) -> dict[str, object]:
+    return {
+        "schema_version": config.schema_version,
+        "run_id": config.run_id,
+        "dataset_path": str(Path(config.dataset_path).resolve()),
+        "dataset_sha256": _sha256_file(Path(config.dataset_path)),
+        "legacy_manifest_path": str(Path(config.legacy_manifest_path).resolve()),
+        "legacy_manifest_sha256": _sha256_file(Path(config.legacy_manifest_path)),
+        "run_dir": str(Path(config.run_dir).resolve()),
+        "profiles": list(config.profiles),
+        "max_iterations": config.max_iterations,
+        "fold_count": config.fold_count,
+        "objective": config.objective,
+        "minimum_improvement": config.minimum_improvement,
+        "max_plant_regression": config.max_plant_regression,
+    }
+
+
+def _canonical_sha256(value: Mapping[str, object]) -> str:
+    encoded = (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _verify_resume_config(
+    state: ResearchState,
+    snapshot_path: Path,
+    current: Mapping[str, object],
+    current_sha256: str,
+) -> None:
+    if state.config_sha256 is None:
+        raise ResearchStateError("state has no immutable configuration checksum")
+    if state.config_sha256 != current_sha256:
+        raise ResearchStateError("configuration changed since run initialization")
+    try:
+        with snapshot_path.open("r", encoding="utf-8") as handle:
+            snapshot = json.load(handle, object_pairs_hook=_strict_config_object)
+    except (_DuplicateConfigKey, OSError, json.JSONDecodeError) as exc:
+        raise ResearchStateError("persisted configuration snapshot is invalid") from exc
+    if not isinstance(snapshot, Mapping) or dict(snapshot) != dict(current):
+        raise ResearchStateError("configuration changed since run initialization")
+    if _canonical_sha256(snapshot) != state.config_sha256:
+        raise ResearchStateError("persisted configuration checksum mismatch")
 
 
 def _persist_state(run_dir: Path, state: ResearchState) -> None:
@@ -434,7 +558,9 @@ def _validate_verification_result(result: object) -> None:
         raise ResearchExecutionError("verifier result is malformed")
     if type(result.passed) is not bool or not isinstance(result.checks, Mapping):
         raise ResearchExecutionError("verifier result is malformed")
-    if not result.checks or any(type(value) is not bool for value in result.checks.values()):
+    if set(result.checks) != _EXPECTED_VERIFIER_CHECKS:
+        raise ResearchExecutionError("verifier checks are incomplete or unknown")
+    if any(type(value) is not bool for value in result.checks.values()):
         raise ResearchExecutionError("verifier checks are malformed")
     if not isinstance(result.reasons, tuple) or any(
         type(reason) is not str for reason in result.reasons
@@ -449,7 +575,12 @@ def _classify_verification(
     experiment: ExperimentResult,
 ) -> tuple[str, tuple[str, ...]]:
     reasons = tuple(_safe_reason(reason) for reason in result.reasons)
-    if result.passed and experiment.run_state == "promoted":
+    if (
+        result.passed
+        and experiment.run_state == "promoted"
+        and all(result.checks.values())
+        and not result.reasons
+    ):
         return "pass", reasons
     normal_rejection = (
         not result.passed
@@ -457,7 +588,7 @@ def _classify_verification(
         and result.checks.get("promoted") is False
         and result.checks.get("promoted") is not None
         and all(value for name, value in result.checks.items() if name != "promoted")
-        and reasons == ("experiment_rejected",)
+        and result.reasons == ("experiment_rejected",)
     )
     if normal_rejection:
         return "reject", reasons
@@ -510,8 +641,6 @@ def _safe_reason(value: object) -> str:
 
 
 def _sha256_file(path: Path) -> str:
-    import hashlib
-
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
