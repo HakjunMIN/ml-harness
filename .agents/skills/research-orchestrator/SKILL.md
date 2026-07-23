@@ -24,13 +24,13 @@ JSON, then rerun the exact same command with `--resume`.
 - A project-local `research-loop.json`, schema version `1`, with exactly the configured run ID,
   existing dataset and baseline manifest paths, profile allowlist, iteration/fold bounds, objective,
   and AIDM thresholds.
-- Existing role artifacts only under the configured `.agents/runs` or `.agents/output` run
+- Existing role artifacts only under the configured root `runs/` or `outputs/` run
   directory: schema-versioned diagnosis/proposal/experiment/verification artifacts.
 - `--resume` may read only the matching `state.json`, `journal.jsonl`, immutable
   `research-config.json`, and their bound artifacts.
 
 ## Output and Permissions
-- Write only under `.agents/runs` (or the explicitly allowed `.agents/output`) and only these
+- Write only under root `runs/` (or the explicitly allowed `outputs/`) and only these
   names: `research-config.json`, `state.json`, `journal.jsonl`, `diagnosis.json`,
   `diagnostic-failure.json`, `research-summary.json`, `verification-failure.json`,
   `exhaustion.json`, plus per-iteration
@@ -93,7 +93,8 @@ weaken thresholds or gates, use unbounded iterations/search, export secrets, or 
 | Terminal state or failed role | Persist terminal evidence; require human decision or a new run. |
 
 ## Evidence Output Layout
-The canonical terminal artifact is `.agents/runs/<run-id>/research-summary.json`, accompanied by
+The canonical terminal artifact is `runs/<run-id>/research-summary.json` (or the configured
+`outputs/<run-id>/research-summary.json`), accompanied by
 `state.json`, `journal.jsonl`, and all checksummed role/iteration artifacts. Summary status is
 `ready_for_human_review`, `exhausted`, or `failed`.
 

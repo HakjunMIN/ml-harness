@@ -6,16 +6,18 @@
 
 ```text
 사람이 통제하는 기본 경로
-legacy-intake -> AIDM experiment -> AIDD promotion -> human review
+legacy-intake -> AIDM experiment -> AIDD promotion -> human-review -> release gate -> explicit human approval
 
 선택적 자동 Stage 1 연구 경로
-diagnosis -> awaiting_proposal -> bounded proposal -> AIDM -> evidence verification -> human review
+diagnosis -> awaiting_proposal -> bounded proposal -> AIDM -> evidence verification
+-> ready_for_human_review -> human-review -> optional AIDD -> release gate -> explicit human approval
 ```
 
 기본 경로에서는 사람이 데이터셋, 제안 JSON, 명령, 다음 단계를 선택합니다. 선택적 Stage 1
 research loop는 연구 단계만 제한적으로 자동화합니다. `agent_proposals: true`이면 진단 뒤
 코딩 에이전트가 catalog 안의 후보만 담은 제안 JSON을 작성하고, 같은 실행을 `--resume`으로
-재개합니다. 어떤 경로도 AIDD, 고객 시스템 변경, 병합, 배포 이전에 멈춥니다.
+재개합니다. `human-review`은 검토 가능한 증적 요약과 다음 행동을 표시할 뿐 승인 artifact를
+작성하지 않습니다. 어떤 경로도 고객 시스템 변경, 병합, 배포 이전에 멈춥니다.
 
 이 두 경로는 [데모 노트북](#데모-노트북-레거시에서-개선까지)에서 바로 실행해 볼 수 있습니다. `01`은 개선 전 레거시 기준선, `02`는 사람이 통제하는 수동 경로, `03`은 자동 연구 경로입니다.
 
@@ -127,16 +129,16 @@ uv run python -m power_forecasting.cli all --output artifacts/demo --minimum-imp
 `notebooks/`의 네 노트북은 하나의 스토리를 이룹니다. 데모를 보는 사람은 레거시를
 **자기 시스템**으로 보고, `02` 또는 `03`을 통해 코딩 에이전트와 이 저장소 `.agents`
 하네스의 가치를 확인합니다. 모두 저장소 루트에서 실행하며 산출물은 `artifacts/demo/`
-또는 `.agents/runs/`에 남습니다.
+또는 `runs/` 및 `outputs/`에 남습니다.
 
 | 노트북 | 역할 | 실행 내용 |
 | --- | --- | --- |
 | [`00_legacy_power_forecasting_models.ipynb`](notebooks/00_legacy_power_forecasting_models.ipynb) | 참조·설명 | 확보할 수 없는 운영 코드 대신 Mean, Weather, ForecastWeather, Ldaps, SPOT을 합성 데이터로 재구성하고, 제한된 피처·모델 연구까지 담은 이미 개선된 결과를 설명합니다. |
 | [`01_legacy_baseline.ipynb`](notebooks/01_legacy_baseline.ipynb) | 개선 전 기준선 | `00`처럼 노트북 안에서 합성 데이터 생성·레거시 모델 평가를 직접 수행해 예측 시점 기준선 `SPOT` NMAE를 고정하고, `artifacts/demo/dataset.csv`와 SPOT 예측을 내보냅니다. 이것이 개선 대상이며 `02`·`03`의 입력입니다. |
-| [`02_manual_skill_path.ipynb`](notebooks/02_manual_skill_path.ipynb) | 사람이 통제하는 기본 경로 | `legacy-intake -> AIDM experiment -> AIDD promotion -> human review`. `01`의 데이터셋을 바탕으로 이 저장소 스킬 러너 `run-aidm.sh`·`verify-promotion.sh`를 직접 실행합니다. 제한된 JSON 제안으로 `SPOT`을 넘어서는 후보를 찾고, 게이트를 통과하면 결정론적 피처 모듈을 생성한 뒤 사람 검토 경계에서 멈춥니다. |
-| [`03_auto_research_path.ipynb`](notebooks/03_auto_research_path.ipynb) | 선택적 agent-proposal 연구 경로 | `diagnosis -> awaiting_proposal -> bounded proposal -> AIDM -> evidence verification -> human review`. `01`의 데이터셋을 대상으로 스킬 러너 `run-research-loop.sh`를 실행합니다. Stage 1이 진단 뒤 `proposal-context.json`과 `proposal-catalog.json`을 생성하고, 코딩 에이전트가 `research-proposal.json`을 작성하면 `--resume`으로 실험·검증을 진행합니다. `ready_for_human_review`에서 멈추며 AIDD·배포는 하지 않습니다. |
+| [`02_manual_skill_path.ipynb`](notebooks/02_manual_skill_path.ipynb) | 사람이 통제하는 기본 경로 | `legacy-intake -> AIDM experiment -> AIDD promotion -> human-review -> release gate -> explicit human approval`. `01`의 데이터셋을 바탕으로 이 저장소 스킬 러너 `run-aidm.sh`·`verify-promotion.sh`를 직접 실행합니다. 제한된 JSON 제안으로 `SPOT`을 넘어서는 후보를 찾고, 게이트를 통과하면 결정론적 피처 모듈을 생성합니다. `human-review`은 증적을 요약하고 다음 행동을 요청할 뿐 고객 시스템을 변경하지 않습니다. |
+| [`03_auto_research_path.ipynb`](notebooks/03_auto_research_path.ipynb) | 선택적 agent-proposal 연구 경로 | `diagnosis -> awaiting_proposal -> bounded proposal -> AIDM -> evidence verification -> ready_for_human_review -> human-review`. `01`의 데이터셋을 대상으로 스킬 러너 `run-research-loop.sh`를 실행합니다. Stage 1이 진단 뒤 `proposal-context.json`과 `proposal-catalog.json`을 생성하고, 코딩 에이전트가 `research-proposal.json`을 작성하면 `--resume`으로 실험·검증을 진행합니다. `ready_for_human_review`은 증적 상태일 뿐 AIDD·배포 승인이 아니며, 다음 단계는 `human-review`을 통해 요청합니다. |
 
-각 데모 노트북은 문서가 아니라 실제 하네스 코드를 실행해 검증 가능한 증적을 남깁니다. `01`은 `artifacts/demo/`에, `02`·`03`은 각각 `.agents/runs/notebook-02-manual/`·`.agents/runs/notebook-03-auto/`에 `promotion_manifest.json`, `generated/promoted_features.py`, `research-summary.json` 등을 남깍니다. `02`·`03`은 `01`이 먼저 실행된 상태를 전제로 하며, 사용하는 스킬은 모두 이 저장소의 `.agents` 하네스로 제한됩니다. 합성 예제는 고객 운영 증거나 고객 모형과의 동등성을 주장하지 않으며,
+각 데모 노트북은 문서가 아니라 실제 하네스 코드를 실행해 검증 가능한 증적을 남깁니다. `01`은 `artifacts/demo/`에, `02`는 `runs/notebook-02-manual/`에, `03`은 `outputs/notebook-03-auto/`에 `promotion_manifest.json`, `generated/promoted_features.py`, `research-summary.json` 등을 남깁니다. `02`·`03`은 `01`이 먼저 실행된 상태를 전제로 하며, 사용하는 스킬은 모두 이 저장소의 `.agents` 하네스로 제한됩니다. 합성 예제는 고객 운영 증거나 고객 모형과의 동등성을 주장하지 않으며,
 `Weather`는 예측 시점에 쓸 수 없는 실제 기상 기반 진단값입니다.
 
 ## 아키텍처 및 데이터 흐름
@@ -283,7 +285,7 @@ artifacts/demo/
 
 ## 대시보드
 
-대시보드는 `artifacts/demo/`의 산출물을 읽습니다. `01` 노트북은 데이터셋을, CLI `all`은 승격 매니페스트·생성 모듈까지 이 경로에 채웁니다(데모 노트북 `02`·`03`의 승격 증적은 `.agents/runs/`에 남습니다). 산출물을 생성한 뒤 대시보드를 실행합니다.
+대시보드는 `artifacts/demo/`의 산출물을 읽습니다. `01` 노트북은 데이터셋을, CLI `all`은 승격 매니페스트·생성 모듈까지 이 경로에 채웁니다(데모 노트북 `02`·`03`의 승격 증적은 root `runs/`·`outputs/`에 남습니다). 산출물을 생성한 뒤 대시보드를 실행합니다.
 
 ```bash
 uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
@@ -293,13 +295,14 @@ uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
 
 ## 코딩 에이전트에서 스킬 중심 실행
 
-기본 실행 경로는 코딩 에이전트에게 저장소 로컬 스킬을 명시하는 방식입니다. `02`·`03` 데모 노트북이 이 스킬들을 실제로 호출하는 예시입니다. CLI는 자동화·CI·재현 실행을 위한 동등한 경로로 유지합니다. 슬래시 명령을 지원하는 환경에서는 `/legacy-intake`, `/aidm-experiment`, `/aidd-promotion`, `/release-gate`, `/research-diagnostic`, `/research-proposal`, `/research-verification`, `/research-orchestrator`처럼 요청할 수 있습니다. VS Code Copilot처럼 슬래시 스킬 호출이 고정되어 있지 않은 환경에서는 자연어로 스킬명을 명시하는 방식이 가장 명확합니다.
+기본 실행 경로는 코딩 에이전트에게 저장소 로컬 스킬을 명시하는 방식입니다. `02`·`03` 데모 노트북이 이 스킬들을 실제로 호출하는 예시입니다. CLI는 자동화·CI·재현 실행을 위한 동등한 경로로 유지합니다. 슬래시 명령을 지원하는 환경에서는 `/legacy-intake`, `/aidm-experiment`, `/aidd-promotion`, `/human-review`, `/release-gate`, `/research-diagnostic`, `/research-proposal`, `/research-verification`, `/research-orchestrator`처럼 요청할 수 있습니다. VS Code Copilot처럼 슬래시 스킬 호출이 고정되어 있지 않은 환경에서는 자연어로 스킬명을 명시하는 방식이 가장 명확합니다.
 
 | 스킬 | 역할 | 반드시 멈추는 경계 |
 | --- | --- | --- |
 | `legacy-intake` | fixture-first 레거시 어댑터 계약과 기준선 증적을 검증합니다. | 사람 승인 전에는 고객 시스템이나 실제 고객 데이터를 실행하지 않습니다. |
 | `aidm-experiment` | 제한된 JSON 제안으로 피처·개별 모델 후보를 평가하고 승격 게이트를 비교합니다. | `decision: reject`를 우회하지 않으며 AIDD를 호출하지 않습니다. |
 | `aidd-promotion` | 승격 매니페스트를 검증하고 결정론적 피처 모듈 및 사람 검토용 요청을 생성합니다. | 고객 저장소 수정, 병합, 배포를 수행하지 않습니다. |
+| `human-review` | checksum으로 결속된 연구/AIDD 증적을 안전한 요약과 링크로 보여 주고, AIDD 검증·release-gate 검토·거부 중 다음 행동을 요청합니다. | state·승인 artifact·source를 수정하지 않으며, chat 응답을 release approval로 취급하지 않습니다. |
 | `release-gate` | legacy, AIDM, AIDD, compile, 사람 승인 증적을 fail-closed로 판정합니다. | 명시적 사람 승인 없이 release나 배포를 허용하지 않습니다. |
 | `research-diagnostic` | 집계 데이터 품질·누수·프로필 적합성을 진단합니다. | 후보를 발명하거나 AIDM·AIDD를 실행하지 않습니다. |
 | `research-proposal` | `awaiting_proposal`의 context/catalog에서 하나의 제한된 선언형 AIDM 제안을 만듭니다. | catalog 밖 후보, 코드·임의 탐색·게이트 변경을 만들지 않습니다. |
@@ -312,6 +315,7 @@ uv run streamlit run dashboard/app.py -- --artifacts artifacts/demo
 legacy-intake 스킬로 fixture 레거시 어댑터부터 검증해줘
 aidm-experiment 스킬로 fixture AIDM 실험을 실행하고 promotion_manifest를 설명해줘
 aidd-promotion 스킬로 promoted manifest를 검증하고 생성 모듈 컴파일 증적을 확인해줘
+human-review 스킬로 Stage 1/AIDD 증적을 안전하게 요약하고 다음 검토 행동을 받아줘
 release-gate 스킬로 baseline, AIDM, AIDD, compile, human approval 증거를 판정해줘
 ```
 
@@ -340,7 +344,7 @@ research loop가 자동화하는 범위는 다음으로 제한됩니다.
 runner는 기존 프로젝트 안의 `--config` 파일만 읽고 저장소 루트에서 정확히
 `uv run python -m power_forecasting.cli research-loop`를 실행합니다. 설정의 입력 경로는
 설정 파일 디렉터리에 대해 해석되며, fixture는 합성 `valid-dataset.csv`와 baseline
-manifest만 사용하고 출력은 `.agents/runs/research-loop-fixture/` 아래에 둡니다. 환경
+manifest만 사용하고 출력은 `runs/research-loop-fixture/` 아래에 둡니다. 환경
 비밀값을 export하거나 출력하지 않습니다. `--resume`은 동일한 설정과 체크섬을 가진
 비터미널 실행만 재개합니다.
 
@@ -371,11 +375,20 @@ evidence data를 기록하지 않으며 서로 대체 관계가 아닙니다. �
 `awaiting_proposal`, 또는
 `ready_for_human_review`, `exhausted`, 또는 `failed`에서 멈추며, 터미널 상태는 재개하지 않습니다.
 
-이 루프의 경계는 AIDD 호출, 실행 가능한 코드 생성, merge, deploy 직전입니다.
-`research-summary.json`은 연구 진단/제안/검증 결과일 뿐 release 또는 deploy 승인 증거가
-아닙니다. 사람은 summary와 전체 증적을 검토한 뒤 기존 수동 AIDD 및 release gate 절차를
-별도로 실행해야 합니다. 루프는 source, fixture, 고객 데이터, gate 임계값을 수정하지
-않고 고객 행·target·secret을 기록하지 않습니다.
+이 루프의 `ready_for_human_review`은 release-ready가 아니라 `human-review`을 호출할 수 있는
+증적 상태입니다. 이 skill은 `performance_report.md`, `verification.json`,
+`promotion_manifest.json`과 checksum을 workspace-relative 링크로 요약하고, 사람에게
+`Request AIDD verification` 또는 `Reject or request changes`를 요청합니다. run state나
+승인 artifact는 수정하지 않습니다.
+
+사람이 AIDD 검증을 요청한 경우에만 별도 AIDD 경로가 `promotion-evidence.json`과 컴파일된
+`generated/promoted_features.py`를 준비합니다. 이후 `human-review`은 AIDD 증적과
+비실행형 `model-recipe-patch.json`을 다시 요약해 release-gate 검토 또는 거부를 요청합니다.
+`research-summary.json`, chat 응답, AIDD 성공은 어느 것도 release/deploy 승인 증거가 아닙니다.
+`release-gate`은 baseline, AIDM, AIDD, compile evidence와 manifest checksum을 참조하는 정확한
+사람 승인이 모두 있을 때만 통과합니다. 에이전트는 어떤 단계에서도 source, fixture, 고객
+데이터, gate 임계값을 수정하거나 고객 행·target·secret을 기록하지 않고 merge/deploy하지
+않습니다.
 
 ## 포함하지 않은 운영 마이그레이션 및 확장 지점
 
@@ -445,13 +458,13 @@ PY
 Fixture-first 순서:
 
 ```bash
-PYTHONPATH=.agents uv run python -m harness.contract --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/fixture
-.agents/scripts/run-legacy.sh --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/legacy
-.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --run-dir .agents/runs/aidm --folds 1 --top-single-candidates 1
-cp .agents/fixtures/promoted-manifest.json .agents/runs/promotion/promotion_manifest.json
-.agents/scripts/verify-promotion.sh --run-dir .agents/runs/promotion
+PYTHONPATH=.agents uv run python -m harness.contract --adapter .agents/fixtures/valid-adapter.json --run-dir runs/fixture
+.agents/scripts/run-legacy.sh --adapter .agents/fixtures/valid-adapter.json --run-dir runs/legacy
+.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --run-dir runs/aidm --folds 1 --top-single-candidates 1
+cp .agents/fixtures/promoted-manifest.json runs/promotion/promotion_manifest.json
+.agents/scripts/verify-promotion.sh --run-dir runs/promotion
 ```
 
-증거 파일은 `legacy-evidence.json`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`, `promotion-evidence.json`입니다. 레거시 세 스크립트는 기존처럼 `.agents/` 밖의 로컬 출력 경로도 허용하지만 파일시스템 루트, `.git`, 소스·문서 디렉터리, `.agents/`의 보호된 자산과 심볼릭 링크 경로는 거부합니다(`.agents/runs`와 `.agents/output` 및 하위 경로는 허용). 증거에는 체크섬과 상태만 남기며 입력 행 내용, 고객 데이터, 비밀, 환경 변수 값은 기록하지 않습니다. 경로 이탈, 빈 CSV, 필수 예측 컬럼 누락, `actual_*`/`generation_mw` 누수, `decision: reject`, 컴파일 실패는 모두 거부로 처리하고 성공 증거를 만들지 않습니다.
+증거 파일은 `legacy-evidence.json`, `experiments.db`, `promotion_manifest.json`, `performance_report.md`, `promotion-evidence.json`입니다. 레거시 세 스크립트는 root `runs/`·`outputs/`를 포함한 로컬 출력 경로를 허용하지만 파일시스템 루트, `.git`, 소스·문서 디렉터리, `.agents/` framework 자산과 심볼릭 링크 경로는 거부합니다. 증거에는 체크섬과 상태만 남기며 입력 행 내용, 고객 데이터, 비밀, 환경 변수 값은 기록하지 않습니다. 경로 이탈, 빈 CSV, 필수 예측 컬럼 누락, `actual_*`/`generation_mw` 누수, `decision: reject`, 컴파일 실패는 모두 거부로 처리하고 성공 증거를 만들지 않습니다.
 
 실제 고객 데이터 또는 고객 시스템 실행은 사람이 명시적으로 승인하기 전까지 금지됩니다. AIDD가 생성한 코드는 human approval 이후 검토용 패치 요청으로만 다루며, 에이전트는 배포·머지·고객 시스템 편집을 수행하지 않습니다.

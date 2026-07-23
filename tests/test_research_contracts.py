@@ -51,7 +51,7 @@ def _payload(**overrides: object) -> dict[str, object]:
         "run_id": "run_001",
         "dataset_path": "inputs/dataset.csv",
         "legacy_manifest_path": "inputs/legacy-manifest.json",
-        "run_dir": "../.agents/runs/run_001",
+        "run_dir": "../runs/run_001",
         "profiles": ["safe_weather", "history_tree"],
         "max_iterations": 2,
         "fold_count": 2,
@@ -79,7 +79,7 @@ def test_valid_config_resolves_relative_paths_from_configuration_directory(
     assert config.dataset_path == str(contract_paths["dataset_path"].resolve())
     assert config.legacy_manifest_path == str(contract_paths["legacy_manifest_path"].resolve())
     assert config.run_dir == str(
-        (contract_paths["repository_root"] / ".agents" / "runs" / "run_001").resolve()
+        (contract_paths["repository_root"] / "runs" / "run_001").resolve()
     )
     assert config.profiles == ("safe_weather", "history_tree")
 
@@ -184,15 +184,17 @@ def test_config_rejects_run_directories_overlapping_protected_repository_content
 @pytest.mark.parametrize(
     ("run_dir", "is_allowed"),
     [
-        ("../.agents/runs", True),
-        ("../.agents/runs/run_001", True),
-        ("../.agents/output", True),
-        ("../.agents/output/run_001", True),
+        ("../runs", True),
+        ("../runs/run_001", True),
+        ("../outputs", True),
+        ("../outputs/run_001", True),
+        ("../.agents/runs/run_001", False),
+        ("../.agents/output/run_001", False),
         ("../.agents/cache/run_001", False),
         ("../.agents/research-output", False),
     ],
 )
-def test_config_permits_only_designated_repository_agents_destinations(
+def test_config_permits_only_designated_repository_artifact_destinations(
     contract_paths: dict[str, Path], run_dir: str, is_allowed: bool
 ) -> None:
     payload = _payload(run_dir=run_dir)
@@ -200,7 +202,7 @@ def test_config_permits_only_designated_repository_agents_destinations(
     if is_allowed:
         assert _load(payload, contract_paths).run_dir.endswith(run_dir.removeprefix("../"))
     else:
-        with pytest.raises(ResearchContractError, match=r"\.agents"):
+        with pytest.raises(ResearchContractError, match="run_dir"):
             _load(payload, contract_paths)
 
 
@@ -223,29 +225,27 @@ def test_config_rejects_repository_root_git_and_external_run_directories(
 def test_config_rejects_symlinked_run_destination_and_parent(
     contract_paths: dict[str, Path], tmp_path: Path
 ) -> None:
-    agents = contract_paths["repository_root"] / ".agents"
-    runs = agents / "runs"
+    runs = contract_paths["repository_root"] / "runs"
     runs.mkdir(parents=True)
 
     destination = runs / "linked-destination"
     destination.symlink_to(tmp_path / "destination", target_is_directory=True)
     with pytest.raises(ResearchContractError, match="symlink"):
-        _load(_payload(run_dir="../.agents/runs/linked-destination"), contract_paths)
+        _load(_payload(run_dir="../runs/linked-destination"), contract_paths)
 
-    parent = agents / "linked-parent"
+    parent = contract_paths["repository_root"] / "linked-parent"
     parent.symlink_to(runs, target_is_directory=True)
     with pytest.raises(ResearchContractError, match="symlink"):
-        _load(_payload(run_dir="../.agents/linked-parent/run"), contract_paths)
+        _load(_payload(run_dir="../linked-parent/run"), contract_paths)
 
 
 def test_config_rejects_symlinked_allowed_root(
     contract_paths: dict[str, Path], tmp_path: Path
 ) -> None:
-    agents = contract_paths["repository_root"] / ".agents"
-    (agents / "runs").symlink_to(tmp_path, target_is_directory=True)
+    (contract_paths["repository_root"] / "runs").symlink_to(tmp_path, target_is_directory=True)
 
     with pytest.raises(ResearchContractError, match="symlink"):
-        _load(_payload(run_dir="../.agents/runs/run_001"), contract_paths)
+        _load(_payload(run_dir="../runs/run_001"), contract_paths)
 
 
 def test_config_requires_explicit_run_dir(contract_paths: dict[str, Path]) -> None:

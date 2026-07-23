@@ -19,7 +19,7 @@ SCRIPTS = ROOT / ".agents" / "scripts"
 
 
 def safe_run_dir(tmp_path: Path) -> Path:
-    path = ROOT / ".agents" / "output" / f"pytest-{tmp_path.name}"
+    path = ROOT / "outputs" / f"pytest-{tmp_path.name}"
     shutil.rmtree(path, ignore_errors=True)
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -651,7 +651,7 @@ def test_verify_promotion_script_fails_closed_for_leakage_manifest(tmp_path: Pat
 
 
 def test_skill_files_follow_local_conventions() -> None:
-    for name in ["legacy-intake", "aidm-experiment", "aidd-promotion", "release-gate"]:
+    for name in ["legacy-intake", "aidm-experiment", "aidd-promotion", "release-gate", "human-review"]:
         path = ROOT / ".agents" / "skills" / name / "SKILL.md"
         content = path.read_text(encoding="utf-8")
         assert content.startswith("---\n")
@@ -670,12 +670,43 @@ def test_release_gate_requires_human_approval_and_fails_closed() -> None:
     content = (ROOT / ".agents" / "skills" / "release-gate" / "SKILL.md").read_text(encoding="utf-8").lower()
     for phrase in ["human approval", "fail closed", "baseline", "aidm", "aidd", "compile", "must not deploy", "must not merge", "must not edit customer systems"]:
         assert phrase in content
+    assert "github pr approval" not in content
 
 
-def test_gitignore_keeps_agent_sources_but_ignores_runs() -> None:
+def test_human_review_skill_displays_safe_evidence_and_collects_review_decision() -> None:
+    content = (ROOT / ".agents" / "skills" / "human-review" / "SKILL.md").read_text(encoding="utf-8").lower()
+
+    for phrase in [
+        "vscode_askquestions",
+        "performance_report.md",
+        "verification.json",
+        "promotion_manifest.json",
+        "manifest checksum",
+        "fail closed",
+        "must not deploy",
+        "must not merge",
+        "request aidd verification",
+        "reject or request changes",
+    ]:
+        assert phrase in content
+    for phrase in ["## review tables", "| category | baseline | selected candidate |", "| check | status | detail |", "| artifact | purpose | checksum |"]:
+        assert phrase in content
+    assert "github pr approval" not in content
+
+
+def test_aidd_promotion_skill_includes_table_based_human_review_template() -> None:
+    content = (ROOT / ".agents" / "skills" / "aidd-promotion" / "SKILL.md").read_text(encoding="utf-8").lower()
+
+    for phrase in ["## human-readable review tables", "| validation | status | reviewer focus |", "| artifact | review purpose | checksum |", "| decision | permitted next step |"]:
+        assert phrase in content
+
+
+def test_gitignore_keeps_agent_sources_but_ignores_root_artifact_directories() -> None:
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert ".agents/runs/" in gitignore
-    assert ".agents/output/" in gitignore
+    assert "runs/" in gitignore
+    assert "outputs/" in gitignore
+    assert ".agents/runs/" not in gitignore
+    assert ".agents/output/" not in gitignore
     assert ".agents/fixtures/" not in gitignore
     assert ".agents/skills/" not in gitignore
     assert ".agents/legacy_adapter/" not in gitignore

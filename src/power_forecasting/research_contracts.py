@@ -231,8 +231,7 @@ def _aidm_threshold_value(value: object, label: str) -> float:
 
 
 def _validate_run_dir(run_dir: Path, repository_root: Path) -> None:
-    agents_root = repository_root / ".agents"
-    allowed_destinations = (agents_root / "runs", agents_root / "output")
+    allowed_destinations = (repository_root / "runs", repository_root / "outputs")
     for path in (run_dir, *allowed_destinations):
         symlink = _first_symlink_component(path)
         if symlink is not None:
@@ -243,7 +242,7 @@ def _validate_run_dir(run_dir: Path, repository_root: Path) -> None:
     if any(_is_within(canonical_run_dir, destination) for destination in canonical_destinations):
         return
     raise ResearchContractError(
-        "run_dir must be canonically contained in repository .agents/runs or .agents/output"
+        "run_dir must be canonically contained in repository runs or outputs"
     )
 
 

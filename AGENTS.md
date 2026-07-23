@@ -8,10 +8,11 @@ Use this runbook only for the optional Stage 1 research loop. The manual
 1. Ask the user for the maximum number of `proposal -> AIDM -> verification`
    cycles. Accept an integer from 1 through 10; when the user does not specify
    one, set `"max_iterations": 10`.
-2. Create or update a repository-local research-loop config with
+2. Create or update a repository-local research-loop config under `runs/` with
    `"agent_proposals": true` and the selected `"max_iterations"`. Do not change
    the baseline, data paths, gates, profiles, or evaluation budget without
-   explicit user approval.
+   explicit user approval. Configure artifact output only under root `runs/` or
+   `outputs/`; `.agents/` is reserved for framework assets.
 3. Run `.agents/scripts/run-research-loop.sh --config <config>`.
 
 ## Proposal and Resume Cycle

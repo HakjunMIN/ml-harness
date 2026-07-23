@@ -28,7 +28,7 @@ def test_agents_runbook_defines_bounded_repeated_agent_proposals() -> None:
         assert required_text in content
 
 
-def test_research_fixture_uses_config_relative_synthetic_inputs_and_agents_runs_output() -> None:
+def test_research_fixture_uses_config_relative_synthetic_inputs_and_root_runs_output() -> None:
     config_path = FIXTURES / "research-loop.json"
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     config = load_research_loop_config(
@@ -39,7 +39,7 @@ def test_research_fixture_uses_config_relative_synthetic_inputs_and_agents_runs_
 
     assert Path(config.dataset_path) == (FIXTURES / "valid-dataset.csv").resolve()
     assert Path(config.legacy_manifest_path) == (FIXTURES / "promoted-manifest.json").resolve()
-    assert Path(config.run_dir) == (ROOT / ".agents" / "runs" / "research-loop-fixture").resolve()
+    assert Path(config.run_dir) == (ROOT / "runs" / "research-loop-fixture").resolve()
     assert "customer" not in json.dumps(payload).lower()
     assert "generation_mw" not in json.dumps(payload).lower()
 

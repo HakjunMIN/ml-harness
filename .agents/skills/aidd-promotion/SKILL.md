@@ -21,7 +21,34 @@ Promotion is verification, not deployment. Generate code only from a promoted ma
 4. If `selected_model_recipe` exists, confirm `model-recipe-patch.json` exists, is JSON only, says `requires_human_review`, and contains no executable code or customer paths.
 5. Confirm `promotion-evidence.json` records manifest, generated-module, and model-recipe-patch checksums only after success.
 6. Review generated code for deterministic transforms and unavailable-input rejection.
-7. Hand `model-recipe-patch.json` to a human reviewer; do not apply it to customer systems yourself.
+7. Invoke `human-review` to display the evidence summary and collect the review decision before any release-gate request.
+8. Hand `model-recipe-patch.json` to a human reviewer; do not apply it to customer systems yourself.
+
+## Human-Readable Review Tables
+
+When reporting AIDD verification or preparing the handoff to `human-review`, render these tables using workspace-relative clickable links and checksum values from `promotion-evidence.json`:
+
+| Validation | Status | Reviewer focus |
+| --- | --- | --- |
+| Manifest decision | `<pass | fail>` | Must be `promote` before generation. |
+| AIDD generation | `<pass | fail>` | Generated module exists only after manifest validation. |
+| Python compilation | `<pass | fail>` | `generated/promoted_features.py` compiles. |
+| Feature safeguards | `<pass | fail>` | Deterministic transforms; reject leakage and unavailable inputs. |
+| Recipe patch | `<present | not-applicable | fail>` | JSON only, `requires_human_review`, no executable code or customer paths. |
+
+| Artifact | Review purpose | Checksum |
+| --- | --- | --- |
+| [promotion_manifest.json](...) | Bound promoted AIDM result | `<sha256>` |
+| [generated/promoted_features.py](...) | Generated deterministic feature definitions | `<sha256>` |
+| [model-recipe-patch.json](...) | Non-executable model recipe request | `<sha256 | not-applicable>` |
+| [promotion-evidence.json](...) | Manifest and generated artifact checksum binding | `<sha256>` |
+
+| Decision | Permitted next step |
+| --- | --- |
+| `Request release-gate review` | Request the separate release-gate review; do not merge, deploy, or edit customer systems. |
+| `Reject or request changes` | Preserve evidence and stop; do not loosen gates or apply the patch. |
+
+Show only safe recipe metadata, selected feature names, aggregate metrics, statuses, reason codes, paths, and checksums. Tables are a review aid, not release approval.
 
 ## Error Table
 | Error | Action |
@@ -36,6 +63,7 @@ Promotion is verification, not deployment. Generate code only from a promoted ma
 - `generated/promoted_features.py`: generated module after success only.
 - `model-recipe-patch.json`: non-executable human-review request after success only when a selected recipe exists.
 - `promotion-evidence.json`: schema version, status, manifest checksum, generated module checksum, optional model recipe patch checksum, and relative artifact paths.
+- Human handoffs render the validation, artifact, and decision tables before asking for a review decision.
 
 ## Post-Run Reflection
-State whether validation, generation, compile, and patch rendering passed; identify the exact artifact a human must review before any downstream integration.
+State whether validation, generation, compile, and patch rendering passed; identify the exact artifact a human must review before any downstream integration. Explicit human approval remains required for any release action.

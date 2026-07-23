@@ -16,12 +16,12 @@ the default when a human wants to choose each proposal and command.
 - Dataset path is explicit and passes the existing project data contract.
 - Optional model-search setup has been installed before using `xgboost`, `lightgbm`, or Optuna search: `uv sync --extra model-search`.
 - Agentic proposal JSON, when used, follows schema version `1` and contains only prediction-time feature specs plus supported bounded recipes/search.
-- Run directory is outside source paths, preferably under `.agents/runs/` or `.agents/output/`.
+- Run directory is outside source paths, under root `runs/` or `outputs/`; `.agents/` is reserved for framework assets.
 - Human has approved use of any non-fixture dataset.
 
 ## Workflow
-1. Start with a fixture command for feature-only recipes: `.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --proposal .agents/fixtures/research-proposal.json --legacy-predictions .agents/fixtures/legacy-predictions.csv --run-dir .agents/runs/fixture-aidm --folds 1`.
-2. For reusable model-search smoke testing, install `uv sync --extra model-search`, then run `.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --proposal .agents/fixtures/model-search-proposal.json --run-dir .agents/runs/fixture-model-search --folds 1 --minimum-improvement 0 --max-plant-regression 1`. The tiny fixture uses one fold; real datasets should use five chronological folds unless a human approves otherwise.
+1. Start with a fixture command for feature-only recipes: `.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --proposal .agents/fixtures/research-proposal.json --legacy-predictions .agents/fixtures/legacy-predictions.csv --run-dir runs/fixture-aidm --folds 1`.
+2. For reusable model-search smoke testing, install `uv sync --extra model-search`, then run `.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --proposal .agents/fixtures/model-search-proposal.json --run-dir runs/fixture-model-search --folds 1 --minimum-improvement 0 --max-plant-regression 1`. The tiny fixture uses one fold; real datasets should use five chronological folds unless a human approves otherwise.
 3. For real runs, pass `--dataset` explicitly; never rely on implicit output dataset resolution.
 4. Generate or edit proposal JSON only. Do not generate estimator code, customer patches, callbacks, arbitrary Optuna spaces, or gate changes.
 5. Keep `--minimum-improvement`, `--max-plant-regression`, folds, proposal budget, recipes, search seed/trials, and optional-extra setup documented in run notes.

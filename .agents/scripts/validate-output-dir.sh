@@ -51,7 +51,7 @@ validate_output_dir() {
   _canonical_non_symlink_path "$absolute" || return 2
   canonical="$CANONICAL_PATH"
 
-  for allowed in "$repository_root/.agents/runs" "$repository_root/.agents/output"; do
+  for allowed in "$repository_root/runs" "$repository_root/outputs"; do
     _canonical_non_symlink_path "$allowed" || return 2
     if [[ "$canonical" == "$CANONICAL_PATH" || "$canonical" == "$CANONICAL_PATH"/* ]]; then
       VALIDATED_OUTPUT_DIR="$canonical"
@@ -59,6 +59,6 @@ validate_output_dir() {
     fi
   done
 
-  echo "run-dir must be contained in repository .agents/runs or .agents/output: $supplied" >&2
+  echo "run-dir must be contained in repository runs or outputs: $supplied" >&2
   return 2
 }

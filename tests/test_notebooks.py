@@ -10,6 +10,7 @@ NOTEBOOK_DIR = ROOT / "notebooks"
 EDUCATIONAL_NOTEBOOK = "00_legacy_power_forecasting_models.ipynb"
 DEMO_NOTEBOOKS = (
     "01_legacy_baseline.ipynb",
+    "01_legacy_baseline-demo.ipynb",
     "02_manual_skill_path.ipynb",
     "03_auto_research_path.ipynb",
 )

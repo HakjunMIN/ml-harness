@@ -76,15 +76,8 @@ validate_legacy_output_dir() {
         "$canonical" == "$repository_root"/tests/* || "$canonical" == "$repository_root"/docs || \
         "$canonical" == "$repository_root"/docs/* || "$canonical" == "$repository_root"/.agents || \
         "$canonical" == "$repository_root"/.agents/* ]]; then
-    case "$canonical" in
-      "$repository_root"/.agents/runs|"$repository_root"/.agents/runs/*|\
-      "$repository_root"/.agents/output|"$repository_root"/.agents/output/*)
-        ;;
-      *)
-        echo "run-dir targets protected repository content: $supplied" >&2
-        return 2
-        ;;
-    esac
+    echo "run-dir targets protected repository content: $supplied" >&2
+    return 2
   fi
 
   VALIDATED_OUTPUT_DIR="$canonical"

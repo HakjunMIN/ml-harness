@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _run_dir(tmp_path: Path) -> Path:
-    return ROOT / ".agents" / "output" / f"pytest-research-{tmp_path.name}"
+    return ROOT / "outputs" / f"pytest-research-{tmp_path.name}"
 
 
 def _config(

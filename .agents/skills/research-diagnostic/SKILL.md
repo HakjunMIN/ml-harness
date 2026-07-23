@@ -12,7 +12,7 @@ which fixed profiles are feasible. Do not invent candidates or run AIDM.
 
 ## Prerequisites
 - A validated `research-loop.json` has existing dataset and baseline manifest paths.
-- The run directory is under `.agents/runs` or `.agents/output`.
+- The run directory is under root `runs/` or `outputs/`.
 
 ## Allowed Inputs
 - `research-config.json` is the effective `schema_version: "1"` configuration snapshot.

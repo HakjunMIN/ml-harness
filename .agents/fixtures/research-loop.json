@@ -3,7 +3,7 @@
   "run_id": "research-loop-fixture",
   "dataset_path": "valid-dataset.csv",
   "legacy_manifest_path": "promoted-manifest.json",
-  "run_dir": "../runs/research-loop-fixture",
+  "run_dir": "../../runs/research-loop-fixture",
   "profiles": [
     "safe_weather"
   ],

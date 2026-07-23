@@ -18,7 +18,7 @@ Create a black-box adapter manifest without editing, deploying, or coupling to t
 1. Identify the legacy command as a literal argv array; do not use shell fragments, `eval`, interpolation, or command substitution.
 2. Map a dataset into the project data contract outside this skill; keep only relative manifest paths under the manifest directory.
 3. Draft `input_dataset`, `predictions_output`, `required_prediction_columns`, and `timeout_seconds` using the strict adapter contract.
-4. Run `.agents/scripts/run-legacy.sh --adapter .agents/fixtures/valid-adapter.json --run-dir .agents/runs/fixture-intake` first.
+4. Run `.agents/scripts/run-legacy.sh --adapter .agents/fixtures/valid-adapter.json --run-dir runs/fixture-intake` first.
 5. Inspect `legacy-evidence.json` for checksums, command argv, status, and required columns; do not expect input contents or environment values.
 6. If fixtures pass and the human approves, run the customer adapter in a non-source run directory.
 7. Summarize accepted evidence and any rejected contract issues.
