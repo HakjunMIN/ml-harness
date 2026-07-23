@@ -63,6 +63,7 @@ def test_demo_notebooks_tell_the_three_path_story():
     manual_code = _notebook_code(NOTEBOOK_DIR / "02_manual_skill_path.ipynb")
     assert "run-aidm.sh" in manual_code
     assert "verify-promotion.sh" in manual_code
+    _assert_aidm_commands_use_default_catalog(manual_code)
     manual_markdown = _notebook_markdown(NOTEBOOK_DIR / "02_manual_skill_path.ipynb")
     for skill in ("legacy-intake", "aidm-experiment", "aidd-promotion", "release-gate"):
         assert skill in manual_markdown
@@ -77,6 +78,12 @@ def test_demo_notebooks_tell_the_three_path_story():
         "--resume",
     ):
         assert artifact in auto_code
+    config = _research_loop_config(auto_code)
+    assert config["catalog_path"] == "../../configs/optimization-catalog.v1.json"
+    assert (
+        (ROOT / "runs" / "notebook-03-auto" / config["catalog_path"]).resolve()
+        == (ROOT / "configs" / "optimization-catalog.v1.json").resolve()
+    )
     assert "result = json.loads(resume.stdout)" in auto_code
     assert "if result['status'] == 'awaiting_proposal':" in auto_code
     auto_markdown = _notebook_markdown(NOTEBOOK_DIR / "03_auto_research_path.ipynb")
@@ -107,6 +114,70 @@ def _notebook_markdown(path: Path) -> str:
     return "\n".join(
         _source(cell) for cell in notebook["cells"] if cell.get("cell_type") == "markdown"
     )
+
+
+def _assert_aidm_commands_use_default_catalog(code: str) -> None:
+    tree = ast.parse(code)
+    commands = [
+        call.args[0]
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "run"
+        and call.args
+        and isinstance(call.args[0], ast.List)
+        and "run-aidm.sh" in ast.unparse(call.args[0])
+    ]
+
+    assert commands
+    for command in commands:
+        catalog_indexes = [
+            index
+            for index, argument in enumerate(command.elts)
+            if isinstance(argument, ast.Constant) and argument.value == "--catalog"
+        ]
+        assert len(catalog_indexes) == 1, ast.unparse(command)
+        assert ast.unparse(command.elts[catalog_indexes[0] + 1]) == "str(CATALOG)"
+
+    catalog_assignment = next(
+        assignment
+        for assignment in tree.body
+        if isinstance(assignment, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "CATALOG"
+            for target in assignment.targets
+        )
+    )
+    assert (
+        ast.unparse(catalog_assignment.value)
+        == "REPO_ROOT / 'configs' / 'optimization-catalog.v1.json'"
+    )
+
+
+def _research_loop_config(code: str) -> dict[str, object]:
+    tree = ast.parse(code)
+    config_writes = [
+        call
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "write_text"
+        and call.args
+        and isinstance(call.args[0], ast.Call)
+        and isinstance(call.args[0].func, ast.Attribute)
+        and call.args[0].func.attr == "dumps"
+        and call.args[0].args
+        and isinstance(call.args[0].args[0], ast.Dict)
+    ]
+    assert len(config_writes) == 1
+    config_dict = config_writes[0].args[0].args[0]
+    return {
+        key.value: value.value
+        for key, value in zip(config_dict.keys, config_dict.values)
+        if isinstance(key, ast.Constant)
+        and isinstance(key.value, str)
+        and isinstance(value, ast.Constant)
+    }
 
 
 def _assert_valid_nbformat4_notebook(notebook: dict, name: str) -> None:
