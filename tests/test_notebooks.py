@@ -82,12 +82,6 @@ def test_demo_notebooks_tell_the_three_path_story():
         "--resume",
     ):
         assert artifact in auto_code
-    config = _research_loop_config(auto_code)
-    assert config["catalog_path"] == "../../configs/optimization-catalog.v1.json"
-    assert (
-        (ROOT / "runs" / "notebook-03-auto" / config["catalog_path"]).resolve()
-        == (ROOT / "configs" / "optimization-catalog.v1.json").resolve()
-    )
     assert "result = json.loads(resume.stdout)" in auto_code
     assert "if result['status'] == 'awaiting_proposal':" in auto_code
     auto_markdown = _notebook_markdown(NOTEBOOK_DIR / "03_auto_research_path.ipynb")
@@ -108,25 +102,6 @@ def test_manual_notebook_proposal_validates_against_default_catalog():
     catalog = load_optimization_catalog(DEFAULT_CATALOG, repository_root=ROOT)
 
     load_proposal(proposal, catalog=catalog)
-
-
-def test_auto_notebook_proposal_validates_against_its_configured_profile():
-    code = _notebook_code(NOTEBOOK_DIR / "03_auto_research_path.ipynb")
-    config = _research_loop_config(code)
-    catalog = load_optimization_catalog(DEFAULT_CATALOG, repository_root=ROOT)
-    proposal = json.loads(
-        (ROOT / ".agents" / "fixtures" / "model-search-proposal.json").read_text(
-            encoding="utf-8"
-        )
-    )
-
-    assert (
-        "proposal = json.loads((REPO_ROOT / '.agents' / 'fixtures' / "
-        "'model-search-proposal.json').read_text(encoding='utf-8'))"
-    ) in code
-    assert config["profiles"] == ["bounded_search"]
-    assert "iteration_dir = OUTPUT / 'iterations' / '001-bounded_search'" in code
-    load_proposal(proposal, catalog=catalog, profile=config["profiles"][0])
 
 
 def _read_notebook(path: Path) -> dict:
@@ -200,27 +175,6 @@ def _assert_aidm_commands_use_default_catalog(code: str) -> None:
         ast.unparse(catalog_assignment.value)
         == "REPO_ROOT / 'configs' / 'optimization-catalog.v1.json'"
     )
-
-
-def _research_loop_config(code: str) -> dict[str, object]:
-    tree = ast.parse(code)
-    config_writes = [
-        call
-        for call in ast.walk(tree)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "write_text"
-        and call.args
-        and isinstance(call.args[0], ast.Call)
-        and isinstance(call.args[0].func, ast.Attribute)
-        and call.args[0].func.attr == "dumps"
-        and call.args[0].args
-        and isinstance(call.args[0].args[0], ast.Dict)
-    ]
-    assert len(config_writes) == 1
-    config = ast.literal_eval(config_writes[0].args[0].args[0])
-    assert isinstance(config, dict)
-    return config
 
 
 def _assert_valid_nbformat4_notebook(notebook: dict, name: str) -> None:

@@ -252,6 +252,8 @@ def run_experiment_agent(
             "iteration": iteration,
             "proposal_id": validated_proposal.proposal_id,
             "proposal_sha256": proposal_sha256,
+            "catalog_path": config.catalog_path,
+            "catalog_sha256": config.catalog_sha256,
             "manifest_sha256": _sha256_file(manifest_path),
             "report_sha256": _sha256_file(report_path),
             "database_sha256": _sha256_file(database_path),
@@ -358,6 +360,8 @@ def run_verifier_agent(
         iteration=iteration,
         proposal_id=validated_proposal.proposal_id,
         proposal_sha256=proposal_sha256,
+        catalog_path=config.catalog_path,
+        catalog_sha256=config.catalog_sha256,
     )
     evidence_mapping = evidence if checks["evidence_schema"] else None
 
@@ -672,6 +676,8 @@ def _valid_evidence(
     iteration: int,
     proposal_id: str,
     proposal_sha256: str,
+    catalog_path: str,
+    catalog_sha256: str,
 ) -> bool:
     if not isinstance(evidence, Mapping):
         return False
@@ -682,6 +688,8 @@ def _valid_evidence(
         "iteration",
         "proposal_id",
         "proposal_sha256",
+        "catalog_path",
+        "catalog_sha256",
         "manifest_sha256",
         "report_sha256",
         "database_sha256",
@@ -708,6 +716,8 @@ def _valid_evidence(
         and evidence["iteration"] == iteration
         and evidence["proposal_id"] == proposal_id
         and evidence["proposal_sha256"] == proposal_sha256
+        and evidence["catalog_path"] == catalog_path
+        and evidence["catalog_sha256"] == catalog_sha256
         and evidence["decision"] in {"promote", "reject"}
         and evidence["run_state"]
         == ("promoted" if evidence["decision"] == "promote" else "rejected")
@@ -715,6 +725,7 @@ def _valid_evidence(
             _is_sha256(evidence[name])
             for name in (
                 "proposal_sha256",
+                "catalog_sha256",
                 "manifest_sha256",
                 "report_sha256",
                 "database_sha256",
