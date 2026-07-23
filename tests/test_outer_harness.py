@@ -52,6 +52,65 @@ def test_research_orchestrator_owns_one_request_cycle_and_human_handoff() -> Non
     assert "manual skill-by-skill path" in readme
 
 
+def test_docs_define_catalog_authority_and_bound_proposal_examples() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    runbook = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    orchestrator = (
+        ROOT / ".agents" / "skills" / "research-orchestrator" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    aidm = (ROOT / ".agents" / "skills" / "aidm-experiment" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    default_catalog = "configs/optimization-catalog.v1.json"
+    readme_claims = " ".join(readme.split())
+    runbook_claims = " ".join(runbook.split())
+    orchestrator_claims = " ".join(orchestrator.split())
+
+    for required_text in (
+        default_catalog,
+        "versioned external owner",
+        "profiles, feature sets, direct recipes, allowed parameter values, and bounded TPE space",
+        "`catalog_path`",
+        "`--catalog`",
+        "Python still owns",
+        "cannot add code or new estimator capabilities",
+        "prediction ensemble",
+    ):
+        assert required_text in readme_claims
+
+    for required_text in (
+        "Do not change the catalog once the run begins",
+        "profiles, feature sets, direct recipes, TPE space, folds, gates, and budget",
+        "catalog SHA-256",
+        "fail closed on resume",
+    ):
+        assert required_text in runbook_claims
+
+    for required_text in (
+        "`catalog_path`",
+        "catalog SHA-256",
+        "research-config.json",
+        "state.json",
+        "journal.jsonl",
+        "handoff",
+        "fail closed on resume",
+    ):
+        assert required_text in orchestrator_claims
+
+    for document in (readme, aidm):
+        commands = " ".join(document.replace("\\\n", " ").split())
+        proposal_examples = [
+            command
+            for command in commands.split(".agents/scripts/run-aidm.sh")[1:]
+            if "--proposal" in command
+        ]
+        assert proposal_examples
+        assert all(
+            f"--catalog {default_catalog} --proposal" in command
+            for command in proposal_examples
+        )
+
+
 def test_readme_is_tutorial_first_agent_skill_framework_overview() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     archived = ROOT / "REAMDE.old.md"

@@ -28,8 +28,10 @@ JSON, then rerun the exact same command with `--resume`.
 
 ## Allowed Inputs
 - A project-local `research-loop.json`, schema version `1`, with exactly the configured run ID,
-  existing dataset and baseline manifest paths, profile allowlist, iteration/fold bounds, objective,
-  and AIDM thresholds.
+  existing dataset and baseline manifest paths, `catalog_path` to the versioned external
+  `configs/optimization-catalog.v1.json`, profile allowlist, iteration/fold bounds, objective, and
+  AIDM thresholds. The catalog owns profiles, feature sets, direct recipes, allowed parameter
+  values, and bounded TPE space; it cannot add code or new estimator capabilities.
 - Existing role artifacts only under the configured root `runs/` or `outputs/` run
   directory: schema-versioned diagnosis/proposal/experiment/verification artifacts.
 - `--resume` may read only the matching `state.json`, `journal.jsonl`, immutable
@@ -44,18 +46,20 @@ JSON, then rerun the exact same command with `--resume`.
   `performance_report.md`, `experiment-evidence.json`, `experiment-failure.json`, and
   `verification.json`.
 - `state.json` schema version `1` records status, iteration, used/remaining profiles, artifact
-  paths, transition history, and config SHA-256. Journal events have timestamp, status transition,
-  iteration/profile, artifact path, and SHA-256. Summary has run ID, terminal status, iterations,
-  profiles, verifier outcome/reasons, and artifact checksums.
+  paths, transition history, config SHA-256, and catalog SHA-256. Journal events and proposal
+  handoffs bind the catalog SHA-256 with timestamp, status transition, iteration/profile, artifact
+  path, and SHA-256. Summary has run ID, terminal status, iterations, profiles, verifier
+  outcome/reasons, and artifact checksums.
 - Read project inputs and role artifacts; never write source, tests, fixtures, skills, scripts,
   generated code, customer systems, or any path outside the allowed run directory.
 
 ## Evidence, Checksums, and Safety
 - Every recorded artifact is atomically written, hashed with lowercase SHA-256, and rebound on
-  resume. The effective config includes input checksums; changed config, stale artifacts, malformed
-  JSON, incomplete journal groups, and terminal resume all fail closed. Invalid verifier reports
-  use the exact provenance keys with `unavailable` for any unavailable artifact checksum; only
-  invalid reports may use that representation.
+  resume. The effective config includes input and catalog SHA-256 checksums; changed config,
+  changed catalog, stale artifacts, malformed JSON, incomplete journal groups, and terminal resume
+  all fail closed on resume. Invalid verifier reports use the exact provenance keys with
+  `unavailable` for any unavailable artifact checksum; only invalid reports may use that
+  representation.
 - State transitions are `initialized -> diagnosed -> proposed -> experimenting -> verifying`, or
   for agent proposals, `initialized -> diagnosed -> awaiting_proposal -> proposed ->
   experimenting -> verifying`,
@@ -81,8 +85,9 @@ JSON, then rerun the exact same command with `--resume`.
   Use `unavailable` when a permitted value cannot be established.
 
 ## Workflow
-1. Validate the config, preserve its approved baseline, paths, gates, profiles, and budgets, then
-   initialize or safely resume its immutable snapshot and journal.
+1. Validate the config and display the start plan—profiles, feature sets, direct recipes, TPE
+   space, folds, gates, and budget. Preserve its approved baseline, paths, catalog, gates,
+   profiles, and budgets, then initialize or safely resume its immutable snapshot and journal.
 2. Run the runner and inspect only its structured result and checksum-bound run artifacts.
 3. When status is `awaiting_proposal`, read only the assigned aggregate context/catalog, invoke
    `research-proposal` exactly once, and run the same command with `--resume`.
@@ -103,7 +108,8 @@ JSON, then rerun the exact same command with `--resume`.
 
 ## Prohibitions
 Do not edit source or customer data, merge, deploy, call AIDD, generate/modify executable code,
-weaken thresholds or gates, use unbounded iterations/search, export secrets, or log customer rows.
+weaken thresholds or gates, change the catalog after a run begins, use unbounded iterations/search,
+export secrets, or log customer rows.
 `research-summary.json` is never release or deployment approval evidence.
 
 ## Error Table
