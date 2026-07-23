@@ -76,6 +76,8 @@ def test_demo_notebooks_tell_the_three_path_story():
         "--resume",
     ):
         assert artifact in auto_code
+    assert "result = json.loads(resume.stdout)" in auto_code
+    assert "if result['status'] == 'awaiting_proposal':" in auto_code
     auto_markdown = _notebook_markdown(NOTEBOOK_DIR / "03_auto_research_path.ipynb")
     assert "ready_for_human_review" in auto_markdown
     for skill in (
