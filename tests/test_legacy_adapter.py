@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -611,6 +613,102 @@ def test_verify_promotion_script_writes_model_recipe_patch_and_cleans_up_on_fail
     assert not (run_dir / "promotion-evidence.json").exists()
     assert not (run_dir / "generated" / "promoted_features.py").exists()
     assert not (run_dir / "model-recipe-patch.json").exists()
+
+
+def test_verify_promotion_script_supports_agentic_history_manifest(tmp_path: Path) -> None:
+    run_dir = safe_run_dir(tmp_path)
+    manifest = run_dir / "promotion_manifest.json"
+    payload = read_json(FIXTURES / "promoted-manifest.json")
+    lag_spec = {
+        "name": "prior_forecast_irradiance",
+        "transform": "lag",
+        "inputs": ["forecast_irradiance"],
+        "parameters": {"periods": 1},
+        "rationale": "Uses only the previous timestamp's forecast irradiance for the same plant.",
+        "version": "1",
+    }
+    payload["selected_specs"].append(lag_spec)
+    selected_feature_names = "+".join(
+        sorted(spec["name"] for spec in payload["selected_specs"])
+    )
+    feature_set_name = "agentic_history"
+    selected_model_recipe = {
+        "name": "ridge_low",
+        "recipe": "ridge",
+        "parameters": {"alpha": 1.0},
+        "rationale": "Regularized linear recipe for review.",
+    }
+    payload["proposal"] = {
+        "schema_version": "1",
+        "proposal_id": "fixture-agentic-history-proposal",
+        "rationale": "Fixture provenance for a prediction-time history feature.",
+        "baseline": {"model": "SPOT"},
+        "feature_sets": [
+            {
+                "name": feature_set_name,
+                "rationale": (
+                    "Prediction-time calendar and strictly prior forecast history features: "
+                    f"{selected_feature_names}."
+                ),
+                "specs": payload["selected_specs"],
+            }
+        ],
+        "model_recipes": [selected_model_recipe],
+        "budget": {"max_evaluations": 1, "top_feature_groups": 1},
+    }
+    payload["selected_model_recipe"] = selected_model_recipe
+    payload["winner"]["name"] = f"ridge_low:{feature_set_name}"
+    manifest.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    completed = subprocess.run(
+        [str(SCRIPTS / "verify-promotion.sh"), "--run-dir", str(run_dir)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    generated = run_dir / "generated" / "promoted_features.py"
+    patch = run_dir / "model-recipe-patch.json"
+    evidence = read_json(run_dir / "promotion-evidence.json")
+    assert generated.exists()
+    assert patch.exists()
+    assert evidence["status"] == "success"
+    for field in ["manifest_sha256", "generated_module_sha256", "model_recipe_patch_sha256"]:
+        assert re.fullmatch(r"[0-9a-f]{64}", evidence[field])
+    assert evidence["manifest_sha256"] == sha256_file(manifest)
+    assert evidence["generated_module_sha256"] == sha256_file(generated)
+    assert evidence["model_recipe_patch_sha256"] == sha256_file(patch)
+    manifest_payload = read_json(manifest)
+    patch_payload = read_json(patch)
+    manifest_sha256 = hashlib.sha256(
+        json.dumps(
+            manifest_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    selected_specs_sha256 = hashlib.sha256(
+        json.dumps(
+            manifest_payload["selected_specs"],
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert patch_payload["status"] == "requires_human_review"
+    assert patch_payload["evidence"]["proposal_id"] == manifest_payload["proposal"]["proposal_id"]
+    assert patch_payload["evidence"]["winner_name"] == manifest_payload["winner"]["name"]
+    assert patch_payload["selected_model_recipe"] == selected_model_recipe
+    assert patch_payload["selected_model_recipe"]["name"] == "ridge_low"
+    assert patch_payload["manifest_sha256"] == manifest_sha256
+    assert patch_payload["selected_feature_specs_sha256"] == selected_specs_sha256
+    generated_text = generated.read_text(encoding="utf-8")
+    assert "prior_forecast_irradiance" in generated_text
+    assert "def _validate_history_frame(" in generated_text
+    assert "_validate_history_frame(" in generated_text.split("def build_promoted_features(", 1)[1]
 
 
 def test_verify_promotion_script_fails_closed_for_rejected_manifest(tmp_path: Path) -> None:

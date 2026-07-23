@@ -260,7 +260,7 @@ AIDD는 승격 매니페스트만 읽고 `generated/promoted_features.py`를 생
 - 개선율 및 발전소별 변화량이 매니페스트 임계값 충족
 - 우승 모델 이름과 선택 피처 명세의 일치
 
-생성 모듈에는 `PROMOTED_FEATURE_SPECS`와 `build_promoted_features(frame)`이 포함됩니다. 런타임 피처 엔진과 동일한 결정론적 변환을 적용하며, 학습·배포·네트워크 접근·자율 동작을 포함하지 않습니다. history 피처(`lag`, `rolling_mean`)는 검증은 가능하지만 AIDD 실행 모듈로 렌더링하지 않으며, 사람이 검토할 patch 요청으로만 다룹니다.
+생성 모듈에는 `PROMOTED_FEATURE_SPECS`와 `build_promoted_features(frame)`이 포함됩니다. 런타임 피처 엔진과 동일한 결정론적 변환을 적용하며, 학습·배포·네트워크 접근·자율 동작을 포함하지 않습니다. 승격된 history 피처(`lag`, `rolling_mean`)도 렌더링하며, 고유한 `plant_id`/`timestamp` 키를 가진 history·target 결합 frame에서 발전소별 strict-prior 행만 소비합니다.
 
 에이전트 레시피가 승격된 경우 AIDD는 추가로 `model-recipe-patch.json`을 생성합니다. 이 파일은 `status: "requires_human_review"`인 UTF-8 LF JSON 요청이며, 선택 모델 레시피, 선택 피처 명세 해시, 우승 지표, 매니페스트 해시만 담습니다. 실행 가능한 코드, 고객 경로, 임의 필드 전달은 포함하지 않으며, 사람이 검토하기 전에는 고객 저장소나 운영 설정을 직접 수정하지 않습니다.
 
