@@ -14,10 +14,10 @@ from pathlib import Path
 from types import MappingProxyType
 
 from power_forecasting.data import REQUIRED_COLUMNS
+from power_forecasting.profile_names import is_profile_name
 from power_forecasting.research_contracts import (
     ResearchContractError,
     ResearchLoopConfig,
-    SUPPORTED_PROFILES,
     validate_run_id,
 )
 
@@ -196,9 +196,6 @@ _LEAKAGE_CHECK_KEYS = frozenset(
         "prediction_inputs_exclude_target",
     }
 )
-_PROFILE_ORDER = ("safe_weather", "history_tree", "bounded_search")
-
-
 class ResearchStateError(ValueError):
     """Raised when persisted research-loop state is invalid or unsafe to resume."""
 
@@ -781,14 +778,9 @@ def _validate_recommended_profiles(value: object) -> None:
         raise ResearchStateError("diagnostic recommended_profiles must be a list")
     if len(set(value)) != len(value):
         raise ResearchStateError("diagnostic recommended_profiles contains duplicates")
-    if any(type(profile) is not str or profile not in SUPPORTED_PROFILES for profile in value):
+    if any(not is_profile_name(profile) for profile in value):
         raise ResearchStateError(
-            "diagnostic recommended_profiles contains an unsupported profile"
-        )
-    expected = tuple(profile for profile in _PROFILE_ORDER if profile in value)
-    if tuple(value) != expected:
-        raise ResearchStateError(
-            "diagnostic recommended_profiles must use deterministic supported ordering"
+            "diagnostic recommended_profiles contains an invalid profile"
         )
 
 
@@ -1017,8 +1009,8 @@ def _profile_tuple(value: object, label: str) -> tuple[str, ...]:
     if not isinstance(value, tuple):
         raise ResearchStateError(f"{label} must be a tuple")
     for profile in value:
-        if type(profile) is not str or profile not in SUPPORTED_PROFILES:
-            raise ResearchStateError(f"{label} contains an unsupported profile")
+        if not is_profile_name(profile):
+            raise ResearchStateError(f"{label} contains an invalid profile")
     return value
 
 
@@ -1063,7 +1055,7 @@ def _transition_event(value: object) -> dict[str, object]:
         raise ResearchStateError("transition to_status is invalid")
     if isinstance(iteration, bool) or not isinstance(iteration, int) or iteration < 0:
         raise ResearchStateError("transition iteration is invalid")
-    if profile is not None and (type(profile) is not str or profile not in SUPPORTED_PROFILES):
+    if profile is not None and not is_profile_name(profile):
         raise ResearchStateError("transition profile is invalid")
     if (artifact_path is None) != (checksum is None):
         raise ResearchStateError("transition artifact path and checksum must be provided together")

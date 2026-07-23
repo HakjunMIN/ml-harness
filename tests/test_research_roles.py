@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -291,6 +292,77 @@ def test_diagnostic_recommendations_are_supported_and_history_is_feasible_for_fi
     )
 
 
+def test_catalog_profile_generation_uses_external_catalog_policy(tmp_path: Path):
+    catalog_payload = json.loads(FIXTURE_CATALOG.read_text(encoding="utf-8"))
+    catalog_payload["profiles"]["weather_variant"] = {
+        "rationale": "Evaluate an externally configured weather variant.",
+        "feature_sets": ["safe_weather"],
+        "direct_recipes": ["ridge_weather"],
+    }
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps(catalog_payload), encoding="utf-8")
+    catalog = load_optimization_catalog(catalog_path, repository_root=tmp_path)
+    config = replace(
+        _config(),
+        catalog_path=str(catalog.source_path),
+        catalog_sha256=catalog.sha256,
+        catalog=catalog,
+        profiles=("weather_variant",),
+    )
+    roles = _roles()
+    diagnosis = roles.run_diagnostic_agent(config)
+
+    assert diagnosis.recommended_profiles == ("weather_variant",)
+    proposal = roles.generate_profile_proposal(
+        "weather_variant",
+        catalog=catalog,
+        run_id=config.run_id,
+        legacy_manifest_path=FIXTURE_MANIFEST,
+        fold_count=config.fold_count,
+        objective=config.objective,
+        candidate_cap=2,
+        diagnosis=diagnosis,
+    )
+    assert tuple(recipe.name for recipe in proposal.model_recipes) == ("ridge_weather",)
+    assert proposal.feature_sets[0] == catalog.feature_sets["safe_weather"]
+
+
+def test_catalog_history_transform_controls_diagnostic_recommendation(tmp_path: Path):
+    catalog_payload = json.loads(FIXTURE_CATALOG.read_text(encoding="utf-8"))
+    catalog_payload["profiles"]["prior_variant"] = {
+        "rationale": "Evaluate an externally configured strict-prior variant.",
+        "feature_sets": ["history_tree"],
+        "direct_recipes": ["forest_history"],
+    }
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps(catalog_payload), encoding="utf-8")
+    catalog = load_optimization_catalog(catalog_path, repository_root=tmp_path)
+    short_dataset = tmp_path / "short-dataset.csv"
+    pd.read_csv(FIXTURE_DATASET).head(3).to_csv(short_dataset, index=False)
+    config = replace(
+        _config(),
+        dataset_path=str(short_dataset),
+        catalog_path=str(catalog.source_path),
+        catalog_sha256=catalog.sha256,
+        catalog=catalog,
+        profiles=("prior_variant",),
+    )
+
+    report = _roles().run_diagnostic_agent(config)
+
+    assert report.recommended_profiles == ()
+
+
+def test_proposal_catalog_records_catalog_identity():
+    roles = _roles()
+    catalog = _config().catalog
+
+    payload = roles.proposal_catalog(catalog)
+
+    assert payload["catalog_path"] == str(catalog.source_path)
+    assert payload["catalog_sha256"] == catalog.sha256
+
+
 @pytest.mark.parametrize(
     ("manifest_path", "message"),
     [
@@ -338,6 +410,7 @@ def test_profile_generation_accepts_manifest_path_stored_by_research_loop_config
     config = _config()
     proposal = roles.generate_profile_proposal(
         profile,
+        catalog=_config().catalog,
         run_id=config.run_id,
         legacy_manifest_path=config.legacy_manifest_path,
         fold_count=config.fold_count,
@@ -411,6 +484,7 @@ def test_profile_generation_uses_only_equal_aggregate_diagnoses(
             proposal_to_dict(
                 roles.generate_profile_proposal(
                     profile,
+                    catalog=_config().catalog,
                     run_id="aggregate_only_001",
                     legacy_manifest_path=_config().legacy_manifest_path,
                     fold_count=2,
@@ -438,6 +512,7 @@ def test_profile_generation_rejects_dataset_rows_as_diagnosis():
     with pytest.raises(TypeError, match="DiagnosticReport"):
         roles.generate_profile_proposal(
             "safe_weather",
+            catalog=_config().catalog,
             run_id="aggregate_only_001",
             legacy_manifest_path=_config().legacy_manifest_path,
             fold_count=2,
@@ -463,6 +538,7 @@ def test_profiles_return_strict_valid_deterministically_ordered_proposals(
 
     first = roles.generate_profile_proposal(
         profile,
+        catalog=_config().catalog,
         run_id="role_run_001",
         legacy_manifest_path=FIXTURE_MANIFEST,
         fold_count=2,
@@ -472,6 +548,7 @@ def test_profiles_return_strict_valid_deterministically_ordered_proposals(
     )
     second = roles.generate_profile_proposal(
         profile,
+        catalog=_config().catalog,
         run_id="role_run_001",
         legacy_manifest_path=FIXTURE_MANIFEST,
         fold_count=2,
@@ -508,6 +585,7 @@ def test_candidate_cap_deterministically_trims_templates(
     roles = _roles()
     proposal = roles.generate_profile_proposal(
         profile,
+        catalog=_config().catalog,
         run_id="role_run_002",
         legacy_manifest_path=FIXTURE_MANIFEST,
         fold_count=2,
@@ -531,6 +609,7 @@ def test_profile_generation_rejects_invalid_candidate_caps(candidate_cap):
     with pytest.raises(ValueError, match="candidate_cap"):
         roles.generate_profile_proposal(
             "safe_weather",
+            catalog=_config().catalog,
             run_id="role_run_003",
             legacy_manifest_path=FIXTURE_MANIFEST,
             fold_count=2,
@@ -546,6 +625,7 @@ def test_profile_generation_fails_closed_for_unsupported_profile():
     with pytest.raises(ResearchContractError, match="unsupported"):
         roles.generate_profile_proposal(
             "unbounded_profile",
+            catalog=_config().catalog,
             run_id="role_run_004",
             legacy_manifest_path=FIXTURE_MANIFEST,
             fold_count=2,
@@ -574,6 +654,7 @@ def test_profile_content_uses_no_raw_target_or_plant_identifier_data():
 
     original = roles.generate_profile_proposal(
         "safe_weather",
+        catalog=_config().catalog,
         run_id="role_run_005",
         legacy_manifest_path=FIXTURE_MANIFEST,
         fold_count=2,
@@ -583,6 +664,7 @@ def test_profile_content_uses_no_raw_target_or_plant_identifier_data():
     )
     altered = roles.generate_profile_proposal(
         "safe_weather",
+        catalog=_config().catalog,
         run_id="role_run_005",
         legacy_manifest_path=FIXTURE_MANIFEST,
         fold_count=2,
@@ -601,6 +683,7 @@ def test_history_tree_features_are_strict_prior_only():
     roles = _roles()
     proposal = roles.generate_profile_proposal(
         "history_tree",
+        catalog=_config().catalog,
         run_id="role_run_006",
         legacy_manifest_path=FIXTURE_MANIFEST,
         fold_count=2,
@@ -628,6 +711,7 @@ def test_bounded_search_uses_existing_optuna_budgets():
     roles = _roles()
     proposal = roles.generate_profile_proposal(
         "bounded_search",
+        catalog=_config().catalog,
         run_id="role_run_007",
         legacy_manifest_path=FIXTURE_MANIFEST,
         fold_count=2,

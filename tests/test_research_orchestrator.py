@@ -11,6 +11,7 @@ import pytest
 
 from power_forecasting.data import REQUIRED_COLUMNS
 from power_forecasting import cli
+from power_forecasting.catalogs import load_optimization_catalog
 from power_forecasting.proposals import ResearchProposal
 from power_forecasting.research_execution import ExperimentResult, VerificationResult
 from power_forecasting.research_orchestrator import run_research_loop
@@ -19,6 +20,13 @@ from power_forecasting.research_state import ResearchStateError
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _catalog():
+    return load_optimization_catalog(
+        ROOT / "configs" / "optimization-catalog.v1.json",
+        repository_root=ROOT,
+    )
 
 
 def _run_dir(tmp_path: Path) -> Path:
@@ -39,6 +47,7 @@ def _config(
         "run_id": "test-loop",
         "dataset_path": str(ROOT / ".agents/fixtures/valid-dataset.csv"),
         "legacy_manifest_path": str(ROOT / ".agents/fixtures/promoted-manifest.json"),
+        "catalog_path": str(ROOT / "configs" / "optimization-catalog.v1.json"),
         "run_dir": str(_run_dir(tmp_path)),
         "profiles": profiles,
         "max_iterations": max_iterations,
@@ -191,6 +200,7 @@ def test_agent_proposal_handoff_resumes_with_catalog_candidate(tmp_path, monkeyp
     assert Path(handoff["proposal_catalog_path"]).is_file()
     proposal = generate_profile_proposal(
         "safe_weather",
+        catalog=_catalog(),
         run_id="test-loop",
         legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
         fold_count=1,
@@ -206,6 +216,74 @@ def test_agent_proposal_handoff_resumes_with_catalog_candidate(tmp_path, monkeyp
     assert calls["experiment"] == 1
 
 
+def test_handoff_and_summary_bind_catalog_provenance(tmp_path, monkeypatch):
+    _fake_agents(monkeypatch, decisions=["promote"])
+    config_path = _config(tmp_path, ["safe_weather"], 1, agent_proposals=True)
+    handoff = run_research_loop(config_path)
+    expected_catalog_path = str((ROOT / "configs" / "optimization-catalog.v1.json").resolve())
+    expected_catalog_sha256 = hashlib.sha256(
+        Path(expected_catalog_path).read_bytes()
+    ).hexdigest()
+
+    for path in (
+        _run_dir(tmp_path) / "research-config.json",
+        Path(handoff["proposal_context_path"]),
+        Path(handoff["proposal_catalog_path"]),
+    ):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["catalog_path"] == expected_catalog_path
+        assert payload["catalog_sha256"] == expected_catalog_sha256
+
+    proposal = generate_profile_proposal(
+        "safe_weather",
+        catalog=load_optimization_catalog(Path(expected_catalog_path), repository_root=ROOT),
+        run_id="test-loop",
+        legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
+        fold_count=1,
+        objective="NMAE",
+        candidate_cap=2,
+        diagnosis=_diagnosis(),
+    )
+    Path(handoff["proposal_path"]).write_text(json.dumps(proposal.to_dict()), encoding="utf-8")
+    result = run_research_loop(config_path, resume=True)
+    summary = json.loads(Path(result["summary_path"]).read_text(encoding="utf-8"))
+    assert summary["catalog_path"] == expected_catalog_path
+    assert summary["catalog_sha256"] == expected_catalog_sha256
+
+
+def test_resume_rejects_changed_catalog_bytes(tmp_path, monkeypatch):
+    import power_forecasting.research_orchestrator as orchestrator
+
+    _fake_agents(monkeypatch, decisions=["promote"])
+    config_path = _config(tmp_path, ["safe_weather"], 1, agent_proposals=True)
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_bytes((ROOT / "configs" / "optimization-catalog.v1.json").read_bytes())
+    catalog = load_optimization_catalog(catalog_path, repository_root=tmp_path)
+    initial = replace(
+        orchestrator._read_config(config_path),
+        catalog_path=str(catalog.source_path),
+        catalog_sha256=catalog.sha256,
+        catalog=catalog,
+    )
+    monkeypatch.setattr(orchestrator, "_read_config", lambda _: initial)
+
+    assert run_research_loop(config_path)["status"] == "awaiting_proposal"
+
+    catalog_payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog_payload["recipes"]["ridge_weather"]["allowed_parameters"]["alpha"] = [1.0]
+    catalog_path.write_text(json.dumps(catalog_payload), encoding="utf-8")
+    changed_catalog = load_optimization_catalog(catalog_path, repository_root=tmp_path)
+    changed = replace(
+        initial,
+        catalog_sha256=changed_catalog.sha256,
+        catalog=changed_catalog,
+    )
+    monkeypatch.setattr(orchestrator, "_read_config", lambda _: changed)
+
+    with pytest.raises(ResearchStateError, match="configuration changed"):
+        run_research_loop(config_path, resume=True)
+
+
 def test_agent_proposal_handoff_rejects_out_of_catalog_candidate(tmp_path, monkeypatch):
     calls = _fake_agents(monkeypatch, decisions=["promote"])
     config_path = _config(tmp_path, ["safe_weather"], 1, agent_proposals=True)
@@ -213,6 +291,7 @@ def test_agent_proposal_handoff_rejects_out_of_catalog_candidate(tmp_path, monke
     proposal_path = Path(handoff["proposal_path"])
     proposal = generate_profile_proposal(
         "safe_weather",
+        catalog=_catalog(),
         run_id="test-loop",
         legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
         fold_count=1,
@@ -220,7 +299,16 @@ def test_agent_proposal_handoff_rejects_out_of_catalog_candidate(tmp_path, monke
         candidate_cap=2,
         diagnosis=_diagnosis(),
     ).to_dict()
-    proposal["model_recipes"][0]["parameters"]["alpha"] = 0.1
+    proposal["model_recipes"][0] = {
+        "name": "forest_outside_safe_weather",
+        "recipe": "random_forest",
+        "parameters": {
+            "n_estimators": 100,
+            "max_depth": 8,
+            "min_samples_leaf": 2,
+        },
+        "rationale": "A bounded recipe from a different profile.",
+    }
     proposal_path.write_text(json.dumps(proposal), encoding="utf-8")
 
     result = run_research_loop(config_path, resume=True)
@@ -239,6 +327,7 @@ def test_agent_proposal_repeats_until_iteration_budget_or_human_review(tmp_path,
         assert handoff["iteration"] == expected_iteration
         proposal = generate_profile_proposal(
             "safe_weather",
+            catalog=_catalog(),
             run_id=f"test-loop-{expected_iteration}",
             legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
             fold_count=1,
@@ -268,6 +357,7 @@ def test_agent_proposal_exhausts_after_repeated_rejections(tmp_path, monkeypatch
     for expected_iteration in (1, 2):
         proposal = generate_profile_proposal(
             "safe_weather",
+            catalog=_catalog(),
             run_id=f"test-loop-reject-{expected_iteration}",
             legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
             fold_count=1,
@@ -287,6 +377,59 @@ def test_agent_proposal_exhausts_after_repeated_rejections(tmp_path, monkeypatch
     assert result["iterations"] == 2
     assert result["used_profiles"] == ["safe_weather", "safe_weather"]
     assert calls["experiment"] == 2
+
+
+def test_agent_proposal_exhausts_when_a_rejection_consumes_global_evaluation_budget(
+    tmp_path, monkeypatch
+):
+    calls = _fake_agents(monkeypatch, decisions=["reject"])
+    config_path = _config(
+        tmp_path,
+        ["bounded_search", "safe_weather"],
+        2,
+        agent_proposals=True,
+    )
+    handoff = run_research_loop(config_path)
+    proposal = generate_profile_proposal(
+        "bounded_search",
+        catalog=_catalog(),
+        run_id="test-loop-budget-exhaustion",
+        legacy_manifest_path=ROOT / ".agents/fixtures/promoted-manifest.json",
+        fold_count=1,
+        objective="NMAE",
+        candidate_cap=25,
+        diagnosis=_diagnosis(),
+    ).to_dict()
+    proposal["feature_sets"] = [
+        _catalog().feature_sets[name].to_dict()
+        for name in ("safe_weather", "history_tree")
+    ]
+    proposal["budget"]["max_evaluations"] = 50
+    Path(handoff["proposal_path"]).write_text(json.dumps(proposal), encoding="utf-8")
+
+    result = run_research_loop(config_path, resume=True)
+
+    assert result["status"] == "exhausted"
+    assert result["iterations"] == 1
+    assert result["used_profiles"] == ["bounded_search"]
+    assert result["remaining_profiles"] == ["safe_weather"]
+    assert calls["experiment"] == 1
+    exhaustion = json.loads((_run_dir(tmp_path) / "exhaustion.json").read_text(encoding="utf-8"))
+    assert exhaustion == {
+        "schema_version": "1",
+        "status": "exhausted",
+        "iteration": 1,
+        "reason": "evaluation_budget_exhausted",
+    }
+    assert Path(result["summary_path"]).is_file()
+    assert not (
+        _run_dir(tmp_path)
+        / "iterations"
+        / "002-safe_weather"
+        / "proposal-context.json"
+    ).exists()
+    with pytest.raises(ResearchStateError, match="cannot resume terminal state exhausted"):
+        run_research_loop(config_path, resume=True)
 
 
 def test_rejection_uses_each_profile_once_then_exhausts(tmp_path, monkeypatch):

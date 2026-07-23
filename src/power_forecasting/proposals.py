@@ -7,10 +7,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from power_forecasting.aidd import validate_prediction_time_feature_spec
 from power_forecasting.features import FeatureSpec
+
+if TYPE_CHECKING:
+    from power_forecasting.catalogs import OptimizationCatalog
 
 
 _BASELINE_KEYS = {"model"}
@@ -154,7 +157,12 @@ class ResearchProposal:
         return payload
 
 
-def load_proposal(value: Mapping[str, Any] | Path) -> ResearchProposal:
+def load_proposal(
+    value: Mapping[str, Any] | Path,
+    *,
+    catalog: OptimizationCatalog | None = None,
+    profile: str | None = None,
+) -> ResearchProposal:
     if isinstance(value, (str, Path)):
         with Path(value).open("r", encoding="utf-8", newline="") as handle:
             payload = json.load(handle)
@@ -164,9 +172,14 @@ def load_proposal(value: Mapping[str, Any] | Path) -> ResearchProposal:
         raise ProposalValidationError("proposal must be a mapping")
     _exact_top_level_proposal_keys(payload)
     try:
-        feature_sets = tuple(_parse_feature_set(raw) for raw in _require_list(payload, "feature_sets"))
-        model_recipes = tuple(_parse_model_recipe(raw) for raw in _require_list(payload, "model_recipes"))
-        return ResearchProposal(
+        feature_sets = tuple(
+            _parse_feature_set(raw) for raw in _require_list(payload, "feature_sets")
+        )
+        model_recipes = tuple(
+            _parse_model_recipe(raw)
+            for raw in _require_list(payload, "model_recipes")
+        )
+        proposal = ResearchProposal(
             schema_version=payload["schema_version"],
             proposal_id=payload["proposal_id"],
             rationale=payload["rationale"],
@@ -176,6 +189,11 @@ def load_proposal(value: Mapping[str, Any] | Path) -> ResearchProposal:
             budget=payload["budget"],
             search=payload.get("search"),
         )
+        if catalog is not None:
+            validate_catalog_bound_proposal(proposal, catalog, profile=profile)
+        elif profile is not None:
+            raise TypeError("profile requires a catalog")
+        return proposal
     except ProposalValidationError:
         raise
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -186,6 +204,102 @@ def proposal_to_dict(proposal: ResearchProposal) -> dict[str, Any]:
     if not isinstance(proposal, ResearchProposal):
         raise TypeError("proposal must be a ResearchProposal")
     return proposal.to_dict()
+
+
+def validate_catalog_bound_proposal(
+    proposal: ResearchProposal,
+    catalog: OptimizationCatalog,
+    *,
+    profile: str | None = None,
+) -> None:
+    """Require proposal choices to remain within an external catalog policy."""
+
+    from power_forecasting.catalogs import OptimizationCatalog
+
+    if not isinstance(proposal, ResearchProposal):
+        raise TypeError("proposal must be a ResearchProposal")
+    if not isinstance(catalog, OptimizationCatalog):
+        raise TypeError("catalog must be an OptimizationCatalog")
+    if profile is not None and (type(profile) is not str or profile not in catalog.profiles):
+        raise ProposalValidationError("catalog profile is invalid")
+
+    allowed_feature_sets = (
+        tuple(catalog.feature_sets.values())
+        if profile is None
+        else tuple(
+            catalog.feature_sets[name]
+            for name in catalog.profile(profile).feature_set_names
+        )
+    )
+    allowed_specs = {
+        _canonical_json(spec.to_dict())
+        for feature_set in allowed_feature_sets
+        for spec in feature_set.specs
+    }
+    for feature_set in proposal.feature_sets:
+        if any(
+            _canonical_json(spec.to_dict()) not in allowed_specs
+            for spec in feature_set.specs
+        ):
+            raise ProposalValidationError("proposal contains a feature outside catalog policy")
+
+    allowed_recipes = (
+        tuple(catalog.direct_recipes.values())
+        if profile is None
+        else tuple(
+            catalog.direct_recipes[name]
+            for name in catalog.profile(profile).direct_recipe_names
+        )
+    )
+    for recipe in proposal.model_recipes:
+        if not any(
+            recipe.recipe == candidate.recipe
+            and all(
+                recipe.parameters[key] in candidate.allowed_parameters[key]
+                for key in recipe.parameters
+            )
+            for candidate in allowed_recipes
+        ):
+            raise ProposalValidationError(
+                f"model recipe {recipe.name} contains a value outside catalog policy"
+            )
+
+    if proposal.search is not None:
+        allowed_searches = (
+            tuple(catalog.searches.values())
+            if profile is None
+            else (
+                ()
+                if catalog.profile(profile).search_name is None
+                else (catalog.searches[catalog.profile(profile).search_name],)
+            )
+        )
+        if not any(
+            _search_within_catalog(proposal.search, candidate)
+            for candidate in allowed_searches
+        ):
+            raise ProposalValidationError("proposal search contains a value outside catalog policy")
+
+
+def _search_within_catalog(
+    proposal_search: Mapping[str, Any],
+    catalog_search: Mapping[str, Any],
+) -> bool:
+    if (
+        proposal_search["sampler"] != catalog_search["sampler"]
+        or proposal_search["seed"] != catalog_search["seed"]
+        or proposal_search["n_trials"] > catalog_search["n_trials"]
+    ):
+        return False
+    return all(
+        set(values) <= set(catalog_search["spaces"][recipe][parameter])
+        for recipe, parameters in proposal_search["spaces"].items()
+        for parameter, values in parameters.items()
+    )
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _parse_feature_set(raw: Any) -> FeatureSet:
@@ -524,4 +638,5 @@ __all__ = [
     "ResearchProposal",
     "load_proposal",
     "proposal_to_dict",
+    "validate_catalog_bound_proposal",
 ]

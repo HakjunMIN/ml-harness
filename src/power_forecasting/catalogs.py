@@ -14,6 +14,7 @@ from typing import Any
 
 from power_forecasting.aidd import validate_prediction_time_feature_spec
 from power_forecasting.features import FeatureSpec
+from power_forecasting.profile_names import is_profile_name
 from power_forecasting.proposals import FeatureSet, RECIPE_PARAMETER_VALUES
 
 
@@ -450,7 +451,8 @@ def _parse_profiles(
     entries = _named_mapping(raw, "profiles")
     parsed: dict[str, CatalogProfile] = {}
     for name, value in entries.items():
-        _identifier(name, "profile name")
+        if not is_profile_name(name):
+            raise OptimizationCatalogError("profile name must be a lower snake-case identifier")
         if not isinstance(value, Mapping):
             raise OptimizationCatalogError(f"profile {name} must be a mapping")
         allowed = {"rationale", "feature_sets", "direct_recipes", "search"}

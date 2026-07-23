@@ -17,16 +17,6 @@ from power_forecasting.catalogs import (
 
 
 SCHEMA_VERSION = "1"
-_DEFAULT_CATALOG_PATH = (
-    Path(__file__).resolve().parents[2] / "configs" / "optimization-catalog.v1.json"
-)
-SUPPORTED_PROFILES = frozenset(
-    load_optimization_catalog(
-        _DEFAULT_CATALOG_PATH,
-        repository_root=_DEFAULT_CATALOG_PATH.parents[1],
-    ).profile_names
-)
-
 _REQUIRED_CONFIG_KEYS = frozenset(
     {
         "schema_version",
@@ -292,7 +282,6 @@ __all__ = [
     "ResearchContractError",
     "ResearchLoopConfig",
     "SCHEMA_VERSION",
-    "SUPPORTED_PROFILES",
     "load_research_loop_config",
     "validate_run_id",
 ]

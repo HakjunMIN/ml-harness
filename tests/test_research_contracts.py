@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import shutil
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -149,6 +152,66 @@ def test_config_profiles_must_come_from_loaded_catalog(contract_paths: dict[str,
 
     with pytest.raises(ResearchContractError, match="catalog"):
         _load(_payload(profiles=["unbounded_search"]), contract_paths)
+
+
+def test_config_rejects_noncanonical_external_catalog_profile_name(
+    contract_paths: dict[str, Path],
+) -> None:
+    catalog_payload = json.loads(
+        contract_paths["catalog_path"].read_text(encoding="utf-8")
+    )
+    catalog_payload["profiles"]["WeatherVariant"] = catalog_payload["profiles"].pop(
+        "safe_weather"
+    )
+    contract_paths["catalog_path"].write_text(
+        json.dumps(catalog_payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ResearchContractError, match="profile name"):
+        _load(_payload(profiles=["WeatherVariant"]), contract_paths)
+
+
+def test_state_allocates_valid_profile_from_external_catalog(
+    contract_paths: dict[str, Path],
+) -> None:
+    catalog_payload = json.loads(
+        contract_paths["catalog_path"].read_text(encoding="utf-8")
+    )
+    catalog_payload["profiles"]["weather_variant"] = {
+        "rationale": "Evaluate an externally configured weather variant.",
+        "feature_sets": ["safe_weather"],
+        "direct_recipes": ["ridge_weather"],
+    }
+    contract_paths["catalog_path"].write_text(
+        json.dumps(catalog_payload),
+        encoding="utf-8",
+    )
+    config = _load(_payload(profiles=["weather_variant"]), contract_paths)
+
+    state = initialize_state(config)
+
+    assert state.remaining_profiles == ("weather_variant",)
+
+
+def test_research_contracts_imports_without_a_repository_catalog(tmp_path: Path) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    installed_root = tmp_path / "installed"
+    shutil.copytree(
+        repository_root / "src" / "power_forecasting",
+        installed_root / "power_forecasting",
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import power_forecasting.research_contracts"],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(installed_root)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(

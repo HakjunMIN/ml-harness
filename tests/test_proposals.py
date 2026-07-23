@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import math
 import sys
+from pathlib import Path
 from types import ModuleType
 
 import pytest
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import Ridge
 
+from power_forecasting.catalogs import load_optimization_catalog
 from power_forecasting.models import SPOT_FEATURES, model_definition_from_recipe
 from power_forecasting.proposals import ProposalValidationError, load_proposal, proposal_to_dict
 
@@ -204,6 +207,63 @@ def test_search_proposal_rejects_duplicate_lightgbm_choices():
 
     with pytest.raises(ProposalValidationError, match="duplicate"):
         load_proposal(proposal)
+
+
+def test_catalog_bound_proposal_rejects_estimator_valid_recipe_value(tmp_path: Path):
+    catalog_payload = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "optimization-catalog.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    catalog_payload["recipes"]["ridge_weather"]["allowed_parameters"]["alpha"] = [1.0]
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps(catalog_payload), encoding="utf-8")
+    catalog = load_optimization_catalog(catalog_path, repository_root=tmp_path)
+    proposal = _proposal(
+        feature_sets=[catalog.feature_sets["safe_weather"].to_dict()],
+        model_recipes=[
+            {
+                **_proposal()["model_recipes"][0],
+                "parameters": {"alpha": 10.0},
+            }
+        ],
+        budget={"max_evaluations": 1, "top_feature_groups": 1},
+    )
+
+    assert load_proposal(proposal).model_recipes[0].parameters["alpha"] == 10.0
+    with pytest.raises(ProposalValidationError, match="model recipe.*catalog"):
+        load_proposal(proposal, catalog=catalog)
+
+
+def test_catalog_bound_proposal_rejects_disallowed_lightgbm_search_value(tmp_path: Path):
+    catalog_payload = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "optimization-catalog.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    catalog_payload["recipes"]["lgbm_search"]["allowed_parameters"]["n_estimators"] = [
+        100
+    ]
+    catalog_payload["searches"]["bounded_lightgbm_tpe"]["spaces"]["lightgbm"][
+        "n_estimators"
+    ] = [100]
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps(catalog_payload), encoding="utf-8")
+    catalog = load_optimization_catalog(catalog_path, repository_root=tmp_path)
+    proposal = _proposal(
+        feature_sets=[catalog.feature_sets["safe_weather"].to_dict()],
+        model_recipes=[_proposal()["model_recipes"][0]],
+        search=_lightgbm_search(n_trials=1),
+        budget={"max_evaluations": 3, "top_feature_groups": 1},
+    )
+
+    assert load_proposal(proposal).search is not None
+    with pytest.raises(ProposalValidationError, match="search.*catalog"):
+        load_proposal(proposal, catalog=catalog)
 
 
 def test_proposal_validation_accepts_forecast_history_feature_specs():
