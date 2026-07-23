@@ -28,6 +28,60 @@ def test_agents_runbook_defines_bounded_repeated_agent_proposals() -> None:
         assert required_text in content
 
 
+def test_research_orchestrator_owns_one_request_cycle_and_human_handoff() -> None:
+    runbook = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    skill = (
+        ROOT / ".agents" / "skills" / "research-orchestrator" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for required_text in (
+        "single user request",
+        "invoke `research-proposal`",
+        "repeat without another user request",
+        "iteration <current>/<maximum>",
+        "evaluations <used>/50",
+        "last result",
+        "invoke `human-review`",
+    ):
+        assert required_text in skill
+
+    assert "Continue autonomously until" in runbook
+    assert "Do not ask the user to invoke each role" in runbook
+    assert "one-shot orchestration" in readme
+    assert "manual skill-by-skill path" in readme
+
+
+def test_readme_is_tutorial_first_agent_skill_framework_overview() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    archived = ROOT / "REAMDE.old.md"
+
+    assert archived.is_file()
+    assert archived.read_text(encoding="utf-8").startswith(
+        "# 코딩 에이전트용 발전량 예측 ML 개선 하네스"
+    )
+    for required_text in (
+        "레거시 ML",
+        "에이전트 스킬 프레임워크",
+        "`AGENTS.md`",
+        "`.agents/skills/`",
+        "## 5분 시작",
+        "one-shot orchestration",
+        "manual skill-by-skill path",
+        "피처 탐색",
+        "하이퍼파라미터 최적화",
+        "Ridge",
+        "HistGradientBoosting",
+        "RandomForest",
+        "XGBoost",
+        "LightGBM",
+        "Optuna TPE",
+        "현재 지원하지 않는 범위",
+        "prediction ensemble",
+    ):
+        assert required_text in readme
+
+
 def test_research_fixture_uses_config_relative_synthetic_inputs_and_root_runs_output() -> None:
     config_path = FIXTURES / "research-loop.json"
     payload = json.loads(config_path.read_text(encoding="utf-8"))

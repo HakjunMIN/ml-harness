@@ -11,6 +11,12 @@ strict state graph. The only invocation is `.agents/scripts/run-research-loop.sh
 with optional `--resume`; the runner invokes exactly `uv run python -m power_forecasting.cli
 research-loop`. Orchestration is opt-in and stops before AIDD/code/deploy.
 
+For one-shot orchestration, own the complete Stage 1 cycle from a single user request. Run the
+runner, invoke `research-proposal` whenever it returns `awaiting_proposal`, resume the same run, and
+repeat without another user request until a terminal status. This coordination does not merge the
+role boundaries: `research-proposal` only writes the bounded proposal, while the runner validates
+it and performs AIDM experimentation and verification.
+
 When `agent_proposals: true` is set in the immutable config, the runner stops at
 `awaiting_proposal` after diagnostic evidence. It writes a catalog and aggregate-only proposal
 context under the assigned iteration directory. Invoke `research-proposal` to create the requested
@@ -70,14 +76,30 @@ JSON, then rerun the exact same command with `--resume`.
   nonterminal, checksum-consistent state and never reruns an interrupted experiment as success.
 - A successful Stage 1 run produces review evidence only. It does not invoke AIDD or create a
   deployable module.
+- After each runner return, report an aggregate-only progress line in this form:
+  `iteration <current>/<maximum> · profile <name> · evaluations <used>/50 · last result <status or safe reason>`.
+  Use `unavailable` when a permitted value cannot be established.
 
 ## Workflow
-1. Validate the config and initialize an immutable config snapshot and journal.
-2. Advance through diagnosis; for `agent_proposals: true`, stop and hand the catalog/context to
-   `research-proposal`.
-3. Resume only after a catalog-contained proposal is present, then run one bounded experiment and
-   verification.
-4. Persist every transition and checksum, then stop at a terminal state and write the summary.
+1. Validate the config, preserve its approved baseline, paths, gates, profiles, and budgets, then
+   initialize or safely resume its immutable snapshot and journal.
+2. Run the runner and inspect only its structured result and checksum-bound run artifacts.
+3. When status is `awaiting_proposal`, read only the assigned aggregate context/catalog, invoke
+   `research-proposal` exactly once, and run the same command with `--resume`.
+4. After verification rejection returns another `awaiting_proposal`, report progress and repeat
+   steps 2-3 without asking the user to invoke another role. Use the new context and safe prior
+   reason codes; never duplicate a prior proposal or loosen a gate.
+5. Continue until `ready_for_human_review`, `exhausted`, or `failed`. Do not resume a terminal run.
+6. On `ready_for_human_review`, invoke `human-review` to render the checksum-bound aggregate
+   evidence and collect the person's next action. Do not invoke AIDD automatically.
+7. On `exhausted` or `failed`, report the summary, safe reasons, progress, and checksums, then stop.
+
+## Invocation Modes
+- **One-shot orchestration:** the agent owns all proposal/resume cycles from one request and stops
+  only at a terminal Stage 1 state.
+- **Manual skill-by-skill:** a person may invoke `research-diagnostic`, `research-proposal`,
+  `aidm-experiment`, and `research-verification` separately using the same contracts and evidence.
+  Manual control changes who coordinates the steps, not their validation or safety boundaries.
 
 ## Prohibitions
 Do not edit source or customer data, merge, deploy, call AIDD, generate/modify executable code,
@@ -100,5 +122,5 @@ The canonical terminal artifact is `runs/<run-id>/research-summary.json` (or the
 
 ## Post-Run Reflection
 Report terminal status, iterations, profiles, safe verifier reasons, and checksums. Hand the
-artifacts to a human for the next manual AIDD/review step; never claim automated promotion or
-deployment.
+artifacts to `human-review` when ready, or to a human with the safe failure/exhaustion summary.
+Never claim automated promotion, approval, or deployment.

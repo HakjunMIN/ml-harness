@@ -5,6 +5,9 @@ Use this runbook only for the optional Stage 1 research loop. The manual
 
 ## Starting an Agent-Proposal Run
 
+Treat a request to run the research loop as one-shot orchestration. Continue autonomously until a
+terminal Stage 1 state. Do not ask the user to invoke each role or resume command.
+
 1. Ask the user for the maximum number of `proposal -> AIDM -> verification`
    cycles. Accept an integer from 1 through 10; when the user does not specify
    one, set `"max_iterations": 10`.
@@ -33,6 +36,9 @@ If verification rejects the experiment and the runner returns a new
 `awaiting_proposal`, repeat the cycle. The runner deterministically cycles
 configured profiles up to `max_iterations`; do not edit state, journal,
 context, catalog, checksums, thresholds, or evidence to force another cycle.
+Do not wait for another user request between cycles. After every runner return,
+show `iteration <current>/<maximum> · profile <name> · evaluations <used>/50 ·
+last result <status or safe reason>` using aggregate-only values.
 
 ## Stop Conditions
 
@@ -41,3 +47,8 @@ or `failed`. `ready_for_human_review` is evidence for a human review, not
 approval to invoke AIDD, generate code, merge, deploy, or modify a customer
 system. Never include raw customer rows, targets, actuals, secrets, or
 arbitrary code in proposal artifacts.
+
+When the status is `ready_for_human_review`, invoke `human-review` automatically
+to display the evidence and ask for the person's next action. Do not invoke
+AIDD automatically. The manual skill-by-skill path remains supported when a
+person explicitly asks to control each stage.
