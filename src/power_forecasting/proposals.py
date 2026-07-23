@@ -15,12 +15,32 @@ from power_forecasting.features import FeatureSpec
 
 _BASELINE_KEYS = {"model"}
 _FEATURE_SPEC_KEYS = {"name", "transform", "inputs", "parameters", "version", "rationale"}
-_LIGHTGBM_PARAMETER_VALUES = {
-    "n_estimators": {100, 300},
-    "learning_rate": {0.03, 0.1},
-    "num_leaves": {15, 31},
-    "min_child_samples": {10, 20},
+RECIPE_PARAMETER_VALUES = {
+    "ridge": {"alpha": frozenset({0.1, 1.0, 10.0})},
+    "hist_gradient_boosting": {
+        "max_iter": frozenset({50, 100, 200}),
+        "learning_rate": frozenset({0.03, 0.1}),
+        "max_leaf_nodes": frozenset({15, 31, 63}),
+    },
+    "random_forest": {
+        "n_estimators": frozenset({100, 200, 400}),
+        "max_depth": frozenset({8, 12, None}),
+        "min_samples_leaf": frozenset({1, 2, 4}),
+    },
+    "xgboost": {
+        "n_estimators": frozenset({100, 200, 400}),
+        "max_depth": frozenset({4, 6, 8}),
+        "learning_rate": frozenset({0.03, 0.1}),
+        "subsample": frozenset({0.8, 1.0}),
+    },
+    "lightgbm": {
+        "n_estimators": frozenset({100, 300}),
+        "learning_rate": frozenset({0.03, 0.1}),
+        "num_leaves": frozenset({15, 31}),
+        "min_child_samples": frozenset({10, 20}),
+    },
 }
+_LIGHTGBM_PARAMETER_VALUES = RECIPE_PARAMETER_VALUES["lightgbm"]
 _LIGHTGBM_SEARCH_KEYS = set(_LIGHTGBM_PARAMETER_VALUES)
 
 
@@ -192,7 +212,7 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
     if recipe == "ridge":
         _exact_parameter_keys(parameters, {"alpha"}, name)
         alpha = _number(parameters["alpha"], f"model recipe {name}: alpha")
-        if alpha not in {0.1, 1.0, 10.0}:
+        if alpha not in RECIPE_PARAMETER_VALUES[recipe]["alpha"]:
             raise ProposalValidationError(f"model recipe {name}: alpha outside allowed set")
         return {"alpha": alpha}
     if recipe == "hist_gradient_boosting":
@@ -204,11 +224,11 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
         max_iter = _integer(parameters["max_iter"], f"model recipe {name}: max_iter")
         learning_rate = _number(parameters["learning_rate"], f"model recipe {name}: learning_rate")
         max_leaf_nodes = _integer(parameters["max_leaf_nodes"], f"model recipe {name}: max_leaf_nodes")
-        if max_iter not in {50, 100, 200}:
+        if max_iter not in RECIPE_PARAMETER_VALUES[recipe]["max_iter"]:
             raise ProposalValidationError(f"model recipe {name}: max_iter outside allowed set")
-        if learning_rate not in {0.03, 0.1}:
+        if learning_rate not in RECIPE_PARAMETER_VALUES[recipe]["learning_rate"]:
             raise ProposalValidationError(f"model recipe {name}: learning_rate outside allowed set")
-        if max_leaf_nodes not in {15, 31, 63}:
+        if max_leaf_nodes not in RECIPE_PARAMETER_VALUES[recipe]["max_leaf_nodes"]:
             raise ProposalValidationError(f"model recipe {name}: max_leaf_nodes outside allowed set")
         return {
             "max_iter": max_iter,
@@ -224,11 +244,11 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
         n_estimators = _integer(parameters["n_estimators"], f"model recipe {name}: n_estimators")
         max_depth = _integer_or_none(parameters["max_depth"], f"model recipe {name}: max_depth")
         min_samples_leaf = _integer(parameters["min_samples_leaf"], f"model recipe {name}: min_samples_leaf")
-        if n_estimators not in {100, 200, 400}:
+        if n_estimators not in RECIPE_PARAMETER_VALUES[recipe]["n_estimators"]:
             raise ProposalValidationError(f"model recipe {name}: n_estimators outside allowed set")
-        if max_depth not in {8, 12, None}:
+        if max_depth not in RECIPE_PARAMETER_VALUES[recipe]["max_depth"]:
             raise ProposalValidationError(f"model recipe {name}: max_depth outside allowed set")
-        if min_samples_leaf not in {1, 2, 4}:
+        if min_samples_leaf not in RECIPE_PARAMETER_VALUES[recipe]["min_samples_leaf"]:
             raise ProposalValidationError(f"model recipe {name}: min_samples_leaf outside allowed set")
         return {
             "n_estimators": n_estimators,
@@ -245,13 +265,13 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
         max_depth = _integer(parameters["max_depth"], f"model recipe {name}: max_depth")
         learning_rate = _number(parameters["learning_rate"], f"model recipe {name}: learning_rate")
         subsample = _number(parameters["subsample"], f"model recipe {name}: subsample")
-        if n_estimators not in {100, 200, 400}:
+        if n_estimators not in RECIPE_PARAMETER_VALUES[recipe]["n_estimators"]:
             raise ProposalValidationError(f"model recipe {name}: n_estimators outside allowed set")
-        if max_depth not in {4, 6, 8}:
+        if max_depth not in RECIPE_PARAMETER_VALUES[recipe]["max_depth"]:
             raise ProposalValidationError(f"model recipe {name}: max_depth outside allowed set")
-        if learning_rate not in {0.03, 0.1}:
+        if learning_rate not in RECIPE_PARAMETER_VALUES[recipe]["learning_rate"]:
             raise ProposalValidationError(f"model recipe {name}: learning_rate outside allowed set")
-        if subsample not in {0.8, 1.0}:
+        if subsample not in RECIPE_PARAMETER_VALUES[recipe]["subsample"]:
             raise ProposalValidationError(f"model recipe {name}: subsample outside allowed set")
         return {
             "n_estimators": n_estimators,
