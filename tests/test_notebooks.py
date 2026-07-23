@@ -110,6 +110,25 @@ def test_manual_notebook_proposal_validates_against_default_catalog():
     load_proposal(proposal, catalog=catalog)
 
 
+def test_auto_notebook_proposal_validates_against_its_configured_profile():
+    code = _notebook_code(NOTEBOOK_DIR / "03_auto_research_path.ipynb")
+    config = _research_loop_config(code)
+    catalog = load_optimization_catalog(DEFAULT_CATALOG, repository_root=ROOT)
+    proposal = json.loads(
+        (ROOT / ".agents" / "fixtures" / "model-search-proposal.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert (
+        "proposal = json.loads((REPO_ROOT / '.agents' / 'fixtures' / "
+        "'model-search-proposal.json').read_text(encoding='utf-8'))"
+    ) in code
+    assert config["profiles"] == ["bounded_search"]
+    assert "iteration_dir = OUTPUT / 'iterations' / '001-bounded_search'" in code
+    load_proposal(proposal, catalog=catalog, profile=config["profiles"][0])
+
+
 def _read_notebook(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -199,14 +218,9 @@ def _research_loop_config(code: str) -> dict[str, object]:
         and isinstance(call.args[0].args[0], ast.Dict)
     ]
     assert len(config_writes) == 1
-    config_dict = config_writes[0].args[0].args[0]
-    return {
-        key.value: value.value
-        for key, value in zip(config_dict.keys, config_dict.values)
-        if isinstance(key, ast.Constant)
-        and isinstance(key.value, str)
-        and isinstance(value, ast.Constant)
-    }
+    config = ast.literal_eval(config_writes[0].args[0].args[0])
+    assert isinstance(config, dict)
+    return config
 
 
 def _assert_valid_nbformat4_notebook(notebook: dict, name: str) -> None:
