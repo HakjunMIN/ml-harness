@@ -13,7 +13,9 @@ terminal Stage 1 state. Do not ask the user to invoke each role or resume comman
    one, set `"max_iterations": 10`.
 2. Create or update a repository-local research-loop config under `runs/` with
    `"agent_proposals": true`, the selected `"max_iterations"`, and a
-   repository-relative `"catalog_path"` to `configs/optimization-catalog.v1.json`.
+   `"catalog_path"` resolved relative to the research-loop config file, not the
+   repository root. For a config under `runs/<id>/`, use
+   `"../../configs/optimization-catalog.v1.json"`.
    Before starting, display the approved plan: profiles, feature sets, direct recipes,
    TPE space, folds, gates, and budget. Do not change the baseline, data paths, gates,
    profiles, catalog, or evaluation budget without explicit user approval. Configure artifact

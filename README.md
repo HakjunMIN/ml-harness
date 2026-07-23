@@ -71,11 +71,11 @@ legacy baseline
 
 ### 4. optimization catalog 확인
 
-[`configs/optimization-catalog.v1.json`](configs/optimization-catalog.v1.json)은 profiles, feature sets, direct recipes, allowed parameter values, and bounded TPE space의 versioned external owner입니다. research-loop config는 이 파일을 repository-relative `catalog_path`로 명시해야 합니다.
+[`configs/optimization-catalog.v1.json`](configs/optimization-catalog.v1.json)은 profiles, feature sets, direct recipes, allowed parameter values, and bounded TPE space의 versioned external owner입니다. research-loop config의 `catalog_path`는 repository root가 아니라 research-loop config 파일이 있는 디렉터리를 기준으로 해석됩니다. 따라서 `runs/<id>/` 아래 config는 다음처럼 지정합니다.
 
 ```json
 {
-  "catalog_path": "configs/optimization-catalog.v1.json"
+  "catalog_path": "../../configs/optimization-catalog.v1.json"
 }
 ```
 

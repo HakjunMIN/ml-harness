@@ -4,9 +4,13 @@ import ast
 import json
 from pathlib import Path
 
+from power_forecasting.catalogs import load_optimization_catalog
+from power_forecasting.proposals import load_proposal
+
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK_DIR = ROOT / "notebooks"
+DEFAULT_CATALOG = ROOT / "configs" / "optimization-catalog.v1.json"
 EDUCATIONAL_NOTEBOOK = "00_legacy_power_forecasting_models.ipynb"
 DEMO_NOTEBOOKS = (
     "01_legacy_baseline.ipynb",
@@ -97,6 +101,15 @@ def test_demo_notebooks_tell_the_three_path_story():
         assert skill in auto_markdown
 
 
+def test_manual_notebook_proposal_validates_against_default_catalog():
+    proposal = _manual_notebook_proposal(
+        NOTEBOOK_DIR / "02_manual_skill_path.ipynb"
+    )
+    catalog = load_optimization_catalog(DEFAULT_CATALOG, repository_root=ROOT)
+
+    load_proposal(proposal, catalog=catalog)
+
+
 def _read_notebook(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -114,6 +127,22 @@ def _notebook_markdown(path: Path) -> str:
     return "\n".join(
         _source(cell) for cell in notebook["cells"] if cell.get("cell_type") == "markdown"
     )
+
+
+def _manual_notebook_proposal(path: Path) -> dict[str, object]:
+    tree = ast.parse(_notebook_code(path), filename=path.name)
+    assignment = next(
+        assignment
+        for assignment in tree.body
+        if isinstance(assignment, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "proposal"
+            for target in assignment.targets
+        )
+    )
+    proposal = ast.literal_eval(assignment.value)
+    assert isinstance(proposal, dict)
+    return proposal
 
 
 def _assert_aidm_commands_use_default_catalog(code: str) -> None:
