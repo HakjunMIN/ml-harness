@@ -147,20 +147,127 @@ def test_promotion_manifest_rejects_feature_inputs_outside_prediction_contract()
         aidd.validate_promotion_manifest(manifest)
 
 
-def test_prediction_contract_allows_forecast_history_specs_but_render_rejects_stateful_history(aidd_run_dir):
-    spec = FeatureSpec(
-        "prior_irradiance",
-        "lag",
-        ("forecast_irradiance",),
-        {"periods": 1},
-        rationale="Use strictly prior forecast irradiance from the same plant.",
+def test_generated_history_features_match_direct_engine_for_interleaved_plants(aidd_run_dir):
+    specs = _history_feature_specs()
+    module = _load_module(
+        aidd.render_promoted_module(_valid_manifest(specs), aidd_run_dir / "promoted.py")
     )
-    manifest = _valid_manifest([spec])
+    frame = pd.DataFrame(
+        {
+            "plant_id": [
+                "plant_b",
+                "plant_a",
+                "plant_b",
+                "plant_a",
+                "plant_b",
+                "plant_a",
+                "plant_a",
+            ],
+            "timestamp": pd.to_datetime(
+                [
+                    "2024-01-01 00:00",
+                    "2024-01-01 00:00",
+                    "2024-01-01 01:00",
+                    "2024-01-01 01:00",
+                    "2024-01-01 02:00",
+                    "2024-01-01 02:00",
+                    "2024-01-01 03:00",
+                ]
+            ),
+            "forecast_irradiance": [20.0, 10.0, 40.0, 30.0, 60.0, 50.0, 70.0],
+            "forecast_cloud_cover": [30.0, 40.0, 50.0, 50.0, 70.0, 60.0, 70.0],
+        }
+    )
 
-    aidd.validate_prediction_time_feature_spec(spec)
-    assert aidd.validate_promotion_manifest(manifest) == (spec,)
-    with pytest.raises(aidd.PromotionManifestError, match="stateful history feature"):
-        aidd.render_promoted_module(manifest, aidd_run_dir / "promoted.py")
+    generated = module.build_promoted_features(frame)
+    pd.testing.assert_frame_equal(
+        generated, apply_feature_specs(frame, specs)
+    )
+    assert generated.loc[6, "prior_cloud_mean"] == 50.0
+
+
+def test_generated_history_features_accept_mixed_timestamp_formats_without_mutating_input(
+    aidd_run_dir,
+):
+    specs = _history_feature_specs()
+    module = _load_module(
+        aidd.render_promoted_module(_valid_manifest(specs), aidd_run_dir / "promoted.py")
+    )
+    frame = pd.DataFrame(
+        {
+            "plant_id": ["plant_a"] * 4,
+            "timestamp": [
+                "2024-01-01 00:00:00",
+                "2024/01/01 01:00:00",
+                "January 1, 2024 02:00:00",
+                "2024-01-01T03:00:00",
+            ],
+            "forecast_irradiance": [10.0, 20.0, 30.0, 40.0],
+            "forecast_cloud_cover": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
+    original = frame.copy(deep=True)
+
+    generated = module.build_promoted_features(frame)
+
+    pd.testing.assert_frame_equal(generated, apply_feature_specs(frame, specs))
+    pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize(
+    ("frame", "message"),
+    [
+        (
+            pd.DataFrame({"timestamp": ["2024-01-01"], "forecast_irradiance": [1.0]}),
+            "history features require columns: ['plant_id']",
+        ),
+        (
+            pd.DataFrame({"plant_id": ["plant_a"], "forecast_irradiance": [1.0]}),
+            "history features require columns: ['timestamp']",
+        ),
+        (
+            pd.DataFrame(
+                {
+                    "plant_id": [None],
+                    "timestamp": ["2024-01-01"],
+                    "forecast_irradiance": [1.0],
+                }
+            ),
+            "history features require non-null plant_id values",
+        ),
+        (
+            pd.DataFrame(
+                {
+                    "plant_id": ["plant_a"],
+                    "timestamp": ["not-a-timestamp"],
+                    "forecast_irradiance": [1.0],
+                }
+            ),
+            "history features require valid timestamp values",
+        ),
+        (
+            pd.DataFrame(
+                {
+                    "plant_id": ["plant_a", "plant_a"],
+                    "timestamp": ["2024-01-01", "2024-01-01"],
+                    "forecast_irradiance": [1.0, 2.0],
+                }
+            ),
+            "history features require unique plant_id/timestamp pairs",
+        ),
+    ],
+)
+def test_generated_history_features_validate_runtime_frame_boundary(aidd_run_dir, frame, message):
+    module = _load_module(
+        aidd.render_promoted_module(
+            _valid_manifest(_history_feature_specs()), aidd_run_dir / "promoted.py"
+        )
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        module.build_promoted_features(frame)
+
+    assert str(exc_info.value) == message
 
 
 def test_prediction_contract_rejects_zero_input_history_specs_before_stateful_special_case():
@@ -638,6 +745,25 @@ def _valid_manifest(specs=None):
         "decision": "promote",
         "failed_gates": [],
     }
+
+
+def _history_feature_specs():
+    return [
+        FeatureSpec(
+            "prior_irradiance",
+            "lag",
+            ("forecast_irradiance",),
+            {"periods": 1},
+            rationale="Use strictly prior forecast irradiance from the same plant.",
+        ),
+        FeatureSpec(
+            "prior_cloud_mean",
+            "rolling_mean",
+            ("forecast_cloud_cover",),
+            {"window": 3},
+            rationale="Use a strictly prior cloud-cover window from the same plant.",
+        ),
+    ]
 
 
 def _load_module(path):
