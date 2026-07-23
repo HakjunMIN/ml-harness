@@ -335,5 +335,6 @@ PY
 - 실제 고객 adapter와 데이터 사용에는 명시적 승인이 필요합니다.
 - 연구 결과는 자동으로 고객 저장소에 patch되지 않습니다.
 - AIDD 산출물은 별도의 human-review 대상입니다.
+- 승격된 history 피처(`lag`, `rolling_mean`)는 고유한 `plant_id`/`timestamp` 키를 가진 history·target 결합 frame에서 발전소별 strict-prior 행만 사용합니다.
 - release-gate는 정확한 manifest checksum에 연결된 명시적 사람 승인을 요구합니다.
 - chat 응답, research summary, AIDD 성공은 human approval을 대체하지 않습니다.
