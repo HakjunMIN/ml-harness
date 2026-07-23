@@ -9,10 +9,23 @@ from pathlib import Path
 from typing import Any
 
 from power_forecasting.aidm import AIDMConfig
+from power_forecasting.catalogs import (
+    OptimizationCatalog,
+    OptimizationCatalogError,
+    load_optimization_catalog,
+)
 
 
 SCHEMA_VERSION = "1"
-SUPPORTED_PROFILES = frozenset({"safe_weather", "history_tree", "bounded_search"})
+_DEFAULT_CATALOG_PATH = (
+    Path(__file__).resolve().parents[2] / "configs" / "optimization-catalog.v1.json"
+)
+SUPPORTED_PROFILES = frozenset(
+    load_optimization_catalog(
+        _DEFAULT_CATALOG_PATH,
+        repository_root=_DEFAULT_CATALOG_PATH.parents[1],
+    ).profile_names
+)
 
 _REQUIRED_CONFIG_KEYS = frozenset(
     {
@@ -20,6 +33,7 @@ _REQUIRED_CONFIG_KEYS = frozenset(
         "run_id",
         "dataset_path",
         "legacy_manifest_path",
+        "catalog_path",
         "run_dir",
         "profiles",
         "max_iterations",
@@ -43,6 +57,9 @@ class ResearchLoopConfig:
     run_id: str
     dataset_path: str
     legacy_manifest_path: str
+    catalog_path: str
+    catalog_sha256: str
+    catalog: OptimizationCatalog
     run_dir: str
     profiles: tuple[str, ...]
     max_iterations: int
@@ -76,11 +93,16 @@ def load_research_loop_config(
     legacy_manifest_path = _existing_input_path(
         value["legacy_manifest_path"], config_dir, "legacy_manifest_path"
     )
+    catalog_path = _path_candidate(value["catalog_path"], config_dir, "catalog_path")
+    try:
+        catalog = load_optimization_catalog(catalog_path, repository_root=root)
+    except OptimizationCatalogError as exc:
+        raise ResearchContractError(f"catalog_path must reference an approved catalog: {exc}") from exc
     run_dir = _path_candidate(value["run_dir"], config_dir, "run_dir")
     _validate_run_dir(run_dir, root)
     run_dir = run_dir.resolve()
 
-    profiles = _profiles(value["profiles"])
+    profiles = _profiles(value["profiles"], catalog)
     max_iterations = _bounded_integer(value["max_iterations"], "max_iterations")
     fold_count = _bounded_integer(value["fold_count"], "fold_count")
     objective = _nonblank_string(value["objective"], "objective")
@@ -98,6 +120,9 @@ def load_research_loop_config(
         run_id=run_id,
         dataset_path=str(dataset_path),
         legacy_manifest_path=str(legacy_manifest_path),
+        catalog_path=str(catalog.source_path),
+        catalog_sha256=catalog.sha256,
+        catalog=catalog,
         run_dir=str(run_dir),
         profiles=profiles,
         max_iterations=max_iterations,
@@ -171,7 +196,7 @@ def _existing_input_path(value: object, base: Path, label: str) -> Path:
     return path
 
 
-def _profiles(value: object) -> tuple[str, ...]:
+def _profiles(value: object, catalog: OptimizationCatalog) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ResearchContractError("profiles must be a list")
     if not value:
@@ -181,8 +206,8 @@ def _profiles(value: object) -> tuple[str, ...]:
     for profile in value:
         if type(profile) is not str:
             raise ResearchContractError("profiles entries must be strings")
-        if profile not in SUPPORTED_PROFILES:
-            raise ResearchContractError(f"profiles contains unsupported profile: {profile}")
+        if profile not in catalog.profiles:
+            raise ResearchContractError(f"profiles contains unknown catalog profile: {profile}")
         if profile in profiles:
             raise ResearchContractError(f"profiles contains duplicate profile: {profile}")
         profiles.append(profile)

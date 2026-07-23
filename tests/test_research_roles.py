@@ -17,12 +17,12 @@ from power_forecasting.data import (
     parse_timestamps,
     validate_dataset,
 )
+from power_forecasting.catalogs import load_optimization_catalog
 from power_forecasting.features import apply_feature_specs
 from power_forecasting.proposals import ResearchProposal, load_proposal, proposal_to_dict
 from power_forecasting.research_contracts import (
     ResearchContractError,
     ResearchLoopConfig,
-    SUPPORTED_PROFILES,
 )
 
 
@@ -44,6 +44,7 @@ MISSING_THRESHOLDS_MANIFEST = (
     / "fixtures"
     / "missing-thresholds-promotion-manifest.json"
 )
+FIXTURE_CATALOG = REPOSITORY_ROOT / "configs" / "optimization-catalog.v1.json"
 BASE_DATASET = REPOSITORY_ROOT / ".agents" / "fixtures" / "research-roles-base.csv"
 TARGET_VARIANT_DATASET = (
     REPOSITORY_ROOT / ".agents" / "fixtures" / "research-roles-target-variant.csv"
@@ -67,11 +68,15 @@ def _config(
     dataset_path: Path = FIXTURE_DATASET,
     legacy_manifest_path: Path = FIXTURE_MANIFEST,
 ) -> ResearchLoopConfig:
+    catalog = load_optimization_catalog(FIXTURE_CATALOG, repository_root=REPOSITORY_ROOT)
     return ResearchLoopConfig(
         schema_version="1",
         run_id="research_roles_001",
         dataset_path=str(dataset_path),
         legacy_manifest_path=str(legacy_manifest_path),
+        catalog_path=str(catalog.source_path),
+        catalog_sha256=catalog.sha256,
+        catalog=catalog,
         run_dir=str(REPOSITORY_ROOT / ".agents" / "runs" / "research_roles_001"),
         profiles=("safe_weather", "history_tree", "bounded_search"),
         max_iterations=3,
@@ -278,7 +283,7 @@ def test_diagnostic_recommendations_are_supported_and_history_is_feasible_for_fi
     report = _diagnosis()
 
     assert report.recommended_profiles
-    assert set(report.recommended_profiles) <= SUPPORTED_PROFILES
+    assert set(report.recommended_profiles) <= set(_config().catalog.profile_names)
     assert report.recommended_profiles == (
         "safe_weather",
         "history_tree",

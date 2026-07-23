@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from power_forecasting import aidm
+from power_forecasting.catalogs import load_optimization_catalog
 from power_forecasting.evaluation import EvaluationResult
 from power_forecasting.models import SUPPORTED_MODEL_NAMES
 from power_forecasting.proposals import load_proposal, proposal_to_dict
@@ -28,15 +29,20 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DATASET = REPOSITORY_ROOT / ".agents" / "fixtures" / "valid-dataset.csv"
 FIXTURE_MANIFEST = REPOSITORY_ROOT / ".agents" / "fixtures" / "promoted-manifest.json"
 FIXTURE_PROPOSAL = REPOSITORY_ROOT / ".agents" / "fixtures" / "research-proposal.json"
+FIXTURE_CATALOG = REPOSITORY_ROOT / "configs" / "optimization-catalog.v1.json"
 
 
 @pytest.fixture
 def execution_config(tmp_path: Path) -> ResearchLoopConfig:
+    catalog = load_optimization_catalog(FIXTURE_CATALOG, repository_root=REPOSITORY_ROOT)
     return ResearchLoopConfig(
         schema_version="1",
         run_id="research_execution_001",
         dataset_path=str(FIXTURE_DATASET),
         legacy_manifest_path=str(FIXTURE_MANIFEST),
+        catalog_path=str(catalog.source_path),
+        catalog_sha256=catalog.sha256,
+        catalog=catalog,
         run_dir=str(tmp_path / "research-runs" / "research_execution_001"),
         profiles=("safe_weather",),
         max_iterations=2,

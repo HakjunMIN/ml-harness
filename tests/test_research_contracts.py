@@ -3,14 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from power_forecasting.catalogs import load_optimization_catalog
 from power_forecasting.research_contracts import (
     ResearchContractError,
-    SUPPORTED_PROFILES,
     load_research_loop_config,
 )
 from power_forecasting.research_state import (
@@ -36,12 +37,19 @@ def contract_paths(tmp_path: Path) -> dict[str, Path]:
     dataset_path.write_text("plant_id,timestamp\nplant_01,2026-01-01T00:00:00Z\n", encoding="utf-8")
     legacy_manifest_path = input_dir / "legacy-manifest.json"
     legacy_manifest_path.write_text('{"schema_version":"1"}\n', encoding="utf-8")
+    catalog_path = repository_root / "configs" / "optimization-catalog.v1.json"
+    catalog_path.parent.mkdir()
+    shutil.copyfile(
+        Path(__file__).resolve().parents[1] / "configs" / "optimization-catalog.v1.json",
+        catalog_path,
+    )
 
     return {
         "repository_root": repository_root,
         "config_path": config_path,
         "dataset_path": dataset_path,
         "legacy_manifest_path": legacy_manifest_path,
+        "catalog_path": catalog_path,
     }
 
 
@@ -51,6 +59,7 @@ def _payload(**overrides: object) -> dict[str, object]:
         "run_id": "run_001",
         "dataset_path": "inputs/dataset.csv",
         "legacy_manifest_path": "inputs/legacy-manifest.json",
+        "catalog_path": "../configs/optimization-catalog.v1.json",
         "run_dir": "../runs/run_001",
         "profiles": ["safe_weather", "history_tree"],
         "max_iterations": 2,
@@ -78,6 +87,12 @@ def test_valid_config_resolves_relative_paths_from_configuration_directory(
 
     assert config.dataset_path == str(contract_paths["dataset_path"].resolve())
     assert config.legacy_manifest_path == str(contract_paths["legacy_manifest_path"].resolve())
+    assert config.catalog_path == str(contract_paths["catalog_path"].resolve())
+    assert config.catalog_sha256 == hashlib.sha256(
+        contract_paths["catalog_path"].read_bytes()
+    ).hexdigest()
+    assert config.catalog.source_path == contract_paths["catalog_path"].resolve()
+    assert config.catalog.profile_names == ("safe_weather", "history_tree", "bounded_search")
     assert config.run_dir == str(
         (contract_paths["repository_root"] / "runs" / "run_001").resolve()
     )
@@ -125,11 +140,41 @@ def test_config_rejects_unsafe_run_ids(contract_paths: dict[str, Path], run_id: 
         _load(_payload(run_id=run_id), contract_paths)
 
 
-def test_supported_profiles_are_exact_allowlist(contract_paths: dict[str, Path]) -> None:
-    assert SUPPORTED_PROFILES == frozenset({"safe_weather", "history_tree", "bounded_search"})
+def test_config_profiles_must_come_from_loaded_catalog(contract_paths: dict[str, Path]) -> None:
+    default_catalog = load_optimization_catalog(
+        contract_paths["catalog_path"],
+        repository_root=contract_paths["repository_root"],
+    )
+    assert default_catalog.profile_names == ("safe_weather", "history_tree", "bounded_search")
 
-    with pytest.raises(ResearchContractError, match="unsupported"):
+    with pytest.raises(ResearchContractError, match="catalog"):
         _load(_payload(profiles=["unbounded_search"]), contract_paths)
+
+
+@pytest.mark.parametrize(
+    ("catalog_path", "prepare"),
+    [
+        ("../configs/missing.json", None),
+        ("../configs/catalog-link.json", "symlink"),
+        ("../../outside-catalog.json", "outside"),
+    ],
+)
+def test_config_rejects_missing_symlinked_and_outside_catalog_paths(
+    contract_paths: dict[str, Path],
+    catalog_path: str,
+    prepare: str | None,
+) -> None:
+    if prepare == "symlink":
+        (contract_paths["repository_root"] / "configs" / "catalog-link.json").symlink_to(
+            contract_paths["catalog_path"]
+        )
+    elif prepare == "outside":
+        (contract_paths["repository_root"].parent / "outside-catalog.json").write_bytes(
+            contract_paths["catalog_path"].read_bytes()
+        )
+
+    with pytest.raises(ResearchContractError, match="catalog_path"):
+        _load(_payload(catalog_path=catalog_path), contract_paths)
 
 
 def test_config_requires_explicit_existing_input_paths(contract_paths: dict[str, Path]) -> None:
