@@ -26,7 +26,54 @@ uv sync --all-extras
 기본 의존성은 NumPy, pandas, scikit-learn입니다. XGBoost, LightGBM, Optuna 기반 탐색에는
 `model-search` extra가 필요합니다.
 
-### 2. 에이전트에게 자율 연구를 요청
+### 2. 다른 ML 리포에 repo-scoped plugin 설치
+
+이 하네스를 다른 ML 리포의 workspace 스킬로 사용하려면, 이 저장소를 clone한 상태에서 대상 리포를
+지정해 설치합니다. 설치 범위는 **대상 리포 한 곳**이며 전역 설정, MCP 설정, 고객 데이터는 변경하지
+않습니다.
+
+```bash
+cd /path/to/ml-harness
+uv run power-forecast init --target /path/to/consumer-ml-repository
+```
+
+설치 후 대상 리포에는 다음 관리 asset이 생깁니다.
+
+```text
+consumer-ml-repository/
+├── AGENTS.md                         # 기존 내용 뒤에 관리 block만 추가
+└── .agents/
+    ├── plugin.json                    # ml-harness, scope: repo marker
+    ├── adapter-template.json          # 고객 값이 없는 adapter manifest 시작점
+    ├── skills/                        # Copilot workspace에서 발견하는 role skills
+    ├── scripts/                       # run-legacy.sh 등 안전한 runner
+    ├── harness/
+    └── legacy_adapter/
+```
+
+대상 리포의 기존 `AGENTS.md`와 `.agents/` 사용자 파일은 보존합니다. 설치 asset과 같은 경로에
+이미 파일이 있으면 installer는 덮어쓰지 않고 실패합니다. 첫 설치가 끝난 뒤 같은 명령을 다시
+실행하는 것은 marker 검증 후 성공하므로 안전합니다.
+
+adapter를 만들 때는 대상 리포에서 template을 별도 경로로 복사해 승인된 local input과 literal argv를
+채웁니다. template 자체에는 실행 가능한 고객 경로나 secret이 없습니다.
+
+```bash
+cd /path/to/consumer-ml-repository
+mkdir -p adapters/baseline
+cp .agents/adapter-template.json adapters/baseline/adapter.json
+# adapter.json의 placeholder를 승인된 local 값으로 교체한 뒤 fixture-first 검증
+.agents/scripts/run-legacy.sh \
+  --adapter adapters/baseline/adapter.json \
+  --run-dir runs/legacy-baseline
+```
+
+설치된 `legacy-intake` 스킬과 black-box adapter contract는 일반적인 레거시 ML 연결에 사용할 수
+있습니다. 반면 자동 AIDM research profile과 발전량 데이터 contract는 현재 power forecasting 예제에
+맞춰져 있으므로, 다른 도메인에서 자동 최적화를 실행하기 전에 해당 domain contract와 catalog를
+명시적으로 설계해야 합니다.
+
+### 3. 에이전트에게 자율 연구를 요청
 
 코딩 에이전트에서 다음처럼 요청합니다.
 
@@ -52,7 +99,7 @@ legacy baseline
 
 `ready_for_human_review`은 배포 준비 완료가 아니라, 사람이 검토할 수 있는 증적이 준비됐다는 뜻입니다.
 
-### 3. runner를 직접 확인
+### 4. runner를 직접 확인
 
 에이전트 오케스트레이션 아래에서 사용하는 실제 runner는 다음과 같습니다.
 

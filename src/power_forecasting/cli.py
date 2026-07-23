@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import warnings
 from collections.abc import Mapping
@@ -33,6 +34,56 @@ MANIFEST_NAME = "promotion_manifest.json"
 GENERATED_DIR_NAME = "generated"
 GENERATED_MODULE_NAME = "promoted_features.py"
 REPORT_NAME = "performance_report.md"
+PLUGIN_ID = "ml-harness"
+PLUGIN_SCHEMA_VERSION = "1"
+PLUGIN_ASSET_DIRECTORIES = ("harness", "legacy_adapter", "scripts", "skills")
+PLUGIN_SKILLS = (
+    "aidd-promotion",
+    "aidm-experiment",
+    "human-review",
+    "legacy-intake",
+    "release-gate",
+    "research-diagnostic",
+    "research-orchestrator",
+    "research-proposal",
+    "research-verification",
+)
+PLUGIN_GUIDANCE_BEGIN = "<!-- ml-harness:begin -->"
+PLUGIN_GUIDANCE_END = "<!-- ml-harness:end -->"
+
+
+def install_repository_plugin(target: Path) -> Path:
+    target_root = Path(target).resolve()
+    if not target_root.is_dir():
+        raise FileNotFoundError(f"target repository directory not found: {target_root}")
+
+    agents_root = target_root / ".agents"
+    if agents_root.is_symlink():
+        raise ValueError(f"{agents_root} must not be a symbolic link")
+    if agents_root.exists():
+        if _is_installed_plugin(agents_root):
+            return agents_root
+
+    source_root = _plugin_source_root()
+    staged_root = target_root / f".{PLUGIN_ID}.install-{os.getpid()}"
+    try:
+        staged_root.mkdir()
+        for directory_name in PLUGIN_ASSET_DIRECTORIES:
+            shutil.copytree(source_root / directory_name, staged_root / directory_name)
+        _write_json_atomic(staged_root / "plugin.json", _plugin_manifest())
+        _write_json_atomic(staged_root / "adapter-template.json", _adapter_template())
+        if agents_root.exists():
+            _assert_plugin_paths_available(staged_root, agents_root)
+        _atomic_write_text(target_root / "AGENTS.md", _merged_plugin_guidance(target_root))
+        if agents_root.exists():
+            shutil.copytree(staged_root, agents_root, dirs_exist_ok=True)
+            shutil.rmtree(staged_root)
+        else:
+            os.replace(staged_root, agents_root)
+    except Exception:
+        shutil.rmtree(staged_root, ignore_errors=True)
+        raise
+    return agents_root
 
 
 def run_generate_data(output: Path, days: int, plants: int, seed: int) -> Path:
@@ -225,6 +276,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(summary, sort_keys=True))
             if summary.get("status") not in {"ready_for_human_review", "awaiting_proposal"}:
                 return 2
+        elif args.command == "init":
+            path = install_repository_plugin(args.target)
+            print(f"plugin: {path}")
         else:
             raise ValueError(f"unknown command: {args.command}")
     except (
@@ -292,7 +346,100 @@ def _build_parser() -> argparse.ArgumentParser:
     research = subparsers.add_parser("research-loop")
     research.add_argument("--config", required=True, type=Path)
     research.add_argument("--resume", action="store_true")
+
+    init = subparsers.add_parser("init")
+    init.add_argument("--target", required=True, type=Path)
     return parser
+
+
+def _plugin_source_root() -> Path:
+    source_root = Path(__file__).resolve().parents[2] / ".agents"
+    missing = [
+        directory_name
+        for directory_name in PLUGIN_ASSET_DIRECTORIES
+        if not (source_root / directory_name).is_dir()
+    ]
+    if missing:
+        raise RuntimeError(
+            "repository plugin assets are unavailable; missing " + ", ".join(missing)
+        )
+    return source_root
+
+
+def _plugin_manifest() -> dict[str, Any]:
+    return {
+        "plugin_id": PLUGIN_ID,
+        "schema_version": PLUGIN_SCHEMA_VERSION,
+        "scope": "repo",
+        "skills": list(PLUGIN_SKILLS),
+    }
+
+
+def _is_installed_plugin(agents_root: Path) -> bool:
+    manifest_path = agents_root / "plugin.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return manifest == _plugin_manifest()
+
+
+def _assert_plugin_paths_available(staged_root: Path, agents_root: Path) -> None:
+    for source_path in sorted(staged_root.rglob("*")):
+        relative_path = source_path.relative_to(staged_root)
+        destination_path = agents_root / relative_path
+        if destination_path.is_symlink():
+            raise ValueError(f"{destination_path} must not be a symbolic link")
+        if source_path.is_dir():
+            if destination_path.exists() and not destination_path.is_dir():
+                raise FileExistsError(
+                    f"{destination_path} already exists; refusing to overwrite managed directory"
+                )
+        elif destination_path.exists():
+            raise FileExistsError(
+                f"{destination_path} already exists; refusing to overwrite managed asset"
+            )
+
+
+def _adapter_template() -> dict[str, Any]:
+    return {
+        "input_dataset": "data/approved-input.csv",
+        "legacy_command": ["python3", "path/to/legacy_model.py"],
+        "predictions_output": "generated/predictions.csv",
+        "required_prediction_columns": ["entity_id", "timestamp", "prediction"],
+        "schema_version": "1",
+        "timeout_seconds": 30,
+    }
+
+
+def _merged_plugin_guidance(target_root: Path) -> str:
+    guidance_path = target_root / "AGENTS.md"
+    current = guidance_path.read_text(encoding="utf-8") if guidance_path.exists() else ""
+    begin_count = current.count(PLUGIN_GUIDANCE_BEGIN)
+    end_count = current.count(PLUGIN_GUIDANCE_END)
+    if begin_count != end_count:
+        raise ValueError("AGENTS.md has incomplete ml-harness managed guidance")
+    if begin_count > 1:
+        raise ValueError("AGENTS.md has duplicate ml-harness managed guidance")
+    if begin_count == 1:
+        return current
+
+    managed_block = "\n".join(
+        (
+            PLUGIN_GUIDANCE_BEGIN,
+            "# ML Harness Plugin",
+            "This repository uses the repository-scoped ML Harness plugin.",
+            "Use `.agents/skills/` for the installed agent workflows and keep run artifacts under `runs/` or `outputs/`.",
+            "Start legacy integration fixture-first; never place customer data or credentials in `.agents/`.",
+            PLUGIN_GUIDANCE_END,
+        )
+    )
+    if not current:
+        return managed_block + "\n"
+    return current.rstrip("\n") + "\n\n" + managed_block + "\n"
 
 
 def _ensure_output_root(output: Path) -> Path:

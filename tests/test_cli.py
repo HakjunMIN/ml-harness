@@ -538,6 +538,85 @@ def test_cli_aidm_model_search_fixture_runs_with_mocked_optional_model_imports(
     assert (output / "performance_report.md").exists()
 
 
+def test_init_installs_repository_scoped_plugin_assets_and_agent_guidance(tmp_path):
+    target = tmp_path / "consumer-repository"
+    target.mkdir()
+
+    status = cli.main(["init", "--target", str(target)])
+
+    assert status == 0
+    assert (target / ".agents" / "plugin.json").exists()
+    assert (target / ".agents" / "skills" / "legacy-intake" / "SKILL.md").exists()
+    assert (target / ".agents" / "scripts" / "run-legacy.sh").exists()
+    assert (target / ".agents" / "legacy_adapter" / "contract.py").exists()
+    adapter_template = json.loads(
+        (target / ".agents" / "adapter-template.json").read_text(encoding="utf-8")
+    )
+    assert adapter_template["schema_version"] == "1"
+    assert adapter_template["legacy_command"] == ["python3", "path/to/legacy_model.py"]
+    manifest = json.loads((target / ".agents" / "plugin.json").read_text(encoding="utf-8"))
+    assert manifest == {
+        "plugin_id": "ml-harness",
+        "scope": "repo",
+        "schema_version": "1",
+        "skills": [
+            "aidd-promotion",
+            "aidm-experiment",
+            "human-review",
+            "legacy-intake",
+            "release-gate",
+            "research-diagnostic",
+            "research-orchestrator",
+            "research-proposal",
+            "research-verification",
+        ],
+    }
+    guidance = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert "<!-- ml-harness:begin -->" in guidance
+    assert "<!-- ml-harness:end -->" in guidance
+    assert "repository-scoped ML Harness plugin" in guidance
+
+
+def test_init_is_idempotent_and_preserves_existing_agent_guidance(tmp_path):
+    target = tmp_path / "consumer-repository"
+    target.mkdir()
+    agents = target / "AGENTS.md"
+    agents.write_text("# Consumer instructions\n\nKeep this content.\n", encoding="utf-8")
+
+    assert cli.main(["init", "--target", str(target)]) == 0
+    first = agents.read_text(encoding="utf-8")
+    assert cli.main(["init", "--target", str(target)]) == 0
+
+    assert agents.read_text(encoding="utf-8") == first
+    assert agents.read_text(encoding="utf-8").startswith("# Consumer instructions\n")
+
+
+def test_init_preserves_existing_user_agent_assets(tmp_path):
+    target = tmp_path / "consumer-repository"
+    (target / ".agents").mkdir(parents=True)
+    (target / ".agents" / "user-file.txt").write_text("keep\n", encoding="utf-8")
+
+    status = cli.main(["init", "--target", str(target)])
+
+    assert status == 0
+    assert (target / ".agents" / "user-file.txt").read_text(encoding="utf-8") == "keep\n"
+    assert (target / ".agents" / "plugin.json").exists()
+
+
+def test_init_refuses_to_overwrite_existing_managed_asset(tmp_path, capsys):
+    target = tmp_path / "consumer-repository"
+    conflicting_script = target / ".agents" / "scripts" / "run-legacy.sh"
+    conflicting_script.parent.mkdir(parents=True)
+    conflicting_script.write_text("keep\n", encoding="utf-8")
+
+    status = cli.main(["init", "--target", str(target)])
+
+    assert status == 2
+    assert "already exists" in capsys.readouterr().err
+    assert conflicting_script.read_text(encoding="utf-8") == "keep\n"
+    assert not (target / ".agents" / "plugin.json").exists()
+
+
 def _run_module(*args):
     env = os.environ.copy()
     env["PYTHONPATH"] = (
