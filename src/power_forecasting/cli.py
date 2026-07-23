@@ -16,6 +16,7 @@ from power_forecasting.aidd import (
     render_promoted_module,
 )
 from power_forecasting.aidm import AIDMConfig, AIDMResult, run_aidm
+from power_forecasting.catalogs import load_optimization_catalog
 from power_forecasting.data import (
     DataContractError,
     generate_synthetic_data,
@@ -24,6 +25,7 @@ from power_forecasting.data import (
 )
 from power_forecasting.evaluation import EvaluationResult, evaluate_model
 from power_forecasting.models import SUPPORTED_MODEL_NAMES, model_definition
+from power_forecasting.proposals import ResearchProposal, load_proposal
 from power_forecasting.reporting import write_performance_report
 
 
@@ -61,7 +63,7 @@ def run_aidm_workflow(
     dataset: Path | None = None,
     config: AIDMConfig = AIDMConfig(),
     *,
-    proposal: Path | Mapping[str, Any] | None = None,
+    proposal: ResearchProposal | Path | Mapping[str, Any] | None = None,
     legacy_predictions: Path | pd.DataFrame | None = None,
 ) -> AIDMResult:
     output_root = _ensure_output_root(output)
@@ -171,6 +173,11 @@ def main(argv: list[str] | None = None) -> int:
                     f"NMAE={_metric(result.metrics, 'NMAE'):.6f}"
                 )
         elif args.command == "aidm":
+            proposal = (
+                _load_catalog_bound_proposal(args.proposal, args.catalog)
+                if args.proposal is not None
+                else None
+            )
             output_root = _ensure_output_root(args.output)
             dataset_path = _dataset_path(output_root, args.dataset)
             config = AIDMConfig(
@@ -185,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_root,
                 dataset=dataset_path,
                 config=config,
-                proposal=args.proposal,
+                proposal=proposal,
                 legacy_predictions=args.legacy_predictions,
             )
             artifact_paths = _workflow_artifact_paths(output_root, dataset_path)
@@ -272,6 +279,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     aidm_parser.add_argument("--seed", type=int, default=default_aidm.seed)
     aidm_parser.add_argument("--proposal", type=Path)
+    aidm_parser.add_argument("--catalog", type=Path)
     aidm_parser.add_argument("--legacy-predictions", type=Path)
 
     aidd_parser = subparsers.add_parser("aidd", parents=[output_parent])
@@ -299,6 +307,16 @@ def _ensure_output_root(output: Path) -> Path:
     output_root = Path(output)
     output_root.mkdir(parents=True, exist_ok=True)
     return output_root
+
+
+def _load_catalog_bound_proposal(
+    proposal_path: Path, catalog_path: Path | None
+) -> ResearchProposal:
+    if catalog_path is None:
+        raise ValueError("--catalog is required when --proposal is supplied")
+    repository_root = Path(__file__).resolve().parents[2]
+    catalog = load_optimization_catalog(catalog_path, repository_root=repository_root)
+    return load_proposal(proposal_path, catalog=catalog)
 
 
 def _dataset_path(output: Path, dataset: Path | None) -> Path:
