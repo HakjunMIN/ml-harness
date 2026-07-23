@@ -16,12 +16,15 @@ the default when a human wants to choose each proposal and command.
 - Dataset path is explicit and passes the existing project data contract.
 - Optional model-search setup has been installed before using `xgboost`, `lightgbm`, or Optuna search: `uv sync --extra model-search`.
 - Agentic proposal JSON, when used, follows schema version `1` and contains only prediction-time feature specs plus supported bounded recipes/search.
+- `configs/optimization-catalog.v1.json` is the versioned external owner for profiles, feature
+  sets, direct recipes, allowed parameter values, and bounded TPE space. Pass it with `--catalog`
+  whenever `--proposal` is used.
 - Run directory is outside source paths, under root `runs/` or `outputs/`; `.agents/` is reserved for framework assets.
 - Human has approved use of any non-fixture dataset.
 
 ## Workflow
-1. Start with a fixture command for feature-only recipes: `.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --proposal .agents/fixtures/research-proposal.json --legacy-predictions .agents/fixtures/legacy-predictions.csv --run-dir runs/fixture-aidm --folds 1`.
-2. For reusable model-search smoke testing, install `uv sync --extra model-search`, then run `.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --proposal .agents/fixtures/model-search-proposal.json --run-dir runs/fixture-model-search --folds 1 --minimum-improvement 0 --max-plant-regression 1`. The tiny fixture uses one fold; real datasets should use five chronological folds unless a human approves otherwise.
+1. Start with a fixture command for feature-only recipes: `.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --catalog configs/optimization-catalog.v1.json --proposal .agents/fixtures/research-proposal.json --legacy-predictions .agents/fixtures/legacy-predictions.csv --run-dir runs/fixture-aidm --folds 1`.
+2. For reusable model-search smoke testing, install `uv sync --extra model-search`, then run `.agents/scripts/run-aidm.sh --dataset .agents/fixtures/valid-dataset.csv --catalog configs/optimization-catalog.v1.json --proposal .agents/fixtures/model-search-proposal.json --run-dir runs/fixture-model-search --folds 1 --minimum-improvement 0 --max-plant-regression 1`. The tiny fixture uses one fold; real datasets should use five chronological folds unless a human approves otherwise.
 3. For real runs, pass `--dataset` explicitly; never rely on implicit output dataset resolution.
 4. Generate or edit proposal JSON only. Do not generate estimator code, customer patches, callbacks, arbitrary Optuna spaces, or gate changes.
 5. Keep `--minimum-improvement`, `--max-plant-regression`, folds, proposal budget, recipes, search seed/trials, and optional-extra setup documented in run notes.
@@ -38,6 +41,9 @@ the default when a human wants to choose each proposal and command.
   required for AIDM.
 
 ## Proposal-First Model Search Contract
+- The catalog is declarative only. Python still owns supported transforms, estimator
+  implementations, parameter types, leakage prevention, budgets, and gates; the catalog cannot add
+  code or new estimator capabilities.
 - Schema version is exactly `"1"`; top-level keys are `schema_version`, `proposal_id`, `rationale`, `baseline`, `feature_sets`, `model_recipes`, `budget`, and optional `search`.
 - Baseline is always `{"model":"SPOT"}`.
 - Feature specs must use known deterministic transforms and prediction-time inputs only. `generation_mw`, all `actual_*` columns, customer-only fields, and target-derived aggregates are forbidden.

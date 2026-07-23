@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from power_forecasting import aidm
+from power_forecasting.catalogs import load_optimization_catalog
 from power_forecasting.evaluation import EvaluationResult
 from power_forecasting.models import SUPPORTED_MODEL_NAMES
 from power_forecasting.proposals import load_proposal, proposal_to_dict
@@ -28,15 +29,20 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DATASET = REPOSITORY_ROOT / ".agents" / "fixtures" / "valid-dataset.csv"
 FIXTURE_MANIFEST = REPOSITORY_ROOT / ".agents" / "fixtures" / "promoted-manifest.json"
 FIXTURE_PROPOSAL = REPOSITORY_ROOT / ".agents" / "fixtures" / "research-proposal.json"
+FIXTURE_CATALOG = REPOSITORY_ROOT / "configs" / "optimization-catalog.v1.json"
 
 
 @pytest.fixture
 def execution_config(tmp_path: Path) -> ResearchLoopConfig:
+    catalog = load_optimization_catalog(FIXTURE_CATALOG, repository_root=REPOSITORY_ROOT)
     return ResearchLoopConfig(
         schema_version="1",
         run_id="research_execution_001",
         dataset_path=str(FIXTURE_DATASET),
         legacy_manifest_path=str(FIXTURE_MANIFEST),
+        catalog_path=str(catalog.source_path),
+        catalog_sha256=catalog.sha256,
+        catalog=catalog,
         run_dir=str(tmp_path / "research-runs" / "research_execution_001"),
         profiles=("safe_weather",),
         max_iterations=2,
@@ -248,6 +254,22 @@ def test_experiment_agent_delegates_and_records_isolated_provenance(
     assert result.selected_candidate_spec_sha256
 
 
+def test_experiment_evidence_binds_the_immutable_catalog(
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    evidence = json.loads(
+        (experiment.manifest_path.parent / "experiment-evidence.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert evidence["catalog_path"] == execution_config.catalog_path
+    assert evidence["catalog_sha256"] == execution_config.catalog_sha256
+
+
 def test_verifier_confirms_promoted_aidm_evidence(
     execution_config: ResearchLoopConfig,
     proposal,
@@ -301,6 +323,28 @@ def test_verifier_returns_rejected_experiment_as_normal_outcome(
     payload = json.loads(verification.report_path.read_text(encoding="utf-8"))
     assert payload["status"] == "reject"
     assert payload["passed"] is False
+
+
+def test_verifier_rejects_evidence_with_a_different_catalog_hash(
+    execution_config: ResearchLoopConfig,
+    proposal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    experiment = _run_fast_experiment(execution_config, proposal, monkeypatch)
+    evidence_path = experiment.manifest_path.parent / "experiment-evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["catalog_sha256"] = "0" * 64
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    verification = run_verifier_agent(
+        config=execution_config,
+        proposal=proposal,
+        experiment=experiment,
+        iteration=1,
+    )
+
+    assert verification.passed is False
+    assert verification.checks["evidence_schema"] is False
 
 
 def test_experiment_identity_is_deterministic_from_run_iteration_and_proposal(

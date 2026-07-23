@@ -116,6 +116,32 @@ legacy baseline
   --resume
 ```
 
+### 4. optimization catalog 확인
+
+[`configs/optimization-catalog.v1.json`](configs/optimization-catalog.v1.json)은 profiles, feature sets, direct recipes, allowed parameter values, and bounded TPE space의 versioned external owner입니다. research-loop config의 `catalog_path`는 repository root가 아니라 research-loop config 파일이 있는 디렉터리를 기준으로 해석됩니다. 따라서 `runs/<id>/` 아래 config는 다음처럼 지정합니다.
+
+```json
+{
+  "catalog_path": "../../configs/optimization-catalog.v1.json"
+}
+```
+
+수동 proposal 실행도 default catalog을 `--catalog`로 명시합니다.
+
+```bash
+.agents/scripts/run-aidm.sh \
+  --dataset .agents/fixtures/valid-dataset.csv \
+  --catalog configs/optimization-catalog.v1.json \
+  --proposal .agents/fixtures/research-proposal.json \
+  --run-dir runs/manual-aidm \
+  --folds 1
+```
+
+Catalog는 선언형 allowlist일 뿐입니다. Python still owns supported transforms, estimator
+implementations, parameter types, leakage prevention, budgets, and gates. 따라서 catalog는
+cannot add code or new estimator capabilities. Catalog SHA-256은
+research config, state, journal, handoffs에 결속되며, catalog 변경은 resume 시 fail closed됩니다.
+
 ## 무엇을 최적화하는가
 
 자율 연구 루프는 기존 ML을 기준선으로 유지하면서 다음 후보를 제한된 예산 안에서 탐색합니다.
@@ -255,6 +281,7 @@ fixture proposal로 AIDM을 실행합니다.
 ```bash
 .agents/scripts/run-aidm.sh \
   --dataset .agents/fixtures/valid-dataset.csv \
+  --catalog configs/optimization-catalog.v1.json \
   --proposal .agents/fixtures/model-search-proposal.json \
   --legacy-predictions .agents/fixtures/legacy-predictions.csv \
   --run-dir runs/manual-aidm \

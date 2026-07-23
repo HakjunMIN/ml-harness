@@ -16,6 +16,7 @@ from power_forecasting.data import DataContractError
 from power_forecasting.evaluation import EvaluationResult
 from power_forecasting.features import FeatureSpec
 from power_forecasting.models import SUPPORTED_MODEL_NAMES
+from power_forecasting.proposals import ResearchProposal
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -468,6 +469,99 @@ def test_cli_aidm_rejected_decision_exits_two_after_manifest_and_report(tmp_path
     assert (output / "performance_report.md").exists()
 
 
+def test_cli_aidm_proposal_requires_catalog(tmp_path, monkeypatch, capsys):
+    def unexpected_legacy(*args, **kwargs):
+        raise AssertionError("proposal without a catalog must fail before AIDM runs")
+
+    monkeypatch.setattr(cli, "run_legacy", unexpected_legacy)
+
+    status = cli.main(
+        [
+            "aidm",
+            "--output",
+            str(tmp_path / "aidm-missing-catalog"),
+            "--dataset",
+            str(ROOT / ".agents" / "fixtures" / "valid-dataset.csv"),
+            "--proposal",
+            str(ROOT / ".agents" / "fixtures" / "research-proposal.json"),
+        ]
+    )
+
+    assert status == 2
+    assert "--catalog is required when --proposal is supplied" in capsys.readouterr().err
+
+
+def test_cli_aidm_catalog_validates_and_forwards_proposal(tmp_path, monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(cli, "run_legacy", lambda *args, **kwargs: _legacy_results())
+
+    def fake_run_aidm_workflow(
+        output, dataset=None, config=aidm.AIDMConfig(), *, proposal=None, legacy_predictions=None
+    ):
+        captured["proposal"] = proposal
+        return _aidm_result()
+
+    monkeypatch.setattr(cli, "run_aidm_workflow", fake_run_aidm_workflow)
+
+    status = cli.main(
+        [
+            "aidm",
+            "--output",
+            str(tmp_path / "aidm-valid-catalog"),
+            "--dataset",
+            str(ROOT / ".agents" / "fixtures" / "valid-dataset.csv"),
+            "--proposal",
+            str(ROOT / ".agents" / "fixtures" / "research-proposal.json"),
+            "--catalog",
+            "configs/optimization-catalog.v1.json",
+        ]
+    )
+
+    assert status == 0
+    assert isinstance(captured["proposal"], ResearchProposal)
+    assert captured["proposal"].proposal_id == "fixture-agentic-proposal"
+
+
+def test_cli_aidm_rejects_estimator_valid_recipe_disallowed_by_catalog(
+    tmp_path, monkeypatch, capsys
+):
+    catalog_dir = ROOT / "outputs" / f"pytest-cli-catalog-{tmp_path.name}"
+    catalog_path = catalog_dir / "catalog.json"
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    catalog_payload = json.loads(
+        (ROOT / "configs" / "optimization-catalog.v1.json").read_text(encoding="utf-8")
+    )
+    catalog_payload["recipes"]["ridge_weather"]["parameters"]["alpha"] = 0.1
+    catalog_payload["recipes"]["ridge_weather"]["allowed_parameters"]["alpha"] = [0.1]
+    catalog_path.write_text(json.dumps(catalog_payload), encoding="utf-8")
+
+    def unexpected_legacy(*args, **kwargs):
+        raise AssertionError("catalog-invalid proposal must fail before AIDM runs")
+
+    monkeypatch.setattr(cli, "run_legacy", unexpected_legacy)
+    try:
+        status = cli.main(
+            [
+                "aidm",
+                "--output",
+                str(tmp_path / "aidm-catalog-rejected"),
+                "--dataset",
+                str(ROOT / ".agents" / "fixtures" / "valid-dataset.csv"),
+                "--proposal",
+                str(ROOT / ".agents" / "fixtures" / "research-proposal.json"),
+                "--catalog",
+                str(catalog_path.relative_to(ROOT)),
+            ]
+        )
+    finally:
+        catalog_path.unlink(missing_ok=True)
+        catalog_dir.rmdir()
+
+    assert status == 2
+    assert "model recipe ridge_low contains a value outside catalog policy" in capsys.readouterr().err
+
+
 def test_cli_aidm_model_search_fixture_runs_with_mocked_optional_model_imports(
     tmp_path, monkeypatch
 ):
@@ -516,6 +610,8 @@ def test_cli_aidm_model_search_fixture_runs_with_mocked_optional_model_imports(
             str(ROOT / ".agents" / "fixtures" / "valid-dataset.csv"),
             "--proposal",
             str(ROOT / ".agents" / "fixtures" / "model-search-proposal.json"),
+            "--catalog",
+            str(ROOT / "configs" / "optimization-catalog.v1.json"),
             "--folds",
             "1",
             "--minimum-improvement",

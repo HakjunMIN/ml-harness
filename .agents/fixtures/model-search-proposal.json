@@ -17,7 +17,7 @@
           ],
           "name": "hour_sin",
           "parameters": {},
-          "rationale": "Daily phase available at prediction time.",
+          "rationale": "Prediction-time daily calendar phase.",
           "transform": "cyclic_hour",
           "version": "1"
         },
@@ -27,7 +27,7 @@
           ],
           "name": "hour_cos",
           "parameters": {},
-          "rationale": "Daily phase companion available at prediction time.",
+          "rationale": "Prediction-time daily calendar phase companion.",
           "transform": "cyclic_hour",
           "version": "1"
         }
@@ -44,7 +44,7 @@
           ],
           "name": "effective_irradiance",
           "parameters": {},
-          "rationale": "Cloud-adjusted irradiance from forecast inputs only.",
+          "rationale": "Cloud-adjusted forecast irradiance.",
           "transform": "effective_irradiance",
           "version": "1"
         },
@@ -58,7 +58,7 @@
             "coefficient": 0.004,
             "reference": 25.0
           },
-          "rationale": "Forecast-temperature derating with bounded literal parameters.",
+          "rationale": "Forecast-temperature irradiance derating.",
           "transform": "temperature_derating",
           "version": "1"
         }
@@ -76,7 +76,7 @@
           "parameters": {
             "periods": 1
           },
-          "rationale": "Uses only the previous timestamp's forecast irradiance for the same plant.",
+          "rationale": "Uses strictly prior forecast irradiance for the same plant.",
           "transform": "lag",
           "version": "1"
         },
@@ -84,11 +84,11 @@
           "inputs": [
             "forecast_cloud_cover"
           ],
-          "name": "prior_cloud_cover_mean",
+          "name": "prior_forecast_cloud_cover_mean",
           "parameters": {
             "window": 3
           },
-          "rationale": "Uses a strictly prior rolling mean; missing valid-dataset warmup rows are imputed fold-locally.",
+          "rationale": "Uses a strictly prior rolling forecast cloud-cover mean.",
           "transform": "rolling_mean",
           "version": "1"
         }

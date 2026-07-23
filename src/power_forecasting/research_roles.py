@@ -16,9 +16,10 @@ import numpy as np
 import pandas as pd
 
 from power_forecasting.aidd import PromotionManifestError, validate_promotion_manifest
+from power_forecasting.catalogs import CatalogProfile, OptimizationCatalog
+from power_forecasting.profile_names import is_profile_name
 from power_forecasting.cli import _load_dataset
 from power_forecasting.data import DataContractError, REQUIRED_COLUMNS, parse_timestamps
-from power_forecasting.features import FeatureSpec
 from power_forecasting.proposals import (
     FeatureSet,
     ModelRecipe,
@@ -28,7 +29,6 @@ from power_forecasting.proposals import (
 from power_forecasting.research_contracts import (
     ResearchContractError,
     ResearchLoopConfig,
-    SUPPORTED_PROFILES,
     validate_run_id,
 )
 
@@ -51,7 +51,7 @@ _LEAKAGE_CHECK_KEYS = frozenset(
         "prediction_inputs_exclude_target",
     }
 )
-_PROFILE_ORDER = ("safe_weather", "history_tree", "bounded_search")
+_STRICT_PRIOR_HISTORY_TRANSFORMS = frozenset({"lag", "rolling_mean"})
 
 
 @dataclass(frozen=True)
@@ -177,9 +177,11 @@ def run_diagnostic_agent(config: ResearchLoopConfig) -> DiagnosticReport:
         },
         recommended_profiles=tuple(
             profile
-            for profile in _PROFILE_ORDER
-            if profile in config.profiles
-            and (profile != "history_tree" or history_feasible)
+            for profile in config.profiles
+            if (
+                not _profile_requires_strict_prior_history(config.catalog, profile)
+                or history_feasible
+            )
         ),
     )
 
@@ -187,6 +189,7 @@ def run_diagnostic_agent(config: ResearchLoopConfig) -> DiagnosticReport:
 def generate_profile_proposal(
     profile: str,
     *,
+    catalog: OptimizationCatalog,
     run_id: str,
     legacy_manifest_path: Path,
     fold_count: int,
@@ -198,6 +201,7 @@ def generate_profile_proposal(
 
     _validate_profile_request(
         profile=profile,
+        catalog=catalog,
         run_id=run_id,
         legacy_manifest_path=legacy_manifest_path,
         fold_count=fold_count,
@@ -206,27 +210,29 @@ def generate_profile_proposal(
         diagnosis=diagnosis,
     )
 
-    feature_set = _feature_set_for_profile(profile, diagnosis)
-    recipes, search = _candidate_components(profile, candidate_cap)
+    catalog_profile = catalog.profile(profile)
+    feature_set = _feature_set_for_profile(catalog, catalog_profile)
+    recipes, search = _candidate_components(catalog, catalog_profile, candidate_cap)
     candidate_count = len((feature_set,)) * (
         len(recipes) + (int(search["n_trials"]) + 1 if search is not None else 0)
     )
     proposal = ResearchProposal(
         schema_version=_SCHEMA_VERSION,
         proposal_id=f"{run_id}-{profile}-v1",
-        rationale=_profile_rationale(profile),
+        rationale=catalog_profile.rationale,
         baseline={"model": "SPOT"},
         feature_sets=(feature_set,),
         model_recipes=recipes,
         budget={"max_evaluations": candidate_count, "top_feature_groups": 1},
         search=search,
     )
-    return load_proposal(proposal.to_dict())
+    return load_proposal(proposal.to_dict(), catalog=catalog, profile=profile)
 
 
 def _validate_profile_request(
     *,
     profile: object,
+    catalog: object,
     run_id: object,
     legacy_manifest_path: object,
     fold_count: object,
@@ -234,13 +240,19 @@ def _validate_profile_request(
     candidate_cap: object,
     diagnosis: object,
 ) -> None:
-    if type(profile) is not str or profile not in SUPPORTED_PROFILES:
+    if not isinstance(catalog, OptimizationCatalog):
+        raise TypeError("catalog must be an OptimizationCatalog")
+    if type(profile) is not str or profile not in catalog.profiles:
         raise ResearchContractError(f"unsupported research profile: {profile!r}")
     validate_run_id(run_id)
     _validate_legacy_manifest(
         _path_from_pathlike(legacy_manifest_path, "legacy_manifest_path")
     )
-    if isinstance(fold_count, bool) or not isinstance(fold_count, int) or not 1 <= fold_count <= 10:
+    if (
+        isinstance(fold_count, bool)
+        or not isinstance(fold_count, int)
+        or not 1 <= fold_count <= 10
+    ):
         raise ResearchContractError("fold_count must be between 1 and 10")
     if type(objective) is not str or not objective.strip():
         raise ResearchContractError("objective must be a nonblank string")
@@ -256,209 +268,140 @@ def _validate_profile_request(
         raise ResearchContractError(
             f"profile {profile!r} is not recommended by the diagnostic report"
         )
-    if profile == "history_tree" and not diagnosis.leakage_checks[
-        "history_features_strict_prior"
-    ]:
-        raise ResearchContractError("history_tree requires strict-prior history features")
+    if (
+        _profile_requires_strict_prior_history(catalog, profile)
+        and not diagnosis.leakage_checks["history_features_strict_prior"]
+    ):
+        raise ResearchContractError(
+            f"{profile} requires strict-prior history features"
+        )
+
+
+def _profile_requires_strict_prior_history(
+    catalog: OptimizationCatalog, profile_name: str
+) -> bool:
+    profile = catalog.profile(profile_name)
+    return any(
+        spec.transform in _STRICT_PRIOR_HISTORY_TRANSFORMS
+        for feature_set_name in profile.feature_set_names
+        for spec in catalog.feature_sets[feature_set_name].specs
+    )
 
 
 def _feature_set_for_profile(
-    profile: str, diagnosis: DiagnosticReport
+    catalog: OptimizationCatalog, profile: CatalogProfile
 ) -> FeatureSet:
-    if profile == "safe_weather":
-        return FeatureSet(
-            "safe_weather",
-            "Bounded calendar and forecast-weather features available at prediction time.",
-            _safe_weather_specs(),
-        )
-    if profile == "history_tree":
-        return FeatureSet(
-            "history_tree",
-            "Strict-prior forecast history features for deterministic tree candidates.",
-            _history_specs(),
-        )
-    if profile == "bounded_search":
-        specs = _safe_weather_specs()
-        if "history_tree" in diagnosis.recommended_profiles:
-            specs += _history_specs()
-        return FeatureSet(
-            "bounded_search",
-            "Bounded forecast-weather and strict-prior history features for search.",
-            specs,
-        )
-    raise AssertionError(f"unreachable supported profile: {profile}")
+    feature_sets = tuple(
+        catalog.feature_sets[name] for name in profile.feature_set_names
+    )
+    if len(feature_sets) == 1:
+        return feature_sets[0]
+    return FeatureSet(
+        profile.name,
+        profile.rationale,
+        tuple(spec for feature_set in feature_sets for spec in feature_set.specs),
+    )
 
 
 def _candidate_components(
-    profile: str, candidate_cap: int
+    catalog: OptimizationCatalog,
+    profile: CatalogProfile,
+    candidate_cap: int,
 ) -> tuple[tuple[ModelRecipe, ...], Mapping[str, Any] | None]:
-    templates = _recipe_templates(profile)
+    templates = tuple(
+        _catalog_recipe(catalog, recipe_name)
+        for recipe_name in profile.direct_recipe_names
+    )
     recipes = templates[: min(len(templates), candidate_cap)]
     search: Mapping[str, Any] | None = None
 
-    if profile == "bounded_search":
+    if profile.search_name is not None:
         remaining = candidate_cap - len(recipes)
         if remaining >= 2:
-            search = _bounded_search(min(2, remaining - 1))
+            source = catalog.searches[profile.search_name]
+            search = {
+                "sampler": source["sampler"],
+                "seed": source["seed"],
+                "n_trials": min(int(source["n_trials"]), remaining - 1),
+                "spaces": {
+                    recipe: {
+                        parameter: list(values)
+                        for parameter, values in parameters.items()
+                    }
+                    for recipe, parameters in source["spaces"].items()
+                },
+            }
 
     return recipes, search
 
 
-def _safe_weather_specs() -> tuple[FeatureSpec, ...]:
-    return (
-        FeatureSpec(
-            "hour_sin",
-            "cyclic_hour",
-            ("timestamp",),
-            rationale="Prediction-time daily calendar phase.",
-        ),
-        FeatureSpec(
-            "hour_cos",
-            "cyclic_hour",
-            ("timestamp",),
-            rationale="Prediction-time daily calendar phase companion.",
-        ),
-        FeatureSpec(
-            "effective_irradiance",
-            "effective_irradiance",
-            ("forecast_irradiance", "forecast_cloud_cover"),
-            rationale="Cloud-adjusted forecast irradiance.",
-        ),
-        FeatureSpec(
-            "forecast_temperature_derating",
-            "temperature_derating",
-            ("forecast_irradiance", "forecast_temperature"),
-            {"reference": 25.0, "coefficient": 0.004},
-            rationale="Forecast-temperature irradiance derating.",
-        ),
+def _catalog_recipe(catalog: OptimizationCatalog, recipe_name: str) -> ModelRecipe:
+    source = catalog.direct_recipes[recipe_name]
+    return ModelRecipe(
+        source.name,
+        source.recipe,
+        source.parameters,
+        source.rationale,
     )
 
 
-def _history_specs() -> tuple[FeatureSpec, ...]:
-    return (
-        FeatureSpec(
-            "prior_forecast_irradiance",
-            "lag",
-            ("forecast_irradiance",),
-            {"periods": 1},
-            rationale="Uses strictly prior forecast irradiance for the same plant.",
-        ),
-        FeatureSpec(
-            "prior_forecast_cloud_cover_mean",
-            "rolling_mean",
-            ("forecast_cloud_cover",),
-            {"window": 3},
-            rationale="Uses a strictly prior rolling forecast cloud-cover mean.",
-        ),
-    )
-
-
-def _recipe_templates(profile: str) -> tuple[ModelRecipe, ...]:
-    if profile == "safe_weather":
-        return (
-            ModelRecipe(
-                "ridge_weather",
-                "ridge",
-                {"alpha": 1.0},
-                "Regularized linear weather baseline.",
-            ),
-            ModelRecipe(
-                "hgb_weather",
-                "hist_gradient_boosting",
-                {"max_iter": 100, "learning_rate": 0.1, "max_leaf_nodes": 31},
-                "Bounded histogram gradient boosting weather candidate.",
-            ),
-        )
-    if profile == "history_tree":
-        return (
-            ModelRecipe(
-                "forest_history",
-                "random_forest",
-                {"n_estimators": 100, "max_depth": 8, "min_samples_leaf": 2},
-                "Bounded deterministic random forest history candidate.",
-            ),
-            ModelRecipe(
-                "hgb_history",
-                "hist_gradient_boosting",
-                {"max_iter": 100, "learning_rate": 0.1, "max_leaf_nodes": 31},
-                "Bounded histogram gradient boosting history candidate.",
-            ),
-        )
-    if profile == "bounded_search":
-        return (
-            ModelRecipe(
-                "forest_search",
-                "random_forest",
-                {"n_estimators": 100, "max_depth": 8, "min_samples_leaf": 2},
-                "Bounded deterministic random forest candidate.",
-            ),
-            ModelRecipe(
-                "xgb_search",
-                "xgboost",
-                {
-                    "n_estimators": 200,
-                    "max_depth": 6,
-                    "learning_rate": 0.03,
-                    "subsample": 0.8,
-                },
-                "Bounded XGBoost candidate.",
-            ),
-            ModelRecipe(
-                "lgbm_search",
-                "lightgbm",
-                {
-                    "n_estimators": 100,
-                    "learning_rate": 0.03,
-                    "num_leaves": 15,
-                    "min_child_samples": 10,
-                },
-                "Bounded LightGBM candidate.",
-            ),
-        )
-    raise AssertionError(f"unreachable supported profile: {profile}")
-
-
-def _bounded_search(n_trials: int) -> Mapping[str, Any]:
-    return {
-        "sampler": "tpe",
-        "seed": 7,
-        "n_trials": n_trials,
-        "spaces": {
-            "lightgbm": {
-                "n_estimators": [100, 300],
-                "learning_rate": [0.03, 0.1],
-                "num_leaves": [15, 31],
-                "min_child_samples": [10, 20],
-            }
-        },
-    }
-
-
-def proposal_catalog() -> dict[str, object]:
+def proposal_catalog(catalog: OptimizationCatalog) -> dict[str, object]:
     """Return the immutable, privacy-safe candidate catalog for coding agents."""
 
+    if not isinstance(catalog, OptimizationCatalog):
+        raise TypeError("catalog must be an OptimizationCatalog")
     return {
         "schema_version": "1",
+        "catalog_path": str(catalog.source_path.resolve()),
+        "catalog_sha256": catalog.sha256,
         "max_evaluations": 50,
-        "profiles": list(_PROFILE_ORDER),
-        "feature_specs": {
-            "safe_weather": [spec.to_dict() for spec in _safe_weather_specs()],
-            "history_tree": [spec.to_dict() for spec in _history_specs()],
+        "profiles": {
+            profile_name: {
+                "rationale": profile.rationale,
+                "feature_sets": [
+                    catalog.feature_sets[name].to_dict()
+                    for name in profile.feature_set_names
+                ],
+                "model_recipes": [
+                    {
+                        "name": recipe.name,
+                        "recipe": recipe.recipe,
+                        "parameters": dict(recipe.parameters),
+                        "allowed_parameters": {
+                            key: list(values)
+                            for key, values in recipe.allowed_parameters.items()
+                        },
+                        "rationale": recipe.rationale,
+                    }
+                    for recipe in (
+                        catalog.direct_recipes[name]
+                        for name in profile.direct_recipe_names
+                    )
+                ],
+                "search": (
+                    None
+                    if profile.search_name is None
+                    else _json_search(catalog.searches[profile.search_name])
+                ),
+            }
+            for profile_name, profile in catalog.profiles.items()
         },
-        "model_recipes": {
-            profile: [recipe.to_dict() for recipe in _recipe_templates(profile)]
-            for profile in _PROFILE_ORDER
-        },
-        "search": _bounded_search(50),
     }
 
 
-def _profile_rationale(profile: str) -> str:
+def _json_search(search: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "safe_weather": "Evaluate bounded prediction-time calendar and weather features.",
-        "history_tree": "Evaluate bounded strict-prior forecast-history tree candidates.",
-        "bounded_search": "Evaluate bounded tree recipes with deterministic LightGBM TPE search.",
-    }[profile]
+        "sampler": search["sampler"],
+        "seed": search["seed"],
+        "n_trials": search["n_trials"],
+        "spaces": {
+            recipe: {
+                parameter: list(values)
+                for parameter, values in parameters.items()
+            }
+            for recipe, parameters in search["spaces"].items()
+        },
+    }
 
 
 def _temporal_drift(
@@ -568,14 +511,9 @@ def _recommended_profiles(value: tuple[str, ...]) -> tuple[str, ...]:
         raise ResearchContractError("diagnostic recommended_profiles must be a tuple")
     if len(set(value)) != len(value):
         raise ResearchContractError("diagnostic recommended_profiles contains duplicates")
-    if any(type(profile) is not str or profile not in SUPPORTED_PROFILES for profile in value):
+    if any(not is_profile_name(profile) for profile in value):
         raise ResearchContractError(
-            "diagnostic recommended_profiles contains an unsupported profile"
-        )
-    expected = tuple(profile for profile in _PROFILE_ORDER if profile in value)
-    if value != expected:
-        raise ResearchContractError(
-            "diagnostic recommended_profiles must use deterministic supported ordering"
+            "diagnostic recommended_profiles contains an invalid profile"
         )
     return value
 

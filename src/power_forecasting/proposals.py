@@ -7,20 +7,43 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from power_forecasting.aidd import validate_prediction_time_feature_spec
 from power_forecasting.features import FeatureSpec
 
+if TYPE_CHECKING:
+    from power_forecasting.catalogs import OptimizationCatalog
+
 
 _BASELINE_KEYS = {"model"}
 _FEATURE_SPEC_KEYS = {"name", "transform", "inputs", "parameters", "version", "rationale"}
-_LIGHTGBM_PARAMETER_VALUES = {
-    "n_estimators": {100, 300},
-    "learning_rate": {0.03, 0.1},
-    "num_leaves": {15, 31},
-    "min_child_samples": {10, 20},
+RECIPE_PARAMETER_VALUES = {
+    "ridge": {"alpha": frozenset({0.1, 1.0, 10.0})},
+    "hist_gradient_boosting": {
+        "max_iter": frozenset({50, 100, 200}),
+        "learning_rate": frozenset({0.03, 0.1}),
+        "max_leaf_nodes": frozenset({15, 31, 63}),
+    },
+    "random_forest": {
+        "n_estimators": frozenset({100, 200, 400}),
+        "max_depth": frozenset({8, 12, None}),
+        "min_samples_leaf": frozenset({1, 2, 4}),
+    },
+    "xgboost": {
+        "n_estimators": frozenset({100, 200, 400}),
+        "max_depth": frozenset({4, 6, 8}),
+        "learning_rate": frozenset({0.03, 0.1}),
+        "subsample": frozenset({0.8, 1.0}),
+    },
+    "lightgbm": {
+        "n_estimators": frozenset({100, 300}),
+        "learning_rate": frozenset({0.03, 0.1}),
+        "num_leaves": frozenset({15, 31}),
+        "min_child_samples": frozenset({10, 20}),
+    },
 }
+_LIGHTGBM_PARAMETER_VALUES = RECIPE_PARAMETER_VALUES["lightgbm"]
 _LIGHTGBM_SEARCH_KEYS = set(_LIGHTGBM_PARAMETER_VALUES)
 
 
@@ -134,7 +157,12 @@ class ResearchProposal:
         return payload
 
 
-def load_proposal(value: Mapping[str, Any] | Path) -> ResearchProposal:
+def load_proposal(
+    value: Mapping[str, Any] | Path,
+    *,
+    catalog: OptimizationCatalog | None = None,
+    profile: str | None = None,
+) -> ResearchProposal:
     if isinstance(value, (str, Path)):
         with Path(value).open("r", encoding="utf-8", newline="") as handle:
             payload = json.load(handle)
@@ -144,9 +172,14 @@ def load_proposal(value: Mapping[str, Any] | Path) -> ResearchProposal:
         raise ProposalValidationError("proposal must be a mapping")
     _exact_top_level_proposal_keys(payload)
     try:
-        feature_sets = tuple(_parse_feature_set(raw) for raw in _require_list(payload, "feature_sets"))
-        model_recipes = tuple(_parse_model_recipe(raw) for raw in _require_list(payload, "model_recipes"))
-        return ResearchProposal(
+        feature_sets = tuple(
+            _parse_feature_set(raw) for raw in _require_list(payload, "feature_sets")
+        )
+        model_recipes = tuple(
+            _parse_model_recipe(raw)
+            for raw in _require_list(payload, "model_recipes")
+        )
+        proposal = ResearchProposal(
             schema_version=payload["schema_version"],
             proposal_id=payload["proposal_id"],
             rationale=payload["rationale"],
@@ -156,6 +189,11 @@ def load_proposal(value: Mapping[str, Any] | Path) -> ResearchProposal:
             budget=payload["budget"],
             search=payload.get("search"),
         )
+        if catalog is not None:
+            validate_catalog_bound_proposal(proposal, catalog, profile=profile)
+        elif profile is not None:
+            raise TypeError("profile requires a catalog")
+        return proposal
     except ProposalValidationError:
         raise
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -166,6 +204,102 @@ def proposal_to_dict(proposal: ResearchProposal) -> dict[str, Any]:
     if not isinstance(proposal, ResearchProposal):
         raise TypeError("proposal must be a ResearchProposal")
     return proposal.to_dict()
+
+
+def validate_catalog_bound_proposal(
+    proposal: ResearchProposal,
+    catalog: OptimizationCatalog,
+    *,
+    profile: str | None = None,
+) -> None:
+    """Require proposal choices to remain within an external catalog policy."""
+
+    from power_forecasting.catalogs import OptimizationCatalog
+
+    if not isinstance(proposal, ResearchProposal):
+        raise TypeError("proposal must be a ResearchProposal")
+    if not isinstance(catalog, OptimizationCatalog):
+        raise TypeError("catalog must be an OptimizationCatalog")
+    if profile is not None and (type(profile) is not str or profile not in catalog.profiles):
+        raise ProposalValidationError("catalog profile is invalid")
+
+    allowed_feature_sets = (
+        tuple(catalog.feature_sets.values())
+        if profile is None
+        else tuple(
+            catalog.feature_sets[name]
+            for name in catalog.profile(profile).feature_set_names
+        )
+    )
+    allowed_specs = {
+        _canonical_json(spec.to_dict())
+        for feature_set in allowed_feature_sets
+        for spec in feature_set.specs
+    }
+    for feature_set in proposal.feature_sets:
+        if any(
+            _canonical_json(spec.to_dict()) not in allowed_specs
+            for spec in feature_set.specs
+        ):
+            raise ProposalValidationError("proposal contains a feature outside catalog policy")
+
+    allowed_recipes = (
+        tuple(catalog.direct_recipes.values())
+        if profile is None
+        else tuple(
+            catalog.direct_recipes[name]
+            for name in catalog.profile(profile).direct_recipe_names
+        )
+    )
+    for recipe in proposal.model_recipes:
+        if not any(
+            recipe.recipe == candidate.recipe
+            and all(
+                recipe.parameters[key] in candidate.allowed_parameters[key]
+                for key in recipe.parameters
+            )
+            for candidate in allowed_recipes
+        ):
+            raise ProposalValidationError(
+                f"model recipe {recipe.name} contains a value outside catalog policy"
+            )
+
+    if proposal.search is not None:
+        allowed_searches = (
+            tuple(catalog.searches.values())
+            if profile is None
+            else (
+                ()
+                if catalog.profile(profile).search_name is None
+                else (catalog.searches[catalog.profile(profile).search_name],)
+            )
+        )
+        if not any(
+            _search_within_catalog(proposal.search, candidate)
+            for candidate in allowed_searches
+        ):
+            raise ProposalValidationError("proposal search contains a value outside catalog policy")
+
+
+def _search_within_catalog(
+    proposal_search: Mapping[str, Any],
+    catalog_search: Mapping[str, Any],
+) -> bool:
+    if (
+        proposal_search["sampler"] != catalog_search["sampler"]
+        or proposal_search["seed"] != catalog_search["seed"]
+        or proposal_search["n_trials"] > catalog_search["n_trials"]
+    ):
+        return False
+    return all(
+        set(values) <= set(catalog_search["spaces"][recipe][parameter])
+        for recipe, parameters in proposal_search["spaces"].items()
+        for parameter, values in parameters.items()
+    )
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _parse_feature_set(raw: Any) -> FeatureSet:
@@ -192,7 +326,7 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
     if recipe == "ridge":
         _exact_parameter_keys(parameters, {"alpha"}, name)
         alpha = _number(parameters["alpha"], f"model recipe {name}: alpha")
-        if alpha not in {0.1, 1.0, 10.0}:
+        if alpha not in RECIPE_PARAMETER_VALUES[recipe]["alpha"]:
             raise ProposalValidationError(f"model recipe {name}: alpha outside allowed set")
         return {"alpha": alpha}
     if recipe == "hist_gradient_boosting":
@@ -204,11 +338,11 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
         max_iter = _integer(parameters["max_iter"], f"model recipe {name}: max_iter")
         learning_rate = _number(parameters["learning_rate"], f"model recipe {name}: learning_rate")
         max_leaf_nodes = _integer(parameters["max_leaf_nodes"], f"model recipe {name}: max_leaf_nodes")
-        if max_iter not in {50, 100, 200}:
+        if max_iter not in RECIPE_PARAMETER_VALUES[recipe]["max_iter"]:
             raise ProposalValidationError(f"model recipe {name}: max_iter outside allowed set")
-        if learning_rate not in {0.03, 0.1}:
+        if learning_rate not in RECIPE_PARAMETER_VALUES[recipe]["learning_rate"]:
             raise ProposalValidationError(f"model recipe {name}: learning_rate outside allowed set")
-        if max_leaf_nodes not in {15, 31, 63}:
+        if max_leaf_nodes not in RECIPE_PARAMETER_VALUES[recipe]["max_leaf_nodes"]:
             raise ProposalValidationError(f"model recipe {name}: max_leaf_nodes outside allowed set")
         return {
             "max_iter": max_iter,
@@ -224,11 +358,11 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
         n_estimators = _integer(parameters["n_estimators"], f"model recipe {name}: n_estimators")
         max_depth = _integer_or_none(parameters["max_depth"], f"model recipe {name}: max_depth")
         min_samples_leaf = _integer(parameters["min_samples_leaf"], f"model recipe {name}: min_samples_leaf")
-        if n_estimators not in {100, 200, 400}:
+        if n_estimators not in RECIPE_PARAMETER_VALUES[recipe]["n_estimators"]:
             raise ProposalValidationError(f"model recipe {name}: n_estimators outside allowed set")
-        if max_depth not in {8, 12, None}:
+        if max_depth not in RECIPE_PARAMETER_VALUES[recipe]["max_depth"]:
             raise ProposalValidationError(f"model recipe {name}: max_depth outside allowed set")
-        if min_samples_leaf not in {1, 2, 4}:
+        if min_samples_leaf not in RECIPE_PARAMETER_VALUES[recipe]["min_samples_leaf"]:
             raise ProposalValidationError(f"model recipe {name}: min_samples_leaf outside allowed set")
         return {
             "n_estimators": n_estimators,
@@ -245,13 +379,13 @@ def _validate_recipe_parameters(name: str, recipe: str, parameters: Mapping[str,
         max_depth = _integer(parameters["max_depth"], f"model recipe {name}: max_depth")
         learning_rate = _number(parameters["learning_rate"], f"model recipe {name}: learning_rate")
         subsample = _number(parameters["subsample"], f"model recipe {name}: subsample")
-        if n_estimators not in {100, 200, 400}:
+        if n_estimators not in RECIPE_PARAMETER_VALUES[recipe]["n_estimators"]:
             raise ProposalValidationError(f"model recipe {name}: n_estimators outside allowed set")
-        if max_depth not in {4, 6, 8}:
+        if max_depth not in RECIPE_PARAMETER_VALUES[recipe]["max_depth"]:
             raise ProposalValidationError(f"model recipe {name}: max_depth outside allowed set")
-        if learning_rate not in {0.03, 0.1}:
+        if learning_rate not in RECIPE_PARAMETER_VALUES[recipe]["learning_rate"]:
             raise ProposalValidationError(f"model recipe {name}: learning_rate outside allowed set")
-        if subsample not in {0.8, 1.0}:
+        if subsample not in RECIPE_PARAMETER_VALUES[recipe]["subsample"]:
             raise ProposalValidationError(f"model recipe {name}: subsample outside allowed set")
         return {
             "n_estimators": n_estimators,
@@ -504,4 +638,5 @@ __all__ = [
     "ResearchProposal",
     "load_proposal",
     "proposal_to_dict",
+    "validate_catalog_bound_proposal",
 ]

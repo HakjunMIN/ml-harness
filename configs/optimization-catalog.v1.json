@@ -1,0 +1,166 @@
+{
+  "schema_version": "1",
+  "profiles": {
+    "safe_weather": {
+      "rationale": "Evaluate bounded prediction-time calendar and weather features.",
+      "feature_sets": ["safe_weather"],
+      "direct_recipes": ["ridge_weather", "hgb_weather"]
+    },
+    "history_tree": {
+      "rationale": "Evaluate bounded strict-prior forecast-history tree candidates.",
+      "feature_sets": ["history_tree"],
+      "direct_recipes": ["forest_history", "hgb_history"]
+    },
+    "bounded_search": {
+      "rationale": "Evaluate bounded tree recipes with deterministic LightGBM TPE search.",
+      "feature_sets": ["safe_weather", "history_tree"],
+      "direct_recipes": ["forest_search", "xgb_search", "lgbm_search"],
+      "search": "bounded_lightgbm_tpe"
+    }
+  },
+  "feature_sets": {
+    "safe_weather": {
+      "rationale": "Bounded calendar and forecast-weather features available at prediction time.",
+      "specs": [
+        {
+          "name": "hour_sin",
+          "transform": "cyclic_hour",
+          "inputs": ["timestamp"],
+          "parameters": {},
+          "version": "1",
+          "rationale": "Prediction-time daily calendar phase."
+        },
+        {
+          "name": "hour_cos",
+          "transform": "cyclic_hour",
+          "inputs": ["timestamp"],
+          "parameters": {},
+          "version": "1",
+          "rationale": "Prediction-time daily calendar phase companion."
+        },
+        {
+          "name": "effective_irradiance",
+          "transform": "effective_irradiance",
+          "inputs": ["forecast_irradiance", "forecast_cloud_cover"],
+          "parameters": {},
+          "version": "1",
+          "rationale": "Cloud-adjusted forecast irradiance."
+        },
+        {
+          "name": "forecast_temperature_derating",
+          "transform": "temperature_derating",
+          "inputs": ["forecast_irradiance", "forecast_temperature"],
+          "parameters": {"reference": 25.0, "coefficient": 0.004},
+          "version": "1",
+          "rationale": "Forecast-temperature irradiance derating."
+        }
+      ]
+    },
+    "history_tree": {
+      "rationale": "Strict-prior forecast history features for deterministic tree candidates.",
+      "specs": [
+        {
+          "name": "prior_forecast_irradiance",
+          "transform": "lag",
+          "inputs": ["forecast_irradiance"],
+          "parameters": {"periods": 1},
+          "version": "1",
+          "rationale": "Uses strictly prior forecast irradiance for the same plant."
+        },
+        {
+          "name": "prior_forecast_cloud_cover_mean",
+          "transform": "rolling_mean",
+          "inputs": ["forecast_cloud_cover"],
+          "parameters": {"window": 3},
+          "version": "1",
+          "rationale": "Uses a strictly prior rolling forecast cloud-cover mean."
+        }
+      ]
+    }
+  },
+  "recipes": {
+    "ridge_weather": {
+      "recipe": "ridge",
+      "parameters": {"alpha": 1.0},
+      "allowed_parameters": {"alpha": [0.1, 1.0, 10.0]},
+      "rationale": "Regularized linear weather baseline."
+    },
+    "hgb_weather": {
+      "recipe": "hist_gradient_boosting",
+      "parameters": {"max_iter": 100, "learning_rate": 0.1, "max_leaf_nodes": 31},
+      "allowed_parameters": {
+        "max_iter": [50, 100, 200],
+        "learning_rate": [0.03, 0.1],
+        "max_leaf_nodes": [15, 31, 63]
+      },
+      "rationale": "Bounded histogram gradient boosting weather candidate."
+    },
+    "forest_history": {
+      "recipe": "random_forest",
+      "parameters": {"n_estimators": 100, "max_depth": 8, "min_samples_leaf": 2},
+      "allowed_parameters": {
+        "n_estimators": [100, 200, 400],
+        "max_depth": [8, 12, null],
+        "min_samples_leaf": [1, 2, 4]
+      },
+      "rationale": "Bounded deterministic random forest history candidate."
+    },
+    "hgb_history": {
+      "recipe": "hist_gradient_boosting",
+      "parameters": {"max_iter": 100, "learning_rate": 0.1, "max_leaf_nodes": 31},
+      "allowed_parameters": {
+        "max_iter": [50, 100, 200],
+        "learning_rate": [0.03, 0.1],
+        "max_leaf_nodes": [15, 31, 63]
+      },
+      "rationale": "Bounded histogram gradient boosting history candidate."
+    },
+    "forest_search": {
+      "recipe": "random_forest",
+      "parameters": {"n_estimators": 100, "max_depth": 8, "min_samples_leaf": 2},
+      "allowed_parameters": {
+        "n_estimators": [100, 200, 400],
+        "max_depth": [8, 12, null],
+        "min_samples_leaf": [1, 2, 4]
+      },
+      "rationale": "Bounded deterministic random forest candidate."
+    },
+    "xgb_search": {
+      "recipe": "xgboost",
+      "parameters": {"n_estimators": 200, "max_depth": 6, "learning_rate": 0.03, "subsample": 0.8},
+      "allowed_parameters": {
+        "n_estimators": [100, 200, 400],
+        "max_depth": [4, 6, 8],
+        "learning_rate": [0.03, 0.1],
+        "subsample": [0.8, 1.0]
+      },
+      "rationale": "Bounded XGBoost candidate."
+    },
+    "lgbm_search": {
+      "recipe": "lightgbm",
+      "parameters": {"n_estimators": 100, "learning_rate": 0.03, "num_leaves": 15, "min_child_samples": 10},
+      "allowed_parameters": {
+        "n_estimators": [100, 300],
+        "learning_rate": [0.03, 0.1],
+        "num_leaves": [15, 31],
+        "min_child_samples": [10, 20]
+      },
+      "rationale": "Bounded LightGBM candidate."
+    }
+  },
+  "searches": {
+    "bounded_lightgbm_tpe": {
+      "sampler": "tpe",
+      "seed": 7,
+      "n_trials": 50,
+      "spaces": {
+        "lightgbm": {
+          "n_estimators": [100, 300],
+          "learning_rate": [0.03, 0.1],
+          "num_leaves": [15, 31],
+          "min_child_samples": [10, 20]
+        }
+      }
+    }
+  }
+}

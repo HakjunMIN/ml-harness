@@ -465,6 +465,8 @@ def test_run_aidm_script_forwards_agentic_proposal_and_legacy_predictions(tmp_pa
             str(run_dir),
             "--proposal",
             str(FIXTURES / "research-proposal.json"),
+            "--catalog",
+            str(ROOT / "configs" / "optimization-catalog.v1.json"),
             "--legacy-predictions",
             str(legacy_predictions),
             "--folds",
@@ -527,7 +529,7 @@ def test_model_search_fixture_is_valid_bounded_and_leakage_free() -> None:
 def test_run_aidm_script_already_forwards_fixture_proposal_without_extra_options() -> None:
     content = (SCRIPTS / "run-aidm.sh").read_text(encoding="utf-8")
 
-    assert "--proposal|--legacy-predictions)" in content
+    assert "--catalog|--proposal|--legacy-predictions)" in content
     assert 'args+=("$1" "$2")' in content
     assert "model-search" not in content
 
@@ -816,6 +818,9 @@ def test_readme_documents_legacy_adapter_execution() -> None:
         ".agents/scripts/run-legacy.sh",
         ".agents/scripts/run-aidm.sh",
         ".agents/scripts/verify-promotion.sh",
+        "--catalog configs/optimization-catalog.v1.json",
+        "`catalog_path`",
+        "versioned external owner",
         "legacy-evidence.json",
         "promotion-evidence.json",
         "human approval",
