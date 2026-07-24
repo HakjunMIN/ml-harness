@@ -13,8 +13,6 @@
 현재 구현은 발전량 예측을 예제로 사용하지만, 핵심 목적은 특정 모델 하나가 아니라
 **레거시 ML 개선 과정을 코딩 에이전트가 안전하고 재현 가능하게 수행하도록 만드는 하네스**입니다.
 
-기존 상세 문서는 [`REAMDE.old.md`](REAMDE.old.md)에 보존되어 있습니다.
-
 ## 5분 시작
 
 ### 1. 환경 설치
@@ -349,15 +347,6 @@ runs/<run-id>/ 또는 outputs/<run-id>/
 `runs/`와 `outputs/`는 실행 증적용 root 디렉터리이며 Git에서 무시됩니다.
 `.agents/`는 재사용 가능한 framework asset을 보관하므로 실행 결과를 저장하지 않습니다.
 
-## 데모 노트북
-
-| 노트북 | 내용 |
-| --- | --- |
-| [`00_legacy_power_forecasting_models.ipynb`](notebooks/00_legacy_power_forecasting_models.ipynb) | 레거시 모델과 평가 방식 설명 |
-| [`01_legacy_baseline.ipynb`](notebooks/01_legacy_baseline.ipynb) | 개선 전 baseline 생성 |
-| [`02_manual_skill_path.ipynb`](notebooks/02_manual_skill_path.ipynb) | 사람이 단계별로 제어하는 AIDM/AIDD 경로 |
-| [`03_auto_research_path.ipynb`](notebooks/03_auto_research_path.ipynb) | agent-proposal 자율 연구 루프 |
-
 ## Python CLI
 
 합성 데이터에서 전체 기본 흐름을 실행하려면:
@@ -412,3 +401,7 @@ PY
 - 승격된 history 피처(`lag`, `rolling_mean`)는 고유한 `plant_id`/`timestamp` 키를 가진 history·target 결합 frame에서 발전소별 strict-prior 행만 사용합니다.
 - release-gate는 정확한 manifest checksum에 연결된 명시적 사람 승인을 요구합니다.
 - chat 응답, research summary, AIDD 성공은 human approval을 대체하지 않습니다.
+
+고객의 기존 ML 실험 환경에 스킬과 black-box adapter를 설치하고, 검증된 AIDD 산출물을 고객의
+프로덕션 변경 절차로 전달하는 방법은
+[`CUSTOMER_INTEGRATION_GUIDE.md`](CUSTOMER_INTEGRATION_GUIDE.md)를 참고하세요.

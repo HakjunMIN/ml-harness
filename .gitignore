@@ -43,6 +43,3 @@ run_outputs/
 docs/
 
 .DS_Store
-
-# Stray notebook-relative outputs (kernel cwd = notebooks/)
-notebooks/artifacts/

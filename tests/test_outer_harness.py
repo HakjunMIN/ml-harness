@@ -113,12 +113,6 @@ def test_docs_define_catalog_authority_and_bound_proposal_examples() -> None:
 
 def test_readme_is_tutorial_first_agent_skill_framework_overview() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    archived = ROOT / "REAMDE.old.md"
-
-    assert archived.is_file()
-    assert archived.read_text(encoding="utf-8").startswith(
-        "# 코딩 에이전트용 발전량 예측 ML 개선 하네스"
-    )
     for required_text in (
         "레거시 ML",
         "에이전트 스킬 프레임워크",
